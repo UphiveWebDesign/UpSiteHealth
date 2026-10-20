@@ -36,7 +36,7 @@ export default async function ClientsPage({
                   <td className={td}>
                     <Badge
                       value={c.status}
-                      tone={c.status === "ACTIVE" ? "green" : "zinc"}
+                      tone={c.status === "ACTIVE" ? "success" : "neutral"}
                     />
                   </td>
                 </tr>

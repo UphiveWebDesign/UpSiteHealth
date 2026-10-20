@@ -24,7 +24,7 @@ const ALL_STATUSES: IssueStatus[] = [
   "IGNORED",
 ];
 const select =
-  "rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900";
+  "rounded-md border border-line-strong bg-white px-2 py-1 text-xs";
 
 export default async function IssuesPage({
   params,
@@ -60,7 +60,7 @@ export default async function IssuesPage({
           <Link
             key={v}
             href={`/o/${orgSlug}/issues?view=${v}`}
-            className={`rounded-md px-3 py-1.5 ${v === view ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}
+            className={`rounded-md px-3 py-1.5 ${v === view ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
           >
             {humanize(v)}
           </Link>
@@ -87,7 +87,7 @@ export default async function IssuesPage({
                 </td>
                 <td className={td}>
                   <div className="font-medium">{i.title}</div>
-                  <div className="text-xs text-zinc-500">
+                  <div className="text-xs text-muted">
                     {humanize(i.category)} · {i.description}
                   </div>
                 </td>
@@ -99,7 +99,7 @@ export default async function IssuesPage({
                     {i.website.name}
                   </Link>
                 </td>
-                <td className={`${td} whitespace-nowrap text-xs text-zinc-500`}>
+                <td className={`${td} whitespace-nowrap text-xs text-muted`}>
                   first {formatRelative(i.firstSeenAt)}
                   <br />
                   last {formatRelative(i.lastSeenAt)}

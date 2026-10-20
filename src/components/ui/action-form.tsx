@@ -1,7 +1,8 @@
 "use client";
 
 import { useActionState, type ReactNode } from "react";
-import { Button } from "./form";
+import type { ButtonVariant } from "./button";
+import { Button, inputClass } from "./form";
 
 type State =
   | {
@@ -16,12 +17,14 @@ export function ActionForm({
   action,
   submitLabel,
   pendingLabel = "Saving…",
+  variant = "primary",
   children,
-  className = "flex flex-col gap-3",
+  className = "flex flex-col gap-4",
 }: {
   action: (prev: State, formData: FormData) => Promise<State>;
   submitLabel: string;
   pendingLabel?: string;
+  variant?: ButtonVariant;
   children?: ReactNode;
   className?: string;
 }) {
@@ -33,19 +36,21 @@ export function ActionForm({
     <form action={formAction} className={className}>
       {children}
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={pending}>
+        <Button
+          type="submit"
+          variant={variant}
+          disabled={pending}
+          aria-busy={pending || undefined}
+        >
           {pending ? pendingLabel : submitLabel}
         </Button>
         {(state?.error || fieldErrors.length > 0) && (
-          <span role="alert" className="text-sm text-red-600 dark:text-red-400">
+          <span role="alert" className="text-sm text-danger-700">
             {[state?.error, ...fieldErrors].filter(Boolean).join(" ")}
           </span>
         )}
         {state?.ok && (
-          <span
-            role="status"
-            className="text-sm text-emerald-700 dark:text-emerald-400"
-          >
+          <span role="status" className="text-sm text-success-700">
             {state.ok}
           </span>
         )}
@@ -54,5 +59,4 @@ export function ActionForm({
   );
 }
 
-export const inputClass =
-  "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+export { inputClass };

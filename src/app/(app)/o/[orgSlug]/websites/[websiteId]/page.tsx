@@ -170,7 +170,7 @@ export default async function WebsitePage({
                 >
                   {score.score ?? "—"}
                 </span>
-                <span className="pb-1 text-xs text-zinc-500">
+                <span className="pb-1 text-xs text-muted">
                   {score.scoringVersion} · {score.measuredWeight}% of weight
                   measured · {formatRelative(score.calculatedAt)}
                 </span>
@@ -192,7 +192,7 @@ export default async function WebsitePage({
           <div className="grid grid-cols-2 gap-4 text-sm">
             {perf.map((p, i) => (
               <div key={i}>
-                <div className="text-xs uppercase text-zinc-500">
+                <div className="text-xs uppercase text-muted">
                   {i === 0 ? "Mobile" : "Desktop"}
                 </div>
                 {p ? (
@@ -202,7 +202,7 @@ export default async function WebsitePage({
                     >
                       {p.performanceScore ?? "—"}
                     </div>
-                    <dl className="mt-1 text-xs text-zinc-500">
+                    <dl className="mt-1 text-xs text-muted">
                       <div>LCP {formatMs(p.lcpMs)}</div>
                       <div>CLS {p.clsScore ?? "—"}</div>
                       <div>FCP {formatMs(p.fcpMs)}</div>
@@ -217,7 +217,7 @@ export default async function WebsitePage({
                     </dl>
                   </>
                 ) : (
-                  <div className="text-zinc-500">Not measured</div>
+                  <div className="text-muted">Not measured</div>
                 )}
               </div>
             ))}
@@ -230,7 +230,7 @@ export default async function WebsitePage({
                 pendingLabel="Starting…"
               />
               {!serverEnv().PAGESPEED_API_KEY && (
-                <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                <p className="mt-2 text-xs text-warning-700">
                   No PAGESPEED_API_KEY is configured. Google rejects most
                   anonymous requests, so tests will usually not produce a result
                   until a key is set.
@@ -254,7 +254,7 @@ export default async function WebsitePage({
                 <div className="flex flex-col gap-1 text-sm">
                   <div className="flex items-center gap-2">
                     <Badge value={check.outcome} />
-                    <span className="text-xs text-zinc-500">
+                    <span className="text-xs text-muted">
                       {formatRelative(check.createdAt)}
                     </span>
                   </div>
@@ -268,19 +268,19 @@ export default async function WebsitePage({
                     <span>
                       Expires {formatDateTime(check.sslExpiresAt)}
                       {typeof r.issuer === "string" && r.issuer && (
-                        <span className="block text-xs text-zinc-500">
+                        <span className="block text-xs text-muted">
                           Issuer: {r.issuer}
                         </span>
                       )}
                     </span>
                   )}
                   {type === "DNS" && Array.isArray(r.a) && (
-                    <span className="break-all text-xs text-zinc-500">
+                    <span className="break-all text-xs text-muted">
                       A: {(r.a as string[]).join(", ") || "—"}
                     </span>
                   )}
                   {check.errorMessage && check.outcome !== "SUCCESS" && (
-                    <span className="text-xs text-red-600">
+                    <span className="text-xs text-danger-700">
                       {check.errorMessage}
                     </span>
                   )}
@@ -289,7 +289,7 @@ export default async function WebsitePage({
                 <Empty>No checks yet.</Empty>
               )}
               {schedule && (
-                <p className="mt-3 text-xs text-zinc-500">
+                <p className="mt-3 text-xs text-muted">
                   Every {schedule.intervalMinutes} min ·{" "}
                   {schedule.enabled && website.monitoringEnabled
                     ? `next ${formatRelative(schedule.nextCheckAt)}`
@@ -313,7 +313,7 @@ export default async function WebsitePage({
                     <Badge value={i.severity} />
                     <span className="font-medium">{i.title}</span>
                   </div>
-                  <p className="mt-1 text-xs text-zinc-500">
+                  <p className="mt-1 text-xs text-muted">
                     {i.description} · since {formatRelative(i.firstSeenAt)}
                   </p>
                 </li>
@@ -332,7 +332,7 @@ export default async function WebsitePage({
         >
           <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
             {findingCounts.length === 0 ? (
-              <span className="text-zinc-500">No open findings.</span>
+              <span className="text-muted">No open findings.</span>
             ) : (
               findingCounts.map((f) => (
                 <span key={f.severity} className="flex items-center gap-1">
@@ -415,9 +415,7 @@ export default async function WebsitePage({
                   <td className={`${td} tabular-nums`}>
                     {formatMs(c.responseTimeMs)}
                   </td>
-                  <td
-                    className={`${td} max-w-xs truncate text-xs text-zinc-500`}
-                  >
+                  <td className={`${td} max-w-xs truncate text-xs text-muted`}>
                     {c.errorMessage ?? ""}
                   </td>
                 </tr>

@@ -168,7 +168,7 @@ export default async function AiSearchPage({
                     <span>
                       <span className="font-medium">{c.name}</span>
                       {c.domain && (
-                        <span className="text-xs text-zinc-500">
+                        <span className="text-xs text-muted">
                           {" "}
                           · {c.domain}
                         </span>
@@ -237,7 +237,7 @@ export default async function AiSearchPage({
               </ActionForm>
             ) : null}
             {providers.length === 1 && (
-              <p className="mt-2 text-xs text-zinc-500">
+              <p className="mt-2 text-xs text-muted">
                 Only the mock provider is configured. Set GEMINI_API_KEY or
                 PERPLEXITY_API_KEY to query real assistants.
               </p>
@@ -357,7 +357,9 @@ export default async function AiSearchPage({
                   Website cited in <strong>{cited}</strong>
                 </span>
                 {latestRun.errorMessage && (
-                  <span className="text-red-600">{latestRun.errorMessage}</span>
+                  <span className="text-danger-700">
+                    {latestRun.errorMessage}
+                  </span>
                 )}
               </div>
               <Table
@@ -375,13 +377,13 @@ export default async function AiSearchPage({
                     <td className={`${td} max-w-sm`}>
                       <div>{r.queryText}</div>
                       {r.answer && (
-                        <details className="mt-1 text-xs text-zinc-500">
+                        <details className="mt-1 text-xs text-muted">
                           <summary className="cursor-pointer">Answer</summary>
                           <p className="mt-1 whitespace-pre-wrap">{r.answer}</p>
                         </details>
                       )}
                       {r.errorMessage && (
-                        <div className="text-xs text-red-600">
+                        <div className="text-xs text-danger-700">
                           {r.errorMessage}
                         </div>
                       )}
@@ -389,18 +391,11 @@ export default async function AiSearchPage({
                     <td className={td}>
                       <Badge
                         value={r.status}
-                        tone={r.status === "SUCCESS" ? "green" : "red"}
+                        tone={r.status === "SUCCESS" ? "success" : "danger"}
                       />
                     </td>
                     <td className={td}>
-                      <Badge
-                        value={r.mentionStatus}
-                        tone={
-                          r.mentionStatus === "BRAND_MENTIONED"
-                            ? "green"
-                            : "zinc"
-                        }
-                      />
+                      <Badge value={r.mentionStatus} />
                     </td>
                     <td className={`${td} text-xs`}>
                       {humanize(r.recommendationStatus)}

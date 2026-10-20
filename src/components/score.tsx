@@ -1,10 +1,10 @@
 import { humanize } from "@/lib/format";
 
 export function scoreTone(score: number | null | undefined): string {
-  if (score === null || score === undefined) return "text-zinc-400";
-  if (score >= 90) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 50) return "text-amber-600 dark:text-amber-400";
-  return "text-red-600 dark:text-red-400";
+  if (score === null || score === undefined) return "text-muted";
+  if (score >= 90) return "text-success-700";
+  if (score >= 50) return "text-warning-700";
+  return "text-danger-700";
 }
 
 /** Accessible inline SVG sparkline of score history (oldest → newest). */
@@ -13,7 +13,7 @@ export function Sparkline({ values }: { values: Array<number | null> }) {
     .map((v, i) => ({ v, i }))
     .filter((p): p is { v: number; i: number } => p.v !== null);
   if (points.length < 2) {
-    return <p className="text-xs text-zinc-500">Not enough history yet.</p>;
+    return <p className="text-xs text-muted">Not enough history yet.</p>;
   }
   const w = 240;
   const h = 48;
@@ -27,7 +27,7 @@ export function Sparkline({ values }: { values: Array<number | null> }) {
   return (
     <svg
       viewBox={`0 0 ${w} ${h}`}
-      className="h-12 w-full text-zinc-900 dark:text-zinc-100"
+      className="h-12 w-full text-ink"
       role="img"
       aria-label={`Score history: ${points.length} snapshots, from ${first} to ${last}`}
     >
@@ -60,10 +60,10 @@ export function DimensionList({ dimensions }: { dimensions: DimensionView[] }) {
         >
           <span>
             <span className="font-medium">{humanize(d.dimension)}</span>{" "}
-            <span className="text-xs text-zinc-500">
+            <span className="text-xs text-muted">
               weight {d.weight} · {humanize(d.coverage).toLowerCase()} coverage
             </span>
-            <span className="block text-xs text-zinc-500">{d.summary}</span>
+            <span className="block text-xs text-muted">{d.summary}</span>
           </span>
           <span className={`tabular-nums font-semibold ${scoreTone(d.score)}`}>
             {d.score ?? "—"}

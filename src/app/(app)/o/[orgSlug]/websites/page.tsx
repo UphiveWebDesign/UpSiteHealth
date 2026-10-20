@@ -76,7 +76,7 @@ export default async function WebsitesPage({
                   >
                     {w.name}
                   </Link>
-                  <div className="text-xs text-zinc-500">{w.domain}</div>
+                  <div className="text-xs text-muted">{w.domain}</div>
                 </td>
                 <td className={td}>{w.client?.name ?? "—"}</td>
                 <td className={td}>
@@ -84,7 +84,7 @@ export default async function WebsitesPage({
                 </td>
                 <td className={`${td} tabular-nums`}>{w._count.issues}</td>
                 <td className={`${td} tabular-nums`}>{w._count.seoFindings}</td>
-                <td className={`${td} text-xs text-zinc-500`}>
+                <td className={`${td} text-xs text-muted`}>
                   {w.monitoringEnabled
                     ? formatRelative(w.nextCheckAt)
                     : "Paused"}

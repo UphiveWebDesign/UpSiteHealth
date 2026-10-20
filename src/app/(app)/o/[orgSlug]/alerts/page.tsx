@@ -52,7 +52,7 @@ export default async function AlertsPage({
           <Link
             key={p}
             href={`/o/${orgSlug}/alerts?days=${p}`}
-            className={`rounded-md px-3 py-1.5 ${p === days ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}
+            className={`rounded-md px-3 py-1.5 ${p === days ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
           >
             {p} days
           </Link>
@@ -69,7 +69,7 @@ export default async function AlertsPage({
               <tr key={e.id}>
                 <td className={`${td} whitespace-nowrap text-xs`}>
                   {formatDateTime(e.createdAt)}
-                  <div className="text-zinc-500">
+                  <div className="text-muted">
                     {formatRelative(e.createdAt)}
                   </div>
                 </td>
@@ -78,7 +78,7 @@ export default async function AlertsPage({
                 </td>
                 <td className={td}>
                   <div className="font-medium">{e.title}</div>
-                  <div className="text-xs text-zinc-500">
+                  <div className="text-xs text-muted">
                     {humanize(e.type)} · {e.message}
                   </div>
                 </td>

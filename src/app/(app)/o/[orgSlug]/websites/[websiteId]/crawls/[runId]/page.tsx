@@ -62,14 +62,14 @@ export default async function CrawlRunPage({
         }
       />
       {run.errorMessage && (
-        <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p className="mb-4 rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-700">
           {run.errorMessage}
         </p>
       )}
       <dl className="mb-6 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
         {facts.map(([label, value]) => (
           <div key={label}>
-            <dt className="text-zinc-500">{label}</dt>
+            <dt className="text-muted">{label}</dt>
             <dd className="font-medium">{value}</dd>
           </div>
         ))}
@@ -82,19 +82,17 @@ export default async function CrawlRunPage({
             <tr key={p.id}>
               <td className={`${td} max-w-md`}>
                 <div className="break-all text-xs">{p.url}</div>
-                {p.title && (
-                  <div className="text-xs text-zinc-500">{p.title}</div>
-                )}
+                {p.title && <div className="text-xs text-muted">{p.title}</div>}
               </td>
               <td className={td}>
                 <Badge value={p.status} />
                 {p.skipReason && (
-                  <div className="mt-1 text-xs text-zinc-500">
+                  <div className="mt-1 text-xs text-muted">
                     {humanize(p.skipReason)}
                   </div>
                 )}
                 {p.errorMessage && (
-                  <div className="mt-1 text-xs text-red-600">
+                  <div className="mt-1 text-xs text-danger-700">
                     {p.errorMessage}
                   </div>
                 )}

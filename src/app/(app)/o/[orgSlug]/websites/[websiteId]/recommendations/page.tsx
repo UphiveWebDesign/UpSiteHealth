@@ -81,7 +81,7 @@ export default async function RecommendationsPage({
           <Link
             key={v}
             href={`${base}/recommendations?status=${v}`}
-            className={`rounded-md px-3 py-1.5 ${v === view ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}
+            className={`rounded-md px-3 py-1.5 ${v === view ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
           >
             {humanize(v)}
           </Link>
@@ -104,7 +104,7 @@ export default async function RecommendationsPage({
               actions={
                 <Badge
                   value={r.status}
-                  tone={r.status === "COMPLETED" ? "green" : "zinc"}
+                  tone={r.status === "COMPLETED" ? "success" : "neutral"}
                 />
               }
             >
@@ -114,11 +114,11 @@ export default async function RecommendationsPage({
                 {r.recommendedAction}
               </p>
               {r.expectedImpact && (
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-muted">
                   Impact: {r.expectedImpact}
                 </p>
               )}
-              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-zinc-500">
+              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted">
                 <span>Updated {formatRelative(r.updatedAt)}</span>
                 {editor && (
                   <form
@@ -133,7 +133,7 @@ export default async function RecommendationsPage({
                       name="status"
                       defaultValue={r.status}
                       aria-label="Status"
-                      className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                      className="rounded-md border border-line-strong bg-white px-2 py-1 text-xs"
                     >
                       {STATUSES.map((s) => (
                         <option key={s} value={s}>

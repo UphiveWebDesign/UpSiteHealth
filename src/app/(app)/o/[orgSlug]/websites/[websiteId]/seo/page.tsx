@@ -59,7 +59,7 @@ export default async function SeoFindingsPage({
           <Link
             key={s}
             href={`${base}/seo?status=${s}`}
-            className={`rounded-md px-3 py-1.5 ${s === status ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}
+            className={`rounded-md px-3 py-1.5 ${s === status ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
           >
             {s.charAt(0) + s.slice(1).toLowerCase()}
           </Link>
@@ -89,16 +89,12 @@ export default async function SeoFindingsPage({
                   </td>
                   <td className={td}>
                     <div className="font-medium">{f.title}</div>
-                    <div className="text-xs text-zinc-500">
-                      {f.recommendation}
-                    </div>
+                    <div className="text-xs text-muted">{f.recommendation}</div>
                   </td>
                   <td className={`${td} max-w-xs break-all text-xs`}>
                     {url ?? (f.scope === "SITE" ? "Whole site" : "—")}
                   </td>
-                  <td
-                    className={`${td} whitespace-nowrap text-xs text-zinc-500`}
-                  >
+                  <td className={`${td} whitespace-nowrap text-xs text-muted`}>
                     {formatRelative(f.lastSeenAt)}
                   </td>
                   <td className={td}>

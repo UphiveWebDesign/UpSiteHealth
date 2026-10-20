@@ -15,7 +15,7 @@ export default async function SignupPage() {
         Create your account
       </h1>
       <SignupForm />
-      <p className="mt-6 text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="mt-6 text-sm text-ink-2">
         Already have an account?{" "}
         <Link href="/login" className="font-medium underline">
           Sign in

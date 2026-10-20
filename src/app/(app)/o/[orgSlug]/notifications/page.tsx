@@ -46,7 +46,7 @@ export default async function NotificationsPage({
         {items.length === 0 ? (
           <Empty>No notifications yet.</Empty>
         ) : (
-          <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+          <ul className="divide-y divide-line">
             {items.map((n) => (
               <li
                 key={n.id}
@@ -57,10 +57,8 @@ export default async function NotificationsPage({
                     <Badge value={n.alertEvent.severity} />
                     <span className="font-medium">{n.alertEvent.title}</span>
                   </div>
-                  <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                    {n.alertEvent.message}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
+                  <p className="mt-1 text-ink-2">{n.alertEvent.message}</p>
+                  <p className="mt-1 text-xs text-muted">
                     <Link
                       href={`/o/${orgSlug}/websites/${n.alertEvent.website.id}`}
                       className="underline"

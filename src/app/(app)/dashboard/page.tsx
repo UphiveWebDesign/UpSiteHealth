@@ -21,21 +21,19 @@ export default async function DashboardPage() {
         Your organizations
       </h1>
       {memberships.length === 0 ? (
-        <p className="text-zinc-600 dark:text-zinc-400">
+        <p className="text-ink-2">
           You are not a member of any organization yet.
         </p>
       ) : (
-        <ul className="divide-y divide-zinc-200 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+        <ul className="divide-y divide-line rounded-lg border border-line">
           {memberships.map((m) => (
             <li key={m.memberId}>
               <Link
                 href={`/o/${m.organization.slug}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                className="flex items-center justify-between px-4 py-3 hover:bg-slate-100"
               >
                 <span className="font-medium">{m.organization.name}</span>
-                <span className="text-xs uppercase text-zinc-500">
-                  {m.role}
-                </span>
+                <span className="text-xs uppercase text-muted">{m.role}</span>
               </Link>
             </li>
           ))}

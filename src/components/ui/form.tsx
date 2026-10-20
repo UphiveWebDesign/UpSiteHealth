@@ -1,31 +1,45 @@
 import type { ComponentProps, ReactNode } from "react";
+import { buttonClass, type ButtonSize, type ButtonVariant } from "./button";
+
+export const inputClass =
+  "w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink shadow-sm placeholder:text-muted/70 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-600/15 disabled:bg-subtle disabled:text-muted";
 
 export function Field({
   label,
   name,
   errors,
+  hint,
   ...input
 }: {
   label: string;
   name: string;
   errors?: string[];
+  hint?: string;
 } & ComponentProps<"input">) {
   const errorId = errors?.length ? `${name}-error` : undefined;
+  const hintId = hint ? `${name}-hint` : undefined;
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={name} className="text-sm font-medium">
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={name} className="text-sm font-medium text-ink">
         {label}
       </label>
       <input
         id={name}
         name={name}
         aria-invalid={errorId ? true : undefined}
-        aria-describedby={errorId}
-        className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-zinc-100"
+        aria-describedby={
+          [errorId, hintId].filter(Boolean).join(" ") || undefined
+        }
+        className={`${inputClass} ${errorId ? "border-danger-500 focus:border-danger-500 focus:ring-danger-500/15" : ""}`}
         {...input}
       />
+      {hint && !errorId && (
+        <p id={hintId} className="text-xs text-muted">
+          {hint}
+        </p>
+      )}
       {errorId && (
-        <p id={errorId} className="text-sm text-red-600 dark:text-red-400">
+        <p id={errorId} className="text-sm text-danger-700">
           {errors?.join(" ")}
         </p>
       )}
@@ -35,18 +49,15 @@ export function Field({
 
 export function Button({
   variant = "primary",
+  size = "md",
   className = "",
   ...props
-}: { variant?: "primary" | "ghost" } & ComponentProps<"button">) {
-  const styles =
-    variant === "primary"
-      ? "bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-      : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100";
+}: {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+} & ComponentProps<"button">) {
   return (
-    <button
-      className={`rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${styles} ${className}`}
-      {...props}
-    />
+    <button className={buttonClass(variant, size, className)} {...props} />
   );
 }
 
@@ -55,7 +66,7 @@ export function FormError({ children }: { children?: ReactNode }) {
   return (
     <p
       role="alert"
-      className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
+      className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700"
     >
       {children}
     </p>

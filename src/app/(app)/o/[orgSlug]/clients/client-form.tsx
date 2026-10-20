@@ -13,7 +13,7 @@ export function ClientForm({
   return (
     <form action={formAction} className="flex max-w-lg flex-col gap-4">
       <FormError>{state?.error}</FormError>
-      {state?.ok && <p className="text-sm text-emerald-700">{state.ok}</p>}
+      {state?.ok && <p className="text-sm text-success-700">{state.ok}</p>}
       <Field
         label="Name"
         name="name"

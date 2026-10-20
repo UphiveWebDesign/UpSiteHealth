@@ -82,13 +82,8 @@ export default async function OverviewPage({
       />
       <dl className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-5">
         {stats.map((s) => (
-          <div
-            key={s.label}
-            className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-          >
-            <dt className="text-sm text-zinc-600 dark:text-zinc-400">
-              {s.label}
-            </dt>
+          <div key={s.label} className="rounded-lg border border-line p-4">
+            <dt className="text-sm text-ink-2">{s.label}</dt>
             <dd className="mt-1 text-3xl font-semibold tabular-nums">
               {s.value}
             </dd>
@@ -116,7 +111,7 @@ export default async function OverviewPage({
                         >
                           {w.name}
                         </Link>
-                        <div className="text-xs text-zinc-500">{w.domain}</div>
+                        <div className="text-xs text-muted">{w.domain}</div>
                       </td>
                       <td className={td}>
                         <Badge value={w.status} />
@@ -125,7 +120,7 @@ export default async function OverviewPage({
                         {last ? (
                           <span className="flex items-center gap-2">
                             <Badge value={last.outcome} />
-                            <span className="text-xs text-zinc-500">
+                            <span className="text-xs text-muted">
                               {formatRelative(last.createdAt)}
                             </span>
                           </span>
@@ -161,7 +156,7 @@ export default async function OverviewPage({
                     <Badge value={i.severity} />
                     <span className="font-medium">{i.title}</span>
                   </div>
-                  <div className="mt-1 text-xs text-zinc-500">
+                  <div className="mt-1 text-xs text-muted">
                     <Link
                       href={`/o/${orgSlug}/websites/${i.website.id}`}
                       className="underline"

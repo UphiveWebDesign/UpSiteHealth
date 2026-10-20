@@ -22,10 +22,7 @@ export function WebsiteForm({ action, clients, defaults, submitLabel }: Props) {
     <form action={formAction} className="flex max-w-lg flex-col gap-4">
       <FormError>{state?.error}</FormError>
       {state?.ok && (
-        <p
-          role="status"
-          className="text-sm text-emerald-700 dark:text-emerald-400"
-        >
+        <p role="status" className="text-sm text-success-700">
           {state.ok}
         </p>
       )}
@@ -52,7 +49,7 @@ export function WebsiteForm({ action, clients, defaults, submitLabel }: Props) {
           id="clientId"
           name="clientId"
           defaultValue={defaults?.clientId ?? ""}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          className="rounded-md border border-line-strong bg-white px-3 py-2 text-sm"
         >
           <option value="">No client</option>
           {clients.map((c) => (
@@ -62,7 +59,7 @@ export function WebsiteForm({ action, clients, defaults, submitLabel }: Props) {
           ))}
         </select>
         {state?.fieldErrors?.clientId && (
-          <p className="text-sm text-red-600">
+          <p className="text-sm text-danger-700">
             {state.fieldErrors.clientId.join(" ")}
           </p>
         )}

@@ -53,7 +53,7 @@ export default async function WebsiteSettingsPage({
         </Card>
         {can.manageClients(ctx.role) && (
           <Card title="Danger zone">
-            <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
+            <p className="mb-3 text-sm text-ink-2">
               Deleting a website permanently removes its checks, crawls, SEO
               findings, issues and score history.
             </p>

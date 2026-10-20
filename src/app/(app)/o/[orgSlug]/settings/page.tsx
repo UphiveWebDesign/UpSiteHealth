@@ -51,7 +51,7 @@ export default async function SettingsPage({
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Notifications">
           {!admin && (
-            <p className="mb-3 text-xs text-zinc-500">
+            <p className="mb-3 text-xs text-muted">
               Only owners and admins can change these settings.
             </p>
           )}
@@ -85,7 +85,7 @@ export default async function SettingsPage({
                 Email
               </label>
               {!emailConfigured && (
-                <p className="text-xs text-amber-700 dark:text-amber-400">
+                <p className="text-xs text-warning-700">
                   No email provider is configured (RESEND_API_KEY and
                   EMAIL_FROM). Email deliveries will be recorded as “not
                   configured”.
@@ -144,15 +144,15 @@ export default async function SettingsPage({
                   <div className="font-medium">
                     {m.user.name ?? m.user.email}
                   </div>
-                  <div className="text-xs text-zinc-500">{m.user.email}</div>
+                  <div className="text-xs text-muted">{m.user.email}</div>
                 </td>
                 <td className={td}>
-                  <Badge value={m.role} tone="zinc" />
+                  <Badge value={m.role} tone="neutral" />
                 </td>
               </tr>
             ))}
           </Table>
-          <p className="mt-3 text-xs text-zinc-500">
+          <p className="mt-3 text-xs text-muted">
             Inviting members is not available yet.
           </p>
         </Card>

@@ -41,7 +41,7 @@ export default async function ReportsPage({
           <Link
             key={p}
             href={`/o/${orgSlug}/reports?days=${p}`}
-            className={`rounded-md px-3 py-1.5 ${p === days ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : "hover:bg-zinc-100 dark:hover:bg-zinc-900"}`}
+            className={`rounded-md px-3 py-1.5 ${p === days ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
           >
             {p} days
           </Link>
@@ -73,14 +73,14 @@ export default async function ReportsPage({
                     >
                       {r.name}
                     </Link>
-                    <div className="text-xs text-zinc-500">{r.domain}</div>
+                    <div className="text-xs text-muted">{r.domain}</div>
                   </td>
                   <td className={td}>
                     <Badge value={r.status} />
                   </td>
                   <td className={`${td} tabular-nums`}>
                     {r.uptimePercent === null ? "—" : `${r.uptimePercent}%`}
-                    <div className="text-xs text-zinc-500">
+                    <div className="text-xs text-muted">
                       {r.conclusiveChecks} checks
                     </div>
                   </td>
@@ -110,7 +110,7 @@ export default async function ReportsPage({
                 >
                   {label}
                 </a>
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-muted">
                   {" "}
                   · CSV, last {days} days where applicable
                 </span>

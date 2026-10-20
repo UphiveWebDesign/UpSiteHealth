@@ -16,10 +16,10 @@ export function StartCrawlButton({
         {pending ? "Starting…" : "Start crawl"}
       </Button>
       {state?.error && (
-        <span className="text-sm text-red-600">{state.error}</span>
+        <span className="text-sm text-danger-700">{state.error}</span>
       )}
       {state?.ok && (
-        <span className="text-sm text-emerald-700">{state.ok}</span>
+        <span className="text-sm text-success-700">{state.ok}</span>
       )}
     </form>
   );

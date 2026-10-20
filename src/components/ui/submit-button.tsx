@@ -2,17 +2,20 @@
 
 import type { ReactNode } from "react";
 import { useFormStatus } from "react-dom";
+import type { ButtonSize, ButtonVariant } from "./button";
 import { Button } from "./form";
 
 export function SubmitButton({
   children,
   pendingLabel,
   variant,
+  size,
   confirm,
 }: {
   children: ReactNode;
   pendingLabel?: string;
-  variant?: "primary" | "ghost";
+  variant?: ButtonVariant;
+  size?: ButtonSize;
   /** Asks for confirmation before submitting (destructive actions). */
   confirm?: string;
 }) {
@@ -21,7 +24,9 @@ export function SubmitButton({
     <Button
       type="submit"
       variant={variant}
+      size={size}
       disabled={pending}
+      aria-busy={pending || undefined}
       onClick={(e) => {
         if (confirm && !window.confirm(confirm)) e.preventDefault();
       }}
