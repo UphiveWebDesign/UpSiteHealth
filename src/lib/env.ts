@@ -1,0 +1,32 @@
+import { z } from "zod";
+
+const serverEnvSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
+  // Runtime connection (Supabase pooler in production).
+  DATABASE_URL: z
+    .string()
+    .regex(/^postgres(ql)?:\/\//, "must be a postgres:// URL"),
+  ALLOW_SIGNUP: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+});
+
+export type ServerEnv = z.infer<typeof serverEnvSchema>;
+
+let cached: ServerEnv | undefined;
+
+/** Validated server environment. Parsed lazily so builds do not need secrets. */
+export function serverEnv(): ServerEnv {
+  if (cached) return cached;
+  const parsed = serverEnvSchema.safeParse(process.env);
+  if (!parsed.success) {
+    // Report variable names only — never values.
+    const names = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+    throw new Error(`Invalid server environment: ${names}`);
+  }
+  cached = parsed.data;
+  return cached;
+}

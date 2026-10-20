@@ -1,0 +1,979 @@
+// UpSiteHealth schema — RECONSTRUCTED on 2026-10-20 from the live Supabase
+// catalog (project xdaxegotsoumwwxjlbnl). The original schema.prisma was lost.
+// Must stay drift-free against production: verify with `npm run db:drift`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums (label order matches the database) ───────────────────────────────
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+  CLIENT
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum WebsiteStatus {
+  HEALTHY
+  WARNING
+  CRITICAL
+  PAUSED
+  UNKNOWN
+}
+
+enum CheckType {
+  UPTIME
+  SSL
+  DNS
+  SEO
+  SITEMAP
+  ROBOTS
+  LINKS
+  SCHEMA
+  PERFORMANCE
+  SECURITY
+  AI_SEARCH
+}
+
+enum CheckStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum CheckOutcome {
+  SUCCESS
+  HTTP_ERROR
+  TIMEOUT
+  CONNECTION_ERROR
+  DNS_ERROR
+  TLS_ERROR
+  BLOCKED
+  INVALID_URL
+  UNKNOWN_ERROR
+  EXPIRING
+  EXPIRED
+  HOSTNAME_MISMATCH
+  NXDOMAIN
+  SERVFAIL
+  BODY_TOO_LARGE
+}
+
+enum JobStatus {
+  QUEUED
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum JobPriority {
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum IssueSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum IssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  IN_PROGRESS
+  RESOLVED
+  IGNORED
+}
+
+enum RecommendationPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RecommendationStatus {
+  PROPOSED
+  IN_PROGRESS
+  COMPLETED
+  DISMISSED
+}
+
+enum ScoreCategory {
+  OVERALL
+  SEO
+  PERFORMANCE
+  SECURITY
+  UPTIME
+  AI_SEARCH
+  ACCESSIBILITY
+}
+
+enum CrawlRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum CrawlPageStatus {
+  QUEUED
+  CRAWLING
+  CRAWLED
+  FAILED
+  SKIPPED
+}
+
+enum CrawlDiscoverySource {
+  SEED
+  LINK
+  SITEMAP
+  REDIRECT
+}
+
+enum CrawlSkipReason {
+  ROBOTS_DISALLOWED
+  DEPTH_EXCEEDED
+  BUDGET_EXCEEDED
+  CANCELLED
+}
+
+enum CrawlResourceType {
+  HTML
+  IMAGE
+  PDF
+  VIDEO
+  AUDIO
+  ARCHIVE
+  OTHER
+}
+
+enum SeoFindingScope {
+  PAGE
+  SITE
+}
+
+enum SeoFindingStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+enum PerformanceStrategy {
+  MOBILE
+  DESKTOP
+}
+
+enum PerformanceSource {
+  PAGESPEED_INSIGHTS
+}
+
+enum PerformanceMetricSource {
+  LAB
+  FIELD
+}
+
+enum AiSearchProvider {
+  PERPLEXITY
+  MOCK
+  GEMINI
+}
+
+enum AiSearchMode {
+  MODEL_RESPONSE
+  SEARCH_AUGMENTED
+  WEB_GROUNDED
+}
+
+enum AiSearchQueryIntent {
+  DISCOVERY
+  COMPARISON
+  RECOMMENDATION
+  LOCAL
+  INFORMATIONAL
+  TRANSACTIONAL
+}
+
+enum AiSearchRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum AiSearchResultStatus {
+  SUCCESS
+  PROVIDER_ERROR
+  TIMEOUT
+  RATE_LIMITED
+  QUOTA_EXCEEDED
+  INVALID_QUERY
+  UNAVAILABLE
+}
+
+enum AiSearchMentionStatus {
+  BRAND_MENTIONED
+  BRAND_NOT_MENTIONED
+  UNKNOWN
+}
+
+enum AiSearchRecommendationStatus {
+  RECOMMENDED
+  MENTIONED_NOT_RECOMMENDED
+  NOT_MENTIONED
+  UNCLEAR
+  UNKNOWN
+}
+
+enum AlertEventType {
+  UPTIME_INCIDENT_OPENED
+  UPTIME_INCIDENT_RESOLVED
+  SSL_CERTIFICATE_EXPIRING
+  SSL_CERTIFICATE_EXPIRED
+  SSL_CERTIFICATE_HOSTNAME_MISMATCH
+  DNS_ERROR_DETECTED
+  DNS_ERROR_RESOLVED
+  WEBSITE_HEALTH_DEGRADED
+  WEBSITE_HEALTH_RECOVERED
+  CRAWL_COMPLETED_WITH_ERRORS
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  NOT_CONFIGURED
+  SKIPPED
+}
+
+enum NotificationDeliveryJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ─── Identity and tenancy ───────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts       Account[]
+  sessions       Session[]
+  memberships    OrganizationMember[]
+  assignedIssues Issue[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+/// `sessionToken` stores a SHA-256 hash of the cookie value, never the raw token.
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members                  OrganizationMember[]
+  clients                  Client[]
+  websites                 Website[]
+  websiteChecks            WebsiteCheck[]
+  websiteMonitoringChecks  WebsiteMonitoringCheck[]
+  monitoringJobs           MonitoringJob[]
+  crawlRuns                CrawlRun[]
+  crawlPages               CrawlPage[]
+  seoFindings              SeoFinding[]
+  issues                   Issue[]
+  recommendations          Recommendation[]
+  scoreSnapshots           WebsiteScoreSnapshot[]
+  performanceObservations  PerformanceObservation[]
+  aiSearchProfiles         AiSearchProfile[]
+  aiSearchCompetitors      AiSearchCompetitor[]
+  aiSearchQueries          AiSearchQuery[]
+  aiSearchRuns             AiSearchRun[]
+  aiSearchResults          AiSearchResult[]
+  alertEvents              AlertEvent[]
+  notificationPreference   NotificationPreference?
+  notificationDeliveries   NotificationDelivery[]
+  notificationDeliveryJobs NotificationDeliveryJob[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           Role     @default(MEMBER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization           Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notificationDeliveries NotificationDelivery[]
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Client {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  email          String?
+  company        String?
+  status         ClientStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  websites     Website[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@map("clients")
+}
+
+// ─── Websites and monitoring ────────────────────────────────────────────────
+
+model Website {
+  id                        String        @id @default(cuid())
+  organizationId            String
+  clientId                  String?
+  name                      String
+  domain                    String
+  url                       String
+  status                    WebsiteStatus @default(UNKNOWN)
+  monitoringEnabled         Boolean       @default(true)
+  monitoringIntervalMinutes Int           @default(5)
+  monitoringPriority        JobPriority   @default(NORMAL)
+  nextCheckAt               DateTime?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  organization            Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client                  Client?                  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  checks                  WebsiteCheck[]
+  monitoringChecks        WebsiteMonitoringCheck[]
+  monitoringJobs          MonitoringJob[]
+  crawlRuns               CrawlRun[]
+  crawlPages              CrawlPage[]
+  seoFindings             SeoFinding[]
+  issues                  Issue[]
+  recommendations         Recommendation[]
+  scoreSnapshots          WebsiteScoreSnapshot[]
+  performanceObservations PerformanceObservation[]
+  aiSearchProfile         AiSearchProfile?
+  aiSearchCompetitors     AiSearchCompetitor[]
+  aiSearchQueries         AiSearchQuery[]
+  aiSearchRuns            AiSearchRun[]
+  aiSearchResults         AiSearchResult[]
+  alertEvents             AlertEvent[]
+
+  @@unique([organizationId, domain])
+  @@index([organizationId])
+  @@index([clientId])
+  @@index([monitoringEnabled, nextCheckAt])
+  @@map("websites")
+}
+
+model WebsiteCheck {
+  id             String        @id @default(cuid())
+  organizationId String
+  websiteId      String
+  type           CheckType
+  status         CheckStatus   @default(PENDING)
+  outcome        CheckOutcome?
+  httpStatus     Int?
+  finalUrl       String?
+  redirectCount  Int?
+  responseTimeMs Int?
+  sslExpiresAt   DateTime?
+  result         Json?
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([websiteId, type, createdAt])
+  @@map("website_checks")
+}
+
+model WebsiteMonitoringCheck {
+  id              String      @id @default(cuid())
+  organizationId  String
+  websiteId       String
+  type            CheckType
+  enabled         Boolean     @default(true)
+  intervalMinutes Int
+  priority        JobPriority @default(NORMAL)
+  nextCheckAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, type])
+  @@index([enabled, nextCheckAt])
+  @@map("website_monitoring_checks")
+}
+
+model MonitoringJob {
+  id             String      @id @default(cuid())
+  organizationId String
+  websiteId      String
+  type           CheckType   @default(UPTIME)
+  status         JobStatus   @default(QUEUED)
+  priority       JobPriority @default(NORMAL)
+  scheduledFor   DateTime
+  attempt        Int         @default(1)
+  claimedAt      DateTime?
+  claimExpiresAt DateTime?
+  workerId       String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  errorMessage   String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([status, claimExpiresAt])
+  @@index([status, priority, scheduledFor])
+  @@index([websiteId, type, status])
+  @@map("monitoring_jobs")
+}
+
+model SchedulerHeartbeat {
+  component     String    @id
+  lastRunAt     DateTime
+  lastSuccessAt DateTime?
+  meta          Json?
+  updatedAt     DateTime  @updatedAt
+
+  @@map("scheduler_heartbeats")
+}
+
+// ─── Crawling and technical SEO ─────────────────────────────────────────────
+
+model CrawlRun {
+  id                    String         @id @default(cuid())
+  organizationId        String
+  websiteId             String
+  status                CrawlRunStatus @default(QUEUED)
+  maxPages              Int
+  maxDepth              Int
+  maxDiscoveredUrls     Int
+  userAgent             String
+  startedAt             DateTime?
+  completedAt           DateTime?
+  pagesDiscovered       Int            @default(0)
+  pagesQueued           Int            @default(0)
+  pagesCrawled          Int            @default(0)
+  pagesSucceeded        Int            @default(0)
+  pagesFailed           Int            @default(0)
+  pagesSkipped          Int            @default(0)
+  cancelRequested       Boolean        @default(false)
+  errorMessage          String?
+  robotsTxtStatus       String?
+  sitemapUrlsDiscovered Int?
+  seoAnalyzedAt         DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  pages        CrawlPage[]
+  seoFindings  SeoFinding[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([websiteId, createdAt])
+  @@map("crawl_runs")
+}
+
+model CrawlPage {
+  id                  String               @id @default(cuid())
+  organizationId      String
+  websiteId           String
+  crawlRunId          String
+  url                 String
+  normalizedUrl       String
+  status              CrawlPageStatus      @default(QUEUED)
+  discoverySource     CrawlDiscoverySource
+  discoveredFromUrl   String?
+  depth               Int
+  skipReason          CrawlSkipReason?
+  claimedAt           DateTime?
+  claimExpiresAt      DateTime?
+  attempt             Int                  @default(1)
+  outcome             CheckOutcome?
+  httpStatus          Int?
+  finalUrl            String?
+  redirectCount       Int?
+  contentType         String?
+  contentLength       Int?
+  resourceType        CrawlResourceType?
+  responseTimeMs      Int?
+  errorMessage        String?
+  title               String?
+  metaDescription     String?
+  canonicalUrl        String?
+  robotsMetaRaw       String?
+  language            String?
+  h1Count             Int?
+  h2Count             Int?
+  h3Count             Int?
+  wordCount           Int?
+  internalLinkCount   Int?
+  externalLinkCount   Int?
+  imageCount          Int?
+  structuredDataCount Int?
+  result              Json?
+  firstDiscoveredAt   DateTime             @default(now())
+  crawledAt           DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  crawlRun     CrawlRun     @relation(fields: [crawlRunId], references: [id], onDelete: Cascade)
+  seoFindings  SeoFinding[]
+
+  @@unique([crawlRunId, normalizedUrl])
+  @@index([crawlRunId, httpStatus])
+  @@index([crawlRunId, status])
+  @@index([status, claimExpiresAt])
+  @@map("crawl_pages")
+}
+
+model SeoFinding {
+  id             String           @id @default(cuid())
+  organizationId String
+  websiteId      String
+  crawlRunId     String
+  crawlPageId    String?
+  ruleId         String
+  scope          SeoFindingScope
+  severity       IssueSeverity
+  status         SeoFindingStatus @default(OPEN)
+  title          String
+  description    String
+  recommendation String
+  evidence       Json?
+  fingerprint    String
+  firstSeenAt    DateTime         @default(now())
+  lastSeenAt     DateTime         @default(now())
+  resolvedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  crawlRun     CrawlRun     @relation(fields: [crawlRunId], references: [id], onDelete: Cascade)
+  crawlPage    CrawlPage?   @relation(fields: [crawlPageId], references: [id], onDelete: SetNull)
+
+  @@unique([websiteId, fingerprint])
+  @@index([crawlRunId])
+  @@index([organizationId])
+  @@index([websiteId, status])
+  @@map("seo_findings")
+}
+
+model Issue {
+  id             String        @id @default(cuid())
+  organizationId String
+  websiteId      String
+  category       CheckType
+  severity       IssueSeverity
+  title          String
+  description    String
+  status         IssueStatus   @default(OPEN)
+  detectedAt     DateTime      @default(now())
+  firstSeenAt    DateTime      @default(now())
+  lastSeenAt     DateTime      @default(now())
+  assignedToId   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website         Website          @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  assignedTo      User?            @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  recommendations Recommendation[]
+
+  @@index([organizationId])
+  @@index([websiteId, status])
+  @@map("issues")
+}
+
+model Recommendation {
+  id                String                 @id @default(cuid())
+  organizationId    String
+  websiteId         String
+  issueId           String?
+  title             String
+  explanation       String
+  priority          RecommendationPriority
+  expectedImpact    String?
+  recommendedAction String
+  status            RecommendationStatus   @default(PROPOSED)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  issue        Issue?       @relation(fields: [issueId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([websiteId, status])
+  @@map("recommendations")
+}
+
+// ─── Scoring and performance ────────────────────────────────────────────────
+
+model WebsiteScoreSnapshot {
+  id             String        @id @default(cuid())
+  organizationId String
+  websiteId      String
+  category       ScoreCategory
+  score          Int?
+  source         String?
+  dimensions     Json?
+  measuredWeight Int?
+  scoringVersion String?
+  calculatedAt   DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([websiteId, category, calculatedAt])
+  @@map("website_score_snapshots")
+}
+
+model PerformanceObservation {
+  id               String                  @id @default(cuid())
+  organizationId   String
+  websiteId        String
+  url              String
+  strategy         PerformanceStrategy
+  source           PerformanceSource
+  sourceVersion    String?
+  metricSource     PerformanceMetricSource @default(LAB)
+  performanceScore Int?
+  lcpMs            Int?
+  inpMs            Int?
+  clsScore         Float?
+  fcpMs            Int?
+  ttfbMs           Int?
+  measuredAt       DateTime                @default(now())
+  createdAt        DateTime                @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([websiteId, strategy, measuredAt])
+  @@map("performance_observations")
+}
+
+// ─── AI Search ──────────────────────────────────────────────────────────────
+
+model AiSearchProfile {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  websiteId           String   @unique
+  brandName           String
+  legalName           String?
+  businessDescription String?
+  primaryServices     String[]
+  locations           String[]
+  aliases             String[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("ai_search_profiles")
+}
+
+model AiSearchCompetitor {
+  id             String   @id @default(cuid())
+  organizationId String
+  websiteId      String
+  name           String
+  domain         String?
+  aliases        String[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([websiteId])
+  @@map("ai_search_competitors")
+}
+
+model AiSearchQuery {
+  id             String              @id @default(cuid())
+  organizationId String
+  websiteId      String
+  text           String
+  normalizedText String
+  intent         AiSearchQueryIntent
+  topic          String?
+  enabled        Boolean             @default(true)
+  priority       Int                 @default(0)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website          @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  results      AiSearchResult[]
+
+  @@unique([websiteId, normalizedText])
+  @@index([organizationId])
+  @@index([websiteId, enabled])
+  @@map("ai_search_queries")
+}
+
+model AiSearchRun {
+  id             String            @id @default(cuid())
+  organizationId String
+  websiteId      String
+  status         AiSearchRunStatus @default(QUEUED)
+  provider       AiSearchProvider
+  startedAt      DateTime?
+  completedAt    DateTime?
+  queryCount     Int               @default(0)
+  successCount   Int               @default(0)
+  failureCount   Int               @default(0)
+  configSnapshot Json?
+  errorMessage   String?
+  createdAt      DateTime          @default(now())
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website          @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  results      AiSearchResult[]
+
+  @@index([organizationId])
+  @@index([websiteId, createdAt])
+  @@map("ai_search_runs")
+}
+
+model AiSearchResult {
+  id                    String                       @id @default(cuid())
+  organizationId        String
+  websiteId             String
+  runId                 String
+  queryId               String?
+  queryText             String
+  provider              AiSearchProvider
+  model                 String?
+  sourceVersion         String?
+  searchMode            AiSearchMode?
+  status                AiSearchResultStatus
+  answer                String?
+  answerTruncated       Boolean                      @default(false)
+  errorMessage          String?
+  latencyMs             Int?
+  mentionStatus         AiSearchMentionStatus        @default(UNKNOWN)
+  recommendationStatus  AiSearchRecommendationStatus @default(UNKNOWN)
+  websiteCited          Boolean?
+  citationCount         Int?
+  relevantCitationCount Int?
+  sources               Json?
+  competitorSignals     Json?
+  queriedAt             DateTime                     @default(now())
+  createdAt             DateTime                     @default(now())
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website        @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  run          AiSearchRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  query        AiSearchQuery? @relation(fields: [queryId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([queryId])
+  @@index([runId])
+  @@index([websiteId, createdAt])
+  @@map("ai_search_results")
+}
+
+// ─── Alerts and notifications ───────────────────────────────────────────────
+
+model AlertEvent {
+  id             String         @id @default(cuid())
+  organizationId String
+  websiteId      String
+  type           AlertEventType
+  severity       IssueSeverity
+  title          String
+  message        String
+  fingerprint    String
+  sourceRef      String?
+  createdAt      DateTime       @default(now())
+  resolvedAt     DateTime?
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website                @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  deliveries   NotificationDelivery[]
+
+  @@index([organizationId, createdAt])
+  @@index([websiteId, type, resolvedAt])
+  @@map("alert_events")
+}
+
+model NotificationPreference {
+  id                String           @id @default(cuid())
+  organizationId    String           @unique
+  enabled           Boolean          @default(true)
+  enabledEventTypes AlertEventType[]
+  inAppEnabled      Boolean          @default(true)
+  emailEnabled      Boolean          @default(false)
+  minimumSeverity   IssueSeverity?
+  cooldownMinutes   Int?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+model NotificationDelivery {
+  id                String                     @id @default(cuid())
+  organizationId    String
+  alertEventId      String
+  recipientMemberId String
+  channel           NotificationChannel
+  status            NotificationDeliveryStatus @default(PENDING)
+  attemptCount      Int                        @default(0)
+  lastAttemptedAt   DateTime?
+  deliveredAt       DateTime?
+  errorMessage      String?
+  readAt            DateTime?
+  createdAt         DateTime                   @default(now())
+
+  organization    Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  alertEvent      AlertEvent               @relation(fields: [alertEventId], references: [id], onDelete: Cascade)
+  recipientMember OrganizationMember       @relation(fields: [recipientMemberId], references: [id], onDelete: Cascade)
+  job             NotificationDeliveryJob?
+
+  @@unique([alertEventId, recipientMemberId, channel])
+  @@index([organizationId, recipientMemberId, readAt])
+  @@map("notification_deliveries")
+}
+
+model NotificationDeliveryJob {
+  id                     String                        @id @default(cuid())
+  organizationId         String
+  notificationDeliveryId String                        @unique
+  channel                NotificationChannel
+  status                 NotificationDeliveryJobStatus @default(PENDING)
+  attempt                Int                           @default(0)
+  maxAttempts            Int                           @default(5)
+  availableAt            DateTime                      @default(now())
+  claimedAt              DateTime?
+  claimExpiresAt         DateTime?
+  completedAt            DateTime?
+  lastError              String?
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
+
+  organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  notificationDelivery NotificationDelivery @relation(fields: [notificationDeliveryId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([status, availableAt])
+  @@index([status, claimExpiresAt])
+  @@map("notification_delivery_jobs")
+}

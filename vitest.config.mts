@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
@@ -6,6 +7,11 @@ export default defineConfig({
   resolve: {
     // Resolve the `@/*` alias from tsconfig.json (built into Vite 8).
     tsconfigPaths: true,
+    alias: {
+      "server-only": fileURLToPath(
+        new URL("./tests/stubs/server-only.ts", import.meta.url),
+      ),
+    },
   },
   test: {
     // Most UpSiteHealth logic runs on the server, so "node" is the default.
