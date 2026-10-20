@@ -1,0 +1,10 @@
+.next/
+out/
+build/
+coverage/
+node_modules/
+package-lock.json
+next-env.d.ts
+src/generated/
+supabase/.temp/
+AGENTS.md

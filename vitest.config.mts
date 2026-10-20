@@ -1,0 +1,16 @@
+import { defineConfig } from "vitest/config";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    // Resolve the `@/*` alias from tsconfig.json (built into Vite 8).
+    tsconfigPaths: true,
+  },
+  test: {
+    // Most UpSiteHealth logic runs on the server, so "node" is the default.
+    // Component tests opt in with a `// @vitest-environment jsdom` docblock.
+    environment: "node",
+    include: ["src/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
+  },
+});
