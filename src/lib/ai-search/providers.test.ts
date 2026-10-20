@@ -1,13 +1,15 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   availableProviders,
   classifyProviderHttpError,
+  createProvider,
   geminiProvider,
   mockProvider,
   parseGeminiInteraction,
   parsePerplexityResponse,
   perplexityProvider,
   ProviderError,
+  providerUnavailableMessage,
 } from "./providers";
 
 // Fixtures follow the documented response shapes (2026-10).
@@ -189,4 +191,47 @@ test("mock provider is deterministic and only advertised providers are available
   expect(
     availableProviders({ GEMINI_API_KEY: "x", PERPLEXITY_API_KEY: "y" }),
   ).toEqual(["MOCK", "GEMINI", "PERPLEXITY"]);
+});
+
+describe("Perplexity without a key", () => {
+  const brand = { brandName: "Acme", domain: "acme.example" };
+
+  test.each([undefined, "", "   "])(
+    "key %j → unavailable, no request made",
+    (key) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const config = { GEMINI_API_KEY: "g-key", PERPLEXITY_API_KEY: key };
+      expect(availableProviders(config)).toEqual(["MOCK", "GEMINI"]);
+      let error: unknown;
+      try {
+        createProvider("PERPLEXITY", config, brand);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error).toMatchObject({
+        status: "UNAVAILABLE",
+        message:
+          "Perplexity is not configured. Set PERPLEXITY_API_KEY on the server to enable it.",
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    },
+  );
+
+  test("Gemini and Mock still work when Perplexity is not configured", () => {
+    const config = { GEMINI_API_KEY: "g-key" };
+    expect(createProvider("GEMINI", config, brand)).toMatchObject({
+      id: "GEMINI",
+      searchMode: "WEB_GROUNDED",
+    });
+    expect(createProvider("MOCK", config, brand).id).toBe("MOCK");
+  });
+
+  test("messages name the variable but never a value", () => {
+    expect(providerUnavailableMessage("GEMINI")).toBe(
+      "Gemini is not configured. Set GEMINI_API_KEY on the server to enable it.",
+    );
+    expect(providerUnavailableMessage("MOCK")).toBe("Mock is not available.");
+  });
 });

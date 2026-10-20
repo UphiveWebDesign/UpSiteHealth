@@ -19,6 +19,20 @@ describe("serverEnv", () => {
     expect(env.ALLOW_SIGNUP).toBe(true);
   });
 
+  test("an empty or whitespace Perplexity key is treated as not set", async () => {
+    for (const value of ["", "   "]) {
+      const env = await load({
+        ...BASE,
+        GEMINI_API_KEY: "g-key",
+        PERPLEXITY_API_KEY: value,
+        PERPLEXITY_PRESET: "",
+      });
+      expect(env.PERPLEXITY_API_KEY).toBeUndefined();
+      expect(env.PERPLEXITY_PRESET).toBeUndefined();
+      expect(env.GEMINI_API_KEY).toBe("g-key");
+    }
+  });
+
   test("a short cron secret is rejected, naming the variable but not the value", async () => {
     await expect(
       load({ ...BASE, CRON_SECRET: "tooshort-secret" }),

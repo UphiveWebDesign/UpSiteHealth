@@ -1,8 +1,11 @@
 import { z } from "zod";
 
-/** Optional setting where an empty string (as in .env.example) means "not set". */
+/** Optional setting where an empty or whitespace-only value (as in .env.example) means "not set". */
 const optional = <T extends z.ZodType>(schema: T) =>
-  z.preprocess((v) => (v === "" ? undefined : v), schema.optional());
+  z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    schema.optional(),
+  );
 
 const serverEnvSchema = z.object({
   NODE_ENV: z

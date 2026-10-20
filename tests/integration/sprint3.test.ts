@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { normalizeQueryText } from "@/lib/ai-search/analysis";
 import {
+  createProvider,
   mockProvider,
   ProviderError,
   type SearchProvider,
@@ -259,3 +260,57 @@ describe.skipIf(!TEST_DATABASE_URL)(
     });
   },
 );
+
+describe.skipIf(!TEST_DATABASE_URL)("unconfigured provider", () => {
+  test("a queued Perplexity run without a key fails cleanly, makes no request, records no results", async () => {
+    const db = testDb();
+    const tag = uid();
+    const org = await db.organization.create({
+      data: { name: "pplx", slug: `pplx-${tag}` },
+    });
+    try {
+      const tdb = tenantDb(db, org.id);
+      const site = await createWebsite(tdb, org.id, {
+        name: "p",
+        url: `https://pplx-${tag}.example`,
+      });
+      await tdb.aiSearchProfile.create({
+        data: { organizationId: org.id, websiteId: site.id, brandName: "P Co" },
+      });
+      await tdb.aiSearchQuery.create({
+        data: {
+          organizationId: org.id,
+          websiteId: site.id,
+          text: "q",
+          normalizedText: "q",
+          intent: "DISCOVERY",
+        },
+      });
+      const run = await startAiSearchRun(
+        tdb,
+        org.id,
+        site.id,
+        "PERPLEXITY",
+        "fast",
+      );
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const done = await executeAiSearchRun(db, run.id, (brand) =>
+        createProvider("PERPLEXITY", { PERPLEXITY_API_KEY: "" }, brand),
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+      expect(done).toMatchObject({
+        status: "FAILED",
+        successCount: 0,
+        errorMessage:
+          "Perplexity is not configured. Set PERPLEXITY_API_KEY on the server to enable it.",
+      });
+      expect(await db.aiSearchResult.count({ where: { runId: run.id } })).toBe(
+        0,
+      );
+    } finally {
+      await db.organization.delete({ where: { id: org.id } });
+      await db.$disconnect();
+    }
+  });
+});

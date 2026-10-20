@@ -274,13 +274,34 @@ export type ProviderConfig = {
   PERPLEXITY_PRESET?: string;
 };
 
+/** A key counts only if it has non-whitespace content. */
+const hasKey = (key: string | undefined): key is string => Boolean(key?.trim());
+
 /** Providers usable in this deployment (MOCK is always available). */
 export function availableProviders(config: ProviderConfig): AiSearchProvider[] {
   return [
     "MOCK" as const,
-    ...(config.GEMINI_API_KEY ? (["GEMINI"] as const) : []),
-    ...(config.PERPLEXITY_API_KEY ? (["PERPLEXITY"] as const) : []),
+    ...(hasKey(config.GEMINI_API_KEY) ? (["GEMINI"] as const) : []),
+    ...(hasKey(config.PERPLEXITY_API_KEY) ? (["PERPLEXITY"] as const) : []),
   ];
+}
+
+const KEY_NAME: Partial<Record<AiSearchProvider, string>> = {
+  GEMINI: "GEMINI_API_KEY",
+  PERPLEXITY: "PERPLEXITY_API_KEY",
+};
+const LABEL: Record<AiSearchProvider, string> = {
+  MOCK: "Mock",
+  GEMINI: "Gemini",
+  PERPLEXITY: "Perplexity",
+};
+
+/** Safe, user-facing explanation (names the variable, never its value). */
+export function providerUnavailableMessage(id: AiSearchProvider): string {
+  const key = KEY_NAME[id];
+  return key
+    ? `${LABEL[id]} is not configured. Set ${key} on the server to enable it.`
+    : `${LABEL[id]} is not available.`;
 }
 
 export function createProvider(
@@ -288,18 +309,19 @@ export function createProvider(
   config: ProviderConfig,
   brand: { brandName: string; domain: string },
 ): SearchProvider {
-  if (id === "GEMINI" && config.GEMINI_API_KEY) {
+  if (id === "GEMINI" && hasKey(config.GEMINI_API_KEY)) {
     return geminiProvider(
-      config.GEMINI_API_KEY,
+      config.GEMINI_API_KEY.trim(),
       config.GEMINI_MODEL || "gemini-3.8-flash",
     );
   }
-  if (id === "PERPLEXITY" && config.PERPLEXITY_API_KEY) {
+  if (id === "PERPLEXITY" && hasKey(config.PERPLEXITY_API_KEY)) {
     return perplexityProvider(
-      config.PERPLEXITY_API_KEY,
+      config.PERPLEXITY_API_KEY.trim(),
       config.PERPLEXITY_PRESET || "fast",
     );
   }
   if (id === "MOCK") return mockProvider(brand);
-  throw new ProviderError("UNAVAILABLE", `${id} is not configured`);
+  // Fails before any request is made.
+  throw new ProviderError("UNAVAILABLE", providerUnavailableMessage(id));
 }

@@ -10,6 +10,7 @@ import {
   makeProvider,
   providerModel,
 } from "@/lib/ai-search/config";
+import { providerUnavailableMessage } from "@/lib/ai-search/providers";
 import {
   AiSearchError,
   executeAiSearchRun,
@@ -167,6 +168,8 @@ export async function saveAiProfileAction(
   return { ok: "Profile saved." };
 }
 
+const aiProvider = z.enum(["MOCK", "GEMINI", "PERPLEXITY"]);
+
 const intents = z.enum([
   "DISCOVERY",
   "COMPARISON",
@@ -286,10 +289,13 @@ export async function startAiRunAction(
 ): Promise<FormState> {
   const ctx = await requireOrgContext(orgSlug, "MEMBER");
   const website = await websiteFor(ctx, websiteId);
-  const provider = configuredProviders().find(
-    (p) => p === formData.get("provider"),
-  );
-  if (!provider) return { error: "Choose a configured provider." };
+  const requested = aiProvider.safeParse(formData.get("provider"));
+  if (!requested.success) return { error: "Choose a provider." };
+  const provider = requested.data;
+  // Checked before a run is queued, so no request reaches an unconfigured provider.
+  if (!configuredProviders().includes(provider)) {
+    return { error: providerUnavailableMessage(provider) };
+  }
   try {
     const run = await startAiSearchRun(
       ctx.db,
