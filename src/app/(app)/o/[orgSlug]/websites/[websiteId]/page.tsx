@@ -6,13 +6,21 @@ import { Badge } from "@/components/ui/badge";
 import { Card, Empty, PageHeader, Table, td } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { formatDateTime, formatMs, formatRelative } from "@/lib/format";
+import { serverEnv } from "@/lib/env";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
+import { DimensionList, scoreTone, Sparkline } from "@/components/score";
+import { ActionForm } from "@/components/ui/action-form";
+import type { DimensionScore } from "@/lib/scoring/score";
 import {
   cancelCrawlAction,
   checkNowAction,
   startCrawlAction,
 } from "../../actions";
+import {
+  recalculateScoreAction,
+  runPageSpeedAction,
+} from "../../insights-actions";
 import { StartCrawlButton } from "./start-crawl";
 
 export const metadata: Metadata = { title: "Website · UpSiteHealth" };
@@ -67,6 +75,25 @@ export default async function WebsitePage({
       }),
     ],
   );
+  const [snapshots, perf] = await Promise.all([
+    ctx.db.websiteScoreSnapshot.findMany({
+      where: { websiteId, category: "OVERALL" },
+      orderBy: { calculatedAt: "desc" },
+      take: 30,
+    }),
+    Promise.all(
+      (["MOBILE", "DESKTOP"] as const).map((strategy) =>
+        ctx.db.performanceObservation.findFirst({
+          where: { websiteId, strategy },
+          orderBy: { measuredAt: "desc" },
+        }),
+      ),
+    ),
+  ]);
+  const score = snapshots[0];
+  const dimensions = Array.isArray(score?.dimensions)
+    ? (score.dimensions as unknown as DimensionScore[])
+    : [];
   const editor = can.editWebsites(ctx.role);
   const activeRun = crawlRuns.find(
     (r) => r.status === "QUEUED" || r.status === "RUNNING",
@@ -109,6 +136,110 @@ export default async function WebsitePage({
           )
         }
       />
+      <nav className="-mt-3 mb-6 flex gap-4 text-sm">
+        <Link href={`${base}/ai-search`} className="underline">
+          AI Search
+        </Link>
+        <Link href={`${base}/recommendations`} className="underline">
+          Recommendations
+        </Link>
+        <Link href={`${base}/seo`} className="underline">
+          SEO findings
+        </Link>
+      </nav>
+      <div className="mb-6 grid gap-4 lg:grid-cols-2">
+        <Card
+          title="Health score"
+          actions={
+            editor && (
+              <form
+                action={recalculateScoreAction.bind(null, orgSlug, websiteId)}
+              >
+                <SubmitButton variant="ghost" pendingLabel="Calculating…">
+                  Recalculate
+                </SubmitButton>
+              </form>
+            )
+          }
+        >
+          {score ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-end gap-4">
+                <span
+                  className={`text-5xl font-semibold tabular-nums ${scoreTone(score.score)}`}
+                >
+                  {score.score ?? "—"}
+                </span>
+                <span className="pb-1 text-xs text-zinc-500">
+                  {score.scoringVersion} · {score.measuredWeight}% of weight
+                  measured · {formatRelative(score.calculatedAt)}
+                </span>
+              </div>
+              <Sparkline
+                values={[...snapshots].reverse().map((s) => s.score)}
+              />
+              {dimensions.length > 0 && (
+                <DimensionList dimensions={dimensions} />
+              )}
+            </div>
+          ) : (
+            <Empty>
+              No score yet. It is calculated hourly, or recalculate now.
+            </Empty>
+          )}
+        </Card>
+        <Card title="Performance (PageSpeed Insights)">
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            {perf.map((p, i) => (
+              <div key={i}>
+                <div className="text-xs uppercase text-zinc-500">
+                  {i === 0 ? "Mobile" : "Desktop"}
+                </div>
+                {p ? (
+                  <>
+                    <div
+                      className={`text-3xl font-semibold tabular-nums ${scoreTone(p.performanceScore)}`}
+                    >
+                      {p.performanceScore ?? "—"}
+                    </div>
+                    <dl className="mt-1 text-xs text-zinc-500">
+                      <div>LCP {formatMs(p.lcpMs)}</div>
+                      <div>CLS {p.clsScore ?? "—"}</div>
+                      <div>FCP {formatMs(p.fcpMs)}</div>
+                      <div>TTFB {formatMs(p.ttfbMs)}</div>
+                      {p.inpMs !== null && (
+                        <div>INP {formatMs(p.inpMs)} (field)</div>
+                      )}
+                      <div className="mt-1">
+                        {formatRelative(p.measuredAt)}
+                        {p.sourceVersion && ` · Lighthouse ${p.sourceVersion}`}
+                      </div>
+                    </dl>
+                  </>
+                ) : (
+                  <div className="text-zinc-500">Not measured</div>
+                )}
+              </div>
+            ))}
+          </div>
+          {editor && (
+            <div className="mt-4">
+              <ActionForm
+                action={runPageSpeedAction.bind(null, orgSlug, websiteId)}
+                submitLabel="Run PageSpeed test"
+                pendingLabel="Starting…"
+              />
+              {!serverEnv().PAGESPEED_API_KEY && (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                  No PAGESPEED_API_KEY is configured. Google rejects most
+                  anonymous requests, so tests will usually not produce a result
+                  until a key is set.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+      </div>
 
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         {TYPES.map((type, i) => {

@@ -54,3 +54,28 @@ describe.skipIf(process.env.LIVE_NETWORK !== "1")(
     });
   },
 );
+
+describe.skipIf(process.env.LIVE_NETWORK !== "1")(
+  "live PageSpeed Insights",
+  () => {
+    test(
+      "runs a mobile test without an API key",
+      { timeout: 120_000 },
+      async () => {
+        const { runPageSpeed, PageSpeedError } =
+          await import("@/lib/performance/pagespeed");
+        try {
+          const r = await runPageSpeed("https://example.com", "MOBILE");
+          expect(r.performanceScore).toBeGreaterThanOrEqual(0);
+          expect(r.sourceVersion).toMatch(/^\d+\.\d+/);
+        } catch (error) {
+          // Anonymous quota can be exhausted; that must surface as a typed error.
+          expect(error).toBeInstanceOf(PageSpeedError);
+          expect(["RATE_LIMITED", "QUOTA_EXCEEDED"]).toContain(
+            (error as InstanceType<typeof PageSpeedError>).code,
+          );
+        }
+      },
+    );
+  },
+);

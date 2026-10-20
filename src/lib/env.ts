@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+/** Optional setting where an empty string (as in .env.example) means "not set". */
+const optional = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((v) => (v === "" ? undefined : v), schema.optional());
+
 const serverEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -13,10 +17,13 @@ const serverEnvSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
   // Bearer secret for /api/cron/work. Unset or empty → the endpoint is disabled.
-  CRON_SECRET: z.preprocess(
-    (v) => (v === "" ? undefined : v),
-    z.string().min(32, "must be at least 32 characters").optional(),
-  ),
+  CRON_SECRET: optional(z.string().min(32, "must be at least 32 characters")),
+  // Optional integrations. Unset → feature falls back or is hidden.
+  PAGESPEED_API_KEY: optional(z.string()),
+  GEMINI_API_KEY: optional(z.string()),
+  GEMINI_MODEL: optional(z.string()),
+  PERPLEXITY_API_KEY: optional(z.string()),
+  PERPLEXITY_PRESET: optional(z.string()),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

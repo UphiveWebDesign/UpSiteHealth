@@ -89,7 +89,29 @@ application is being **reconstructed**, not restored. The live Supabase database
 
 ## Sprint 3 — Scoring, PageSpeed, AI Search, recommendations
 
-- [ ] Not started
+- [x] Health score v2: production weights (25/35/25/10/5), dimension shape, coverage levels,
+      evidence keys, `measuredWeight`, null score when nothing is measured (formulas RECONSTRUCTED)
+- [x] Score snapshots (hourly via cron, or "Recalculate") and score history sparkline
+- [x] PageSpeed Insights: MOBILE + DESKTOP LAB observations, Lighthouse version, typed errors
+- [x] AI Search: brand profile, competitors, queries, runs/results with mention, recommendation,
+      citation and competitor analysis; deterministic MOCK provider
+- [x] Gemini (Interactions API + google_search) and Perplexity (Agent API + web_search)
+      clients written against the **current** docs (Perplexity Sonar Chat Completions support
+      ended 2026-09-27); quota exhaustion stops a run early
+- [x] Recommendations from issues, SEO finding groups, PageSpeed and AI visibility;
+      dismissed items are never recreated, solved ones auto-complete
+- [x] UI: health/performance cards on the website page, AI Search page, Recommendations page
+- [x] End-to-end against the production build: cron executed a queued AI run and scored 5 sites
+- [x] Tests: 217 passing
+
+### Open items
+
+- [ ] **Needs you:** `PAGESPEED_API_KEY` — live test showed Google now answers anonymous
+      requests with QUOTA_EXCEEDED, so PageSpeed effectively requires a key.
+- [ ] **Needs you (optional):** `GEMINI_API_KEY` / `PERPLEXITY_API_KEY`. Both clients are
+      **unverified against live APIs** (tested only against documented response shapes).
+- [ ] Original scoring formulas, recommendation wording and AI analysis heuristics were lost;
+      current ones are RECONSTRUCTED and should be reviewed against product expectations.
 
 ## Sprint 4 — Alerts, notifications, reporting, exports, security audit, production readiness
 
