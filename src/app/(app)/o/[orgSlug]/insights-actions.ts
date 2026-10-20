@@ -17,6 +17,7 @@ import {
   startAiSearchRun,
 } from "@/lib/ai-search/runner";
 import { db } from "@/lib/db";
+import { runBackground } from "@/lib/log";
 import { serverEnv } from "@/lib/env";
 import { recordPageSpeed } from "@/lib/performance/pagespeed";
 import { syncRecommendations } from "@/lib/recommendations/generate";
@@ -69,17 +70,21 @@ export async function runPageSpeedAction(
   const ctx = await requireOrgContext(orgSlug, "MEMBER");
   const website = await websiteFor(ctx, websiteId);
   // PSI takes 20–60 s per strategy, so it runs after the response is sent.
-  after(async () => {
-    try {
-      await recordPageSpeed(db(), website, {
-        apiKey: serverEnv().PAGESPEED_API_KEY,
-      });
-      await recordScoreSnapshot(db(), website);
-      await syncRecommendations(db(), website);
-    } catch {
-      // Surfaced as "no new observation"; errors never include the API key.
-    }
-  });
+  after(() =>
+    // The UI shows "no new observation"; the logged error names the cause
+    // (e.g. QUOTA_EXCEEDED) and never includes the API key.
+    runBackground(
+      "pagespeed_run",
+      { websiteId: website.id, organizationId: website.organizationId },
+      async () => {
+        await recordPageSpeed(db(), website, {
+          apiKey: serverEnv().PAGESPEED_API_KEY,
+        });
+        await recordScoreSnapshot(db(), website);
+        await syncRecommendations(db(), website);
+      },
+    ),
+  );
   return { ok: "PageSpeed test started. Refresh in about a minute." };
 }
 
@@ -305,9 +310,11 @@ export async function startAiRunAction(
       providerModel(provider),
     );
     after(() =>
-      executeAiSearchRun(db(), run.id, (brand) =>
-        makeProvider(provider, brand),
-      ).catch(() => undefined),
+      runBackground("ai_search_run", { runId: run.id, provider }, () =>
+        executeAiSearchRun(db(), run.id, (brand) =>
+          makeProvider(provider, brand),
+        ),
+      ),
     );
   } catch (error) {
     if (error instanceof AiSearchError) return { error: error.message };

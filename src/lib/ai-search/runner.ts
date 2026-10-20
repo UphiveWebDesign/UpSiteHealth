@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { AiSearchProvider } from "@/generated/prisma/enums";
+import { log } from "@/lib/log";
 import type { TenantDb } from "@/lib/tenancy/scope";
 import { analyzeAnswer } from "./analysis";
 import { ProviderError, type SearchProvider } from "./providers";
@@ -194,12 +195,62 @@ export async function processAiSearchRuns(
     select: { id: true, provider: true },
   });
   let done = 0;
+  let errored = 0;
   for (const r of queued) {
     if (Date.now() >= deadline) break;
-    await executeAiSearchRun(db, r.id, (brand) =>
-      makeProvider(r.provider, brand),
-    );
-    done++;
+    try {
+      await executeAiSearchRun(db, r.id, (brand) =>
+        makeProvider(r.provider, brand),
+      );
+      done++;
+    } catch (error) {
+      // One broken run must not block the others; recoverStaleAiRuns closes it later.
+      errored++;
+      log.error(
+        "ai_search_run_failed",
+        { runId: r.id, provider: r.provider },
+        error,
+      );
+    }
   }
-  return done;
+  return { done, errored };
+}
+
+/** Runs have no lease column, so RUNNING longer than this is treated as interrupted. */
+export const AI_RUN_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Closes runs left RUNNING by a crashed or timed-out worker: PARTIAL if any
+ * query succeeded, otherwise FAILED. Already-saved results are kept.
+ */
+export async function recoverStaleAiRuns(
+  db: PrismaClient,
+  now = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - AI_RUN_STALE_MS);
+  const stale = await db.aiSearchRun.findMany({
+    where: { status: "RUNNING", startedAt: { lt: cutoff } },
+    select: { id: true },
+  });
+  for (const { id } of stale) {
+    const [success, failure] = await Promise.all([
+      db.aiSearchResult.count({ where: { runId: id, status: "SUCCESS" } }),
+      db.aiSearchResult.count({
+        where: { runId: id, status: { not: "SUCCESS" } },
+      }),
+    ]);
+    const { count } = await db.aiSearchRun.updateMany({
+      where: { id, status: "RUNNING" },
+      data: {
+        status: success > 0 ? "PARTIAL" : "FAILED",
+        completedAt: now,
+        successCount: success,
+        failureCount: failure,
+        errorMessage: "Run was interrupted before it finished",
+      },
+    });
+    if (count)
+      log.warn("ai_search_run_recovered", { runId: id, successCount: success });
+  }
+  return stale.length;
 }

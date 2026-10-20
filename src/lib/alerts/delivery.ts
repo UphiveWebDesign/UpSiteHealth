@@ -1,3 +1,4 @@
+import { log } from "@/lib/log";
 import type { PrismaClient } from "@/generated/prisma/client";
 
 /**
@@ -78,9 +79,23 @@ export async function processDeliveryJobs(
     appUrl?: string;
   },
 ) {
-  const counts = { sent: 0, retried: 0, failed: 0, notConfigured: 0 };
+  // errored: an unexpected failure while handling a job (not a send failure).
+  const counts = {
+    sent: 0,
+    retried: 0,
+    failed: 0,
+    notConfigured: 0,
+    errored: 0,
+  };
   const now = () => new Date();
 
+  // Expired leases: give up once attempts are exhausted, so a job that keeps
+  // crashing the worker cannot be reclaimed forever; otherwise retry it.
+  await db.$executeRaw`
+    UPDATE notification_delivery_jobs
+    SET status = 'FAILED', "completedAt" = ${now()}, "updatedAt" = ${now()},
+        "lastError" = 'Abandoned after ' || attempt || ' attempts'
+    WHERE status = 'PROCESSING' AND "claimExpiresAt" < ${now()} AND attempt >= "maxAttempts"`;
   await db.$executeRaw`
     UPDATE notification_delivery_jobs
     SET status = 'PENDING', "claimedAt" = NULL, "claimExpiresAt" = NULL, "updatedAt" = ${now()}
@@ -103,102 +118,120 @@ export async function processDeliveryJobs(
     if (jobs.length === 0) break;
 
     for (const job of jobs) {
-      const delivery = await db.notificationDelivery.findUniqueOrThrow({
-        where: { id: job.notificationDeliveryId },
-        include: {
-          alertEvent: {
-            include: { website: { select: { name: true, url: true } } },
-          },
-          recipientMember: { include: { user: { select: { email: true } } } },
-        },
-      });
-      const finished = now();
-
-      if (!sender) {
-        await db.notificationDelivery.update({
-          where: { id: delivery.id },
-          data: {
-            status: "NOT_CONFIGURED",
-            errorMessage: "Email provider not configured",
-            lastAttemptedAt: finished,
-            attemptCount: { increment: 1 },
-          },
-        });
-        await db.notificationDeliveryJob.update({
-          where: { id: job.id },
-          data: {
-            status: "COMPLETED",
-            completedAt: finished,
-            lastError: "Email provider not configured",
-          },
-        });
-        counts.notConfigured++;
-        continue;
-      }
-
-      const e = delivery.alertEvent;
       try {
-        await sender.send({
-          to: delivery.recipientMember.user.email,
-          subject: `[UpSiteHealth] ${e.title}`,
-          text: [
-            e.message,
-            "",
-            `Website: ${e.website.name} (${e.website.url})`,
-            `Severity: ${e.severity}`,
-            appUrl ? `\nOpen UpSiteHealth: ${appUrl}` : "",
-          ].join("\n"),
-        });
-        await db.notificationDelivery.update({
-          where: { id: delivery.id },
-          data: {
-            status: "SENT",
-            deliveredAt: finished,
-            lastAttemptedAt: finished,
-            attemptCount: { increment: 1 },
-            errorMessage: null,
+        const delivery = await db.notificationDelivery.findUniqueOrThrow({
+          where: { id: job.notificationDeliveryId },
+          include: {
+            alertEvent: {
+              include: { website: { select: { name: true, url: true } } },
+            },
+            recipientMember: { include: { user: { select: { email: true } } } },
           },
         });
-        await db.notificationDeliveryJob.update({
-          where: { id: job.id },
-          data: { status: "COMPLETED", completedAt: finished, lastError: null },
-        });
-        counts.sent++;
+        const finished = now();
+
+        if (!sender) {
+          await db.notificationDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: "NOT_CONFIGURED",
+              errorMessage: "Email provider not configured",
+              lastAttemptedAt: finished,
+              attemptCount: { increment: 1 },
+            },
+          });
+          await db.notificationDeliveryJob.update({
+            where: { id: job.id },
+            data: {
+              status: "COMPLETED",
+              completedAt: finished,
+              lastError: "Email provider not configured",
+            },
+          });
+          counts.notConfigured++;
+          continue;
+        }
+
+        const e = delivery.alertEvent;
+        try {
+          await sender.send({
+            to: delivery.recipientMember.user.email,
+            subject: `[UpSiteHealth] ${e.title}`,
+            text: [
+              e.message,
+              "",
+              `Website: ${e.website.name} (${e.website.url})`,
+              `Severity: ${e.severity}`,
+              appUrl ? `\nOpen UpSiteHealth: ${appUrl}` : "",
+            ].join("\n"),
+          });
+          await db.notificationDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: "SENT",
+              deliveredAt: finished,
+              lastAttemptedAt: finished,
+              attemptCount: { increment: 1 },
+              errorMessage: null,
+            },
+          });
+          await db.notificationDeliveryJob.update({
+            where: { id: job.id },
+            data: {
+              status: "COMPLETED",
+              completedAt: finished,
+              lastError: null,
+            },
+          });
+          counts.sent++;
+        } catch (error) {
+          const err =
+            error instanceof EmailError
+              ? error
+              : new EmailError("Send failed", true);
+          const retry = err.retryable && job.attempt < job.maxAttempts;
+          await db.notificationDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: retry ? "PENDING" : "FAILED",
+              lastAttemptedAt: finished,
+              attemptCount: { increment: 1 },
+              errorMessage: err.message.slice(0, 500),
+            },
+          });
+          await db.notificationDeliveryJob.update({
+            where: { id: job.id },
+            data: retry
+              ? {
+                  status: "PENDING",
+                  availableAt: new Date(
+                    finished.getTime() + backoffMs(job.attempt),
+                  ),
+                  claimedAt: null,
+                  claimExpiresAt: null,
+                  lastError: err.message.slice(0, 500),
+                }
+              : {
+                  status: "FAILED",
+                  completedAt: finished,
+                  lastError: err.message.slice(0, 500),
+                },
+          });
+          if (retry) counts.retried++;
+          else counts.failed++;
+        }
       } catch (error) {
-        const err =
-          error instanceof EmailError
-            ? error
-            : new EmailError("Send failed", true);
-        const retry = err.retryable && job.attempt < job.maxAttempts;
-        await db.notificationDelivery.update({
-          where: { id: delivery.id },
-          data: {
-            status: retry ? "PENDING" : "FAILED",
-            lastAttemptedAt: finished,
-            attemptCount: { increment: 1 },
-            errorMessage: err.message.slice(0, 500),
+        // The job keeps its lease and is retried (or abandoned) after expiry.
+        counts.errored++;
+        log.error(
+          "notification_delivery_job_failed",
+          {
+            jobId: job.id,
+            deliveryId: job.notificationDeliveryId,
+            attempt: job.attempt,
           },
-        });
-        await db.notificationDeliveryJob.update({
-          where: { id: job.id },
-          data: retry
-            ? {
-                status: "PENDING",
-                availableAt: new Date(
-                  finished.getTime() + backoffMs(job.attempt),
-                ),
-                claimedAt: null,
-                claimExpiresAt: null,
-                lastError: err.message.slice(0, 500),
-              }
-            : {
-                status: "FAILED",
-                completedAt: finished,
-                lastError: err.message.slice(0, 500),
-              },
-        });
-        if (retry) counts.retried++;
-        else counts.failed++;
+          error,
+        );
       }
     }
   }

@@ -1,4 +1,7 @@
 import Link from "next/link";
+import { WorkerStatusBanner } from "@/components/worker-status";
+import { CRON_HEARTBEAT, heartbeatStatus } from "@/lib/cron/stages";
+import { db } from "@/lib/db";
 import { requireOrgContext } from "@/lib/tenancy/context";
 
 export default async function OrgLayout({
@@ -7,9 +10,21 @@ export default async function OrgLayout({
 }: LayoutProps<"/o/[orgSlug]">) {
   const { orgSlug } = await params;
   const ctx = await requireOrgContext(orgSlug);
-  const unread = await ctx.db.notificationDelivery.count({
-    where: { recipientMemberId: ctx.memberId, channel: "IN_APP", readAt: null },
-  });
+  const [unread, heartbeat] = await Promise.all([
+    ctx.db.notificationDelivery.count({
+      where: {
+        recipientMemberId: ctx.memberId,
+        channel: "IN_APP",
+        readAt: null,
+      },
+    }),
+    // Platform-wide heartbeat (not tenant data), read only after membership is confirmed.
+    db().schedulerHeartbeat.findUnique({
+      where: { component: CRON_HEARTBEAT },
+      select: { lastRunAt: true, meta: true },
+    }),
+  ]);
+  const workerStatus = heartbeatStatus(heartbeat);
   const base = `/o/${orgSlug}`;
   const nav = [
     { href: base, label: "Overview" },
@@ -44,6 +59,7 @@ export default async function OrgLayout({
           )}
         </Link>
       </nav>
+      <WorkerStatusBanner status={workerStatus} />
       {children}
     </div>
   );

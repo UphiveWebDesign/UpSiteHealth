@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { IssueSeverity } from "@/generated/prisma/enums";
+import { log } from "@/lib/log";
 import { computeHealthScore, type HealthScore } from "./score";
 
 const AVAILABILITY_WINDOW_HOURS = 24;
@@ -124,11 +125,12 @@ export async function recordScoreSnapshot(
 /**
  * Refreshes snapshots older than `maxAgeMinutes` (called by the cron worker)
  * and returns the websites refreshed, so callers can update derived data.
+ * A failure for one website is logged and does not stop the others.
  */
 export async function refreshStaleSnapshots(
   db: PrismaClient,
   { now = new Date(), maxAgeMinutes = 60, limit = 25 } = {},
-): Promise<WebsiteRef[]> {
+): Promise<{ refreshed: WebsiteRef[]; failed: number }> {
   const cutoff = new Date(now.getTime() - maxAgeMinutes * 60_000);
   const stale = await db.$queryRaw<WebsiteRef[]>`
     SELECT w.id, w."organizationId"
@@ -140,6 +142,20 @@ export async function refreshStaleSnapshots(
       )
     ORDER BY w."createdAt" ASC
     LIMIT ${limit}`;
-  for (const w of stale) await recordScoreSnapshot(db, w, now);
-  return stale;
+  const refreshed: WebsiteRef[] = [];
+  let failed = 0;
+  for (const w of stale) {
+    try {
+      await recordScoreSnapshot(db, w, now);
+      refreshed.push(w);
+    } catch (error) {
+      failed++;
+      log.error(
+        "score_snapshot_failed",
+        { websiteId: w.id, organizationId: w.organizationId },
+        error,
+      );
+    }
+  }
+  return { refreshed, failed };
 }

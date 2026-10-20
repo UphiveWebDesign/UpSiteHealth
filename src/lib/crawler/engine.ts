@@ -6,6 +6,7 @@ import type {
 } from "@/generated/prisma/enums";
 import { alertForCrawl, recordAlerts } from "@/lib/alerts/events";
 import { fanOutAlerts } from "@/lib/alerts/notify";
+import { log } from "@/lib/log";
 import { classifyHttpStatus } from "@/lib/monitoring/checks";
 import {
   DEFAULT_USER_AGENT,
@@ -218,6 +219,13 @@ async function loadRobots(run: Run, policy: NetPolicy): Promise<Robots> {
 }
 
 async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
+  // Claim the QUEUED → RUNNING transition first, so overlapping workers do not
+  // both fetch robots.txt and sitemaps for the same run.
+  const claimed = await db.crawlRun.updateMany({
+    where: { id: run.id, status: "QUEUED" },
+    data: { status: "RUNNING", startedAt: new Date() },
+  });
+  if (claimed.count === 0) return false;
   const origin = new URL(run.website.url).origin;
   let robotsTxtStatus = "error";
   let robots = allowAllRobots;
@@ -274,12 +282,7 @@ async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
 
   await db.crawlRun.update({
     where: { id: run.id },
-    data: {
-      status: "RUNNING",
-      startedAt: new Date(),
-      robotsTxtStatus,
-      sitemapUrlsDiscovered: sitemapUrls.length,
-    },
+    data: { robotsTxtStatus, sitemapUrlsDiscovered: sitemapUrls.length },
   });
   // The seed may itself be disallowed by robots.txt.
   if (!robots.isAllowed(run.website.url)) {
@@ -467,20 +470,28 @@ async function refreshCounters(db: PrismaClient, runId: string) {
   return { pending: n("QUEUED") + n("CRAWLING") };
 }
 
-async function cancelRun(db: PrismaClient, run: Run) {
+/** Returns false if another worker already finished or cancelled the run. */
+async function cancelRun(db: PrismaClient, run: Run): Promise<boolean> {
+  const claimed = await db.crawlRun.updateMany({
+    where: { id: run.id, status: { in: ["QUEUED", "RUNNING"] } },
+    data: { status: "CANCELLED", completedAt: new Date() },
+  });
+  if (claimed.count === 0) return false;
   await db.crawlPage.updateMany({
     where: { crawlRunId: run.id, status: "QUEUED" },
     data: { status: "SKIPPED", skipReason: "CANCELLED" },
   });
-  await db.crawlRun.update({
-    where: { id: run.id },
-    data: { status: "CANCELLED", completedAt: new Date() },
-  });
   await refreshCounters(db, run.id);
   robotsCache.delete(run.id);
+  return true;
 }
 
-async function finalizeRun(db: PrismaClient, run: Run) {
+/**
+ * Finishes a run exactly once: the RUNNING → final-status update is
+ * conditional, and only the worker that wins it syncs SEO findings and emits
+ * the crawl alert. Returns false if another worker already finalized it.
+ */
+async function finalizeRun(db: PrismaClient, run: Run): Promise<boolean> {
   const seed = await db.crawlPage.findFirst({
     where: { crawlRunId: run.id, discoverySource: "SEED" },
     select: {
@@ -507,9 +518,13 @@ async function finalizeRun(db: PrismaClient, run: Run) {
     status = "FAILED";
     errorMessage = "robots.txt disallows the start page";
   }
-  const finished = await db.crawlRun.update({
-    where: { id: run.id },
+  const claimed = await db.crawlRun.updateMany({
+    where: { id: run.id, status: "RUNNING" },
     data: { status, errorMessage, completedAt: new Date() },
+  });
+  if (claimed.count === 0) return false;
+  const finished = await db.crawlRun.findUniqueOrThrow({
+    where: { id: run.id },
   });
   robotsCache.delete(run.id);
   if (status !== "FAILED") {
@@ -531,6 +546,19 @@ async function finalizeRun(db: PrismaClient, run: Run) {
     }),
   );
   await fanOutAlerts(db, eventIds);
+  return true;
+}
+
+/** Finalizes a run by id (used by tests and recovery tooling); idempotent. */
+export async function finalizeCrawlRun(
+  db: PrismaClient,
+  runId: string,
+): Promise<boolean> {
+  const run = await db.crawlRun.findUniqueOrThrow({
+    where: { id: runId },
+    include: { website: { select: { url: true, name: true } } },
+  });
+  return finalizeRun(db, run);
 }
 
 async function inPool<T>(
@@ -552,48 +580,78 @@ export async function processCrawls(
   opts: CrawlWorkerOptions,
 ) {
   const policy = opts.policy ?? strictPolicy;
-  const stats = { pagesCrawled: 0, runsFinished: 0 };
+  const stats = {
+    pagesCrawled: 0,
+    runsFinished: 0,
+    pageErrors: 0,
+    runErrors: 0,
+  };
+  // Runs that errored in this invocation are skipped until the next one.
+  const failedRuns = new Set<string>();
   await recoverStalePages(db);
 
   while (Date.now() < opts.deadline) {
-    const runs = await db.crawlRun.findMany({
-      where: { status: { in: ["QUEUED", "RUNNING"] } },
-      include: { website: { select: { url: true, name: true } } },
-      orderBy: { createdAt: "asc" },
-      take: 5,
-    });
+    const runs = (
+      await db.crawlRun.findMany({
+        where: { status: { in: ["QUEUED", "RUNNING"] } },
+        include: { website: { select: { url: true, name: true } } },
+        orderBy: { createdAt: "asc" },
+        take: 5 + failedRuns.size,
+      })
+    ).filter((r) => !failedRuns.has(r.id));
     if (runs.length === 0) break;
     let progressed = false;
 
     for (const run of runs) {
       if (Date.now() >= opts.deadline) break;
-      if (run.cancelRequested) {
-        await cancelRun(db, run);
-        stats.runsFinished++;
-        progressed = true;
-        continue;
-      }
-      if (run.status === "QUEUED") {
-        await initRun(db, run, policy);
-        progressed = true;
-      }
-      const robots = await loadRobots(run, policy);
-      const pages = await claimPages(db, run.id, opts.batchSize ?? 10);
-      await inPool(pages, opts.concurrency ?? 3, (p) =>
-        crawlPage(db, run, p, robots, policy),
-      );
-      stats.pagesCrawled += pages.length;
-      if (pages.length) progressed = true;
-
-      const { pending } = await refreshCounters(db, run.id);
-      if (pending === 0) {
-        const latest = await db.crawlRun.findUniqueOrThrow({
-          where: { id: run.id },
+      const ids = {
+        runId: run.id,
+        websiteId: run.websiteId,
+        organizationId: run.organizationId,
+      };
+      try {
+        if (run.cancelRequested) {
+          if (await cancelRun(db, run)) stats.runsFinished++;
+          progressed = true;
+          continue;
+        }
+        if (run.status === "QUEUED") {
+          await initRun(db, run, policy);
+          progressed = true;
+        }
+        const robots = await loadRobots(run, policy);
+        const pages = await claimPages(db, run.id, opts.batchSize ?? 10);
+        await inPool(pages, opts.concurrency ?? 3, async (p) => {
+          try {
+            await crawlPage(db, run, p, robots, policy);
+          } catch (error) {
+            // The page keeps its lease; recoverStalePages retries it later.
+            stats.pageErrors++;
+            log.error(
+              "crawl_page_failed",
+              { ...ids, pageId: p.id, attempt: p.attempt },
+              error,
+            );
+          }
         });
-        if (latest.cancelRequested) await cancelRun(db, run);
-        else await finalizeRun(db, run);
-        stats.runsFinished++;
-        progressed = true;
+        stats.pagesCrawled += pages.length;
+        if (pages.length) progressed = true;
+
+        const { pending } = await refreshCounters(db, run.id);
+        if (pending === 0) {
+          const latest = await db.crawlRun.findUniqueOrThrow({
+            where: { id: run.id },
+          });
+          const finished = latest.cancelRequested
+            ? await cancelRun(db, run)
+            : await finalizeRun(db, run);
+          if (finished) stats.runsFinished++;
+          progressed = true;
+        }
+      } catch (error) {
+        stats.runErrors++;
+        failedRuns.add(run.id);
+        log.error("crawl_run_step_failed", ids, error);
       }
     }
     if (!progressed) break; // only in-flight pages owned by other workers remain

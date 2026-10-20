@@ -15,6 +15,7 @@ import {
   startCrawl,
 } from "@/lib/crawler/engine";
 import { db } from "@/lib/db";
+import { runBackground } from "@/lib/log";
 import { processMonitoringJobs } from "@/lib/monitoring/worker";
 import {
   ForbiddenError,
@@ -76,11 +77,16 @@ export async function createWebsiteAction(
     });
     websiteId = site.id;
     after(() =>
-      processMonitoringJobs(db(), {
-        workerId: `create-${randomUUID().slice(0, 8)}`,
-        deadline: Date.now() + 30_000,
-        websiteId,
-      }).catch(() => undefined),
+      runBackground(
+        "initial_website_checks",
+        { websiteId, organizationId: ctx.organization.id },
+        () =>
+          processMonitoringJobs(db(), {
+            workerId: `create-${randomUUID().slice(0, 8)}`,
+            deadline: Date.now() + 30_000,
+            websiteId,
+          }),
+      ),
     );
     await requestImmediateChecks(ctx.db, ctx.organization.id, websiteId);
   } catch (error) {
@@ -152,8 +158,8 @@ export async function startCrawlAction(
   }
   // Start crawling right after the response; the cron worker continues it.
   after(() =>
-    processCrawls(db(), { deadline: Date.now() + 50_000 }).catch(
-      () => undefined,
+    runBackground("crawl_kickoff", { websiteId }, () =>
+      processCrawls(db(), { deadline: Date.now() + 50_000 }),
     ),
   );
   revalidatePath(`/o/${orgSlug}`, "layout");
@@ -164,8 +170,8 @@ export async function cancelCrawlAction(orgSlug: string, runId: string) {
   const ctx = await ctxFor(orgSlug, "MEMBER");
   await requestCrawlCancel(ctx.db, runId);
   after(() =>
-    processCrawls(db(), { deadline: Date.now() + 20_000 }).catch(
-      () => undefined,
+    runBackground("crawl_cancel", { runId }, () =>
+      processCrawls(db(), { deadline: Date.now() + 20_000 }),
     ),
   );
   revalidatePath(`/o/${orgSlug}`, "layout");

@@ -6,6 +6,7 @@ import {
   recordAlerts,
 } from "@/lib/alerts/events";
 import { fanOutAlerts } from "@/lib/alerts/notify";
+import { log } from "@/lib/log";
 import { runCheck, type CheckResult } from "./checks";
 import { decideIssue, deriveWebsiteStatus, type LatestOutcomes } from "./rules";
 
@@ -376,7 +377,9 @@ export async function processMonitoringJobs(
   db: PrismaClient,
   opts: ProcessOptions,
 ) {
-  const counts = { COMPLETED: 0, FAILED: 0, SKIPPED: 0 };
+  // ERRORED: an unexpected failure (e.g. a database error) while recording a
+  // job. The job keeps its lease and is retried by recoverStaleJobs.
+  const counts = { COMPLETED: 0, FAILED: 0, SKIPPED: 0, ERRORED: 0 };
   await recoverStaleJobs(db);
   while (Date.now() < opts.deadline) {
     const jobs = await claimJobs(
@@ -388,7 +391,23 @@ export async function processMonitoringJobs(
     );
     if (jobs.length === 0) break;
     await inPool(jobs, opts.concurrency ?? 5, async (job) => {
-      counts[await executeJob(db, job, opts.runner)]++;
+      try {
+        counts[await executeJob(db, job, opts.runner)]++;
+      } catch (error) {
+        counts.ERRORED++;
+        log.error(
+          "monitoring_job_failed",
+          {
+            workerId: opts.workerId,
+            jobId: job.id,
+            websiteId: job.websiteId,
+            organizationId: job.organizationId,
+            type: job.type,
+            attempt: job.attempt,
+          },
+          error,
+        );
+      }
     });
   }
   return counts;
