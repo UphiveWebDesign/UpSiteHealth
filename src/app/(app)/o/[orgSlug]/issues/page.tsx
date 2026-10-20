@@ -2,7 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { IssueStatus } from "@/generated/prisma/enums";
 import { Badge } from "@/components/ui/badge";
-import { Card, Empty, PageHeader, Table, td } from "@/components/ui/layout";
+import {
+  Card,
+  Empty,
+  FilterTabs,
+  PageHeader,
+  Table,
+  td,
+} from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { formatRelative, humanize } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
@@ -55,17 +62,14 @@ export default async function IssuesPage({
   return (
     <>
       <PageHeader title="Issues" />
-      <div className="mb-4 flex gap-2 text-sm">
-        {Object.keys(VIEWS).map((v) => (
-          <Link
-            key={v}
-            href={`/o/${orgSlug}/issues?view=${v}`}
-            className={`rounded-md px-3 py-1.5 ${v === view ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
-          >
-            {humanize(v)}
-          </Link>
-        ))}
-      </div>
+      <FilterTabs
+        label="Issue status"
+        items={Object.keys(VIEWS).map((v) => ({
+          href: `/o/${orgSlug}/issues?view=${v}`,
+          label: humanize(v),
+          active: v === view,
+        }))}
+      />
       <Card>
         {issues.length === 0 ? (
           <Empty>No issues in this view.</Empty>

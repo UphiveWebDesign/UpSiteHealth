@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ActionForm, inputClass } from "@/components/ui/action-form";
 import { Badge } from "@/components/ui/badge";
+import { Callout } from "@/components/ui/feedback";
 import { Card, Empty, PageHeader, Table, td } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
+import { WebsiteNav } from "@/components/website-nav";
 import { configuredProviders } from "@/lib/ai-search/config";
 import { formatMs, formatRelative, humanize } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
@@ -75,17 +76,24 @@ export default async function AiSearchPage({
   return (
     <>
       <PageHeader
-        title={`AI Search · ${website.name}`}
-        subtitle="How AI assistants answer questions your customers ask, and whether they mention you."
-        actions={
-          <Link
-            href={`/o/${orgSlug}/websites/${websiteId}`}
-            className="text-sm underline"
-          >
-            Back to website
-          </Link>
-        }
+        breadcrumbs={[
+          { label: "Websites", href: `/o/${orgSlug}/websites` },
+          { label: website.name, href: `/o/${orgSlug}/websites/${websiteId}` },
+          { label: "AI Search" },
+        ]}
+        title="AI Search visibility"
+        subtitle="How AI assistants answer the questions your customers ask, and whether they mention and cite you."
       />
+      <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
+      {!profile && editor && (
+        <div className="mb-6">
+          <Callout tone="info" title="Start with the brand profile">
+            Add the brand name and any other names people use, then a few
+            questions customers ask. Each run checks whether assistants mention
+            and cite this website.
+          </Callout>
+        </div>
+      )}
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Brand profile">
           {editor ? (

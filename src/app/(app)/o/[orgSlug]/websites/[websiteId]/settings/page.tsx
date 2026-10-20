@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Card, PageHeader } from "@/components/ui/layout";
+import { WebsiteNav } from "@/components/website-nav";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
@@ -27,16 +27,15 @@ export default async function WebsiteSettingsPage({
   return (
     <>
       <PageHeader
-        title={`${website.name} settings`}
-        actions={
-          <Link
-            href={`/o/${orgSlug}/websites/${websiteId}`}
-            className="text-sm underline"
-          >
-            Back to website
-          </Link>
-        }
+        breadcrumbs={[
+          { label: "Websites", href: `/o/${orgSlug}/websites` },
+          { label: website.name, href: `/o/${orgSlug}/websites/${websiteId}` },
+          { label: "Settings" },
+        ]}
+        title="Website settings"
+        subtitle="Change the address, client or monitoring for this website."
       />
+      <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
       <div className="flex flex-col gap-6">
         <Card title="Details">
           <WebsiteForm

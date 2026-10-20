@@ -1,7 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
-import { Card, Empty, PageHeader, Table, td } from "@/components/ui/layout";
+import {
+  Card,
+  Empty,
+  FilterTabs,
+  PageHeader,
+  Table,
+  td,
+} from "@/components/ui/layout";
 import {
   daysAgo,
   formatDateTime,
@@ -47,17 +54,14 @@ export default async function AlertsPage({
           </a>
         }
       />
-      <div className="mb-4 flex gap-2 text-sm">
-        {PERIODS.map((p) => (
-          <Link
-            key={p}
-            href={`/o/${orgSlug}/alerts?days=${p}`}
-            className={`rounded-md px-3 py-1.5 ${p === days ? "bg-brand-700 text-white" : "hover:bg-slate-100"}`}
-          >
-            {p} days
-          </Link>
-        ))}
-      </div>
+      <FilterTabs
+        label="Period"
+        items={PERIODS.map((p) => ({
+          href: `/o/${orgSlug}/alerts?days=${p}`,
+          label: `${p} days`,
+          active: p === days,
+        }))}
+      />
       <Card>
         {events.length === 0 ? (
           <Empty>No alerts in this period.</Empty>
