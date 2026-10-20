@@ -4,6 +4,8 @@ import type {
   CrawlDiscoverySource,
   CrawlSkipReason,
 } from "@/generated/prisma/enums";
+import { alertForCrawl, recordAlerts } from "@/lib/alerts/events";
+import { fanOutAlerts } from "@/lib/alerts/notify";
 import { classifyHttpStatus } from "@/lib/monitoring/checks";
 import {
   DEFAULT_USER_AGENT,
@@ -106,7 +108,7 @@ export async function requestCrawlCancel(
 // ─── System worker ──────────────────────────────────────────────────────────
 
 type Run = Prisma.CrawlRunGetPayload<{
-  include: { website: { select: { url: true } } };
+  include: { website: { select: { url: true; name: true } } };
 }>;
 
 export type CrawlWorkerOptions = {
@@ -513,6 +515,22 @@ async function finalizeRun(db: PrismaClient, run: Run) {
   if (status !== "FAILED") {
     await syncSeoFindings(db, finished, new URL(run.website.url).hostname);
   }
+  const scope = {
+    organizationId: run.organizationId,
+    websiteId: run.websiteId,
+  };
+  const eventIds = await recordAlerts(
+    db,
+    scope,
+    alertForCrawl({
+      websiteId: run.websiteId,
+      websiteName: run.website.name,
+      runId: run.id,
+      status,
+      pagesFailed: finished.pagesFailed,
+    }),
+  );
+  await fanOutAlerts(db, eventIds);
 }
 
 async function inPool<T>(
@@ -540,7 +558,7 @@ export async function processCrawls(
   while (Date.now() < opts.deadline) {
     const runs = await db.crawlRun.findMany({
       where: { status: { in: ["QUEUED", "RUNNING"] } },
-      include: { website: { select: { url: true } } },
+      include: { website: { select: { url: true, name: true } } },
       orderBy: { createdAt: "asc" },
       take: 5,
     });

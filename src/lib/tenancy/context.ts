@@ -2,7 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { notFound } from "next/navigation";
 import type { Role } from "@/generated/prisma/enums";
-import { requireUser } from "@/lib/auth/dal";
+import { getCurrentUser, requireUser } from "@/lib/auth/dal";
 import type { SessionUser } from "@/lib/auth/session-store";
 import { db } from "@/lib/db";
 import { findMembershipBySlug, type Membership } from "./memberships";
@@ -33,6 +33,22 @@ export async function requireOrgContext(
   const membership = await loadMembership(user.id, orgSlug);
   if (!membership) notFound();
   if (!hasRoleAtLeast(membership.role, minimumRole)) throw new ForbiddenError();
+  return {
+    ...membership,
+    user,
+    db: tenantDb(db(), membership.organization.id),
+  };
+}
+
+/** Route-handler variant: null instead of redirect/404 for anonymous or non-members. */
+export async function findOrgContext(
+  orgSlug: string,
+  minimumRole: Role = "CLIENT",
+): Promise<OrgContext | null> {
+  const user = await getCurrentUser();
+  if (!user) return null;
+  const membership = await loadMembership(user.id, orgSlug);
+  if (!membership || !hasRoleAtLeast(membership.role, minimumRole)) return null;
   return {
     ...membership,
     user,

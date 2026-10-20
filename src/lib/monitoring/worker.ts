@@ -1,5 +1,11 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { CheckType } from "@/generated/prisma/enums";
+import {
+  alertsForCheck,
+  alertsForStatusChange,
+  recordAlerts,
+} from "@/lib/alerts/events";
+import { fanOutAlerts } from "@/lib/alerts/notify";
 import { runCheck, type CheckResult } from "./checks";
 import { decideIssue, deriveWebsiteStatus, type LatestOutcomes } from "./rules";
 
@@ -167,14 +173,15 @@ async function latestOutcomes(
   return latest;
 }
 
+/** Opens, refreshes or resolves the check's issue; reports what changed (for alerts). */
 async function applyIssue(
   tx: Prisma.TransactionClient,
   job: ClaimedJob,
   result: CheckResult,
   now: Date,
-) {
+): Promise<"opened" | "resolved" | "unchanged"> {
   const decision = decideIssue(result, now);
-  if (decision.action === "none") return;
+  if (decision.action === "none") return "unchanged";
   const existing = await tx.issue.findFirst({
     where: {
       organizationId: job.organizationId,
@@ -186,13 +193,12 @@ async function applyIssue(
     orderBy: { createdAt: "desc" },
   });
   if (decision.action === "resolve") {
-    if (existing) {
-      await tx.issue.update({
-        where: { id: existing.id },
-        data: { status: "RESOLVED", resolvedAt: now, lastSeenAt: now },
-      });
-    }
-    return;
+    if (!existing) return "unchanged";
+    await tx.issue.update({
+      where: { id: existing.id },
+      data: { status: "RESOLVED", resolvedAt: now, lastSeenAt: now },
+    });
+    return "resolved";
   }
   if (existing) {
     await tx.issue.update({
@@ -204,6 +210,8 @@ async function applyIssue(
         description: decision.description,
       },
     });
+    // A different problem of the same category (e.g. SSL expiring → expired) is new.
+    return existing.title === decision.title ? "unchanged" : "opened";
   } else {
     await tx.issue.create({
       data: {
@@ -218,6 +226,7 @@ async function applyIssue(
         lastSeenAt: now,
       },
     });
+    return "opened";
   }
 }
 
@@ -236,7 +245,7 @@ export async function executeJob(
   });
   const website = await db.website.findFirst({
     where: { id: job.websiteId, organizationId: job.organizationId },
-    select: { url: true, monitoringEnabled: true },
+    select: { url: true, name: true, monitoringEnabled: true },
   });
   if (!website || !website.monitoringEnabled) {
     await db.monitoringJob.update({
@@ -269,7 +278,7 @@ export async function executeJob(
 
   const completedAt = new Date();
   await db.$transaction(async (tx) => {
-    await tx.websiteCheck.create({
+    const check = await tx.websiteCheck.create({
       data: {
         organizationId: job.organizationId,
         websiteId: job.websiteId,
@@ -287,12 +296,50 @@ export async function executeJob(
         completedAt,
       },
     });
-    await applyIssue(tx, job, result, completedAt);
+    const issue = await applyIssue(tx, job, result, completedAt);
+    const before = await tx.website.findUniqueOrThrow({
+      where: { id: job.websiteId },
+      select: { status: true },
+    });
     const status = deriveWebsiteStatus(
       true,
       await latestOutcomes(tx, job.websiteId),
     );
     await tx.website.update({ where: { id: job.websiteId }, data: { status } });
+
+    const scope = {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+    };
+    const sslDays = result.sslExpiresAt
+      ? Math.floor(
+          (result.sslExpiresAt.getTime() - completedAt.getTime()) / 86_400_000,
+        )
+      : null;
+    const eventIds = await recordAlerts(
+      tx,
+      scope,
+      [
+        ...alertsForCheck({
+          websiteId: job.websiteId,
+          websiteName: website.name,
+          type: result.type,
+          outcome: result.outcome,
+          issue,
+          checkId: check.id,
+          daysUntilExpiry: sslDays,
+        }),
+        ...alertsForStatusChange({
+          websiteId: job.websiteId,
+          websiteName: website.name,
+          from: before.status,
+          to: status,
+        }),
+      ],
+      completedAt,
+    );
+    await fanOutAlerts(tx, eventIds, completedAt);
+
     await tx.monitoringJob.update({
       where: { id: job.id },
       data: { status: "COMPLETED", completedAt },

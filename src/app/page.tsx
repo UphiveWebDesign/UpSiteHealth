@@ -1,5 +1,8 @@
 import Link from "next/link";
 
+// Rendered per request so its scripts receive the CSP nonce (see src/proxy.ts).
+export const dynamic = "force-dynamic";
+
 export default function Home() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-4 px-6 py-24">

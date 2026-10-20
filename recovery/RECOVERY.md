@@ -47,9 +47,12 @@ application is being **reconstructed**, not restored. The live Supabase database
 - [ ] **Blocked — needs approval:** revoke `anon`/`authenticated` grants
       (`recovery/proposed/001_revoke_public_api_grants.sql`), or remove `public` from exposed
       Data API schemas in the dashboard. Do this after a backup.
-- [ ] **Blocked — needs approval:** baseline the migration history. A new `0_baseline` migration
-      would need `prisma migrate resolve --applied` (a write to `_prisma_migrations`).
-      Until then, no migrations are run anywhere except local databases.
+- [ ] **Blocked — needs approval:** baseline the migration history. `prisma/migrations/0_baseline`
+      now exists (Sprint 4) and is verified: applied to an empty database it reproduces the
+      production fingerprint exactly. Marking it applied in production needs
+      `ALLOW_PRODUCTION_SCHEMA_CHANGES=yes npx prisma migrate resolve --applied 0_baseline`
+      (one INSERT into `_prisma_migrations`, after a backup). Until then, no migrations run
+      anywhere except local databases.
 - [ ] **Needs you:** create `.env` from `.env.example`, then run `npm run db:drift` (read-only;
       exit code 0 = no drift) and sign in with an existing account to confirm login works.
       Signing in writes one row to `sessions` — that is normal app behaviour.
@@ -115,4 +118,23 @@ application is being **reconstructed**, not restored. The live Supabase database
 
 ## Sprint 4 — Alerts, notifications, reporting, exports, security audit, production readiness
 
-- [ ] Not started
+- [x] Alert events for uptime incidents, SSL expiring/expired/mismatch, DNS errors, health
+      degraded/recovered and crawl errors — fingerprint de-duplication, linked resolution
+- [x] Notification preferences (types, minimum severity, cooldown, channels); defaults when
+      no row exists (production has none)
+- [x] In-app inbox with unread badge; email via the durable `notification_delivery_jobs` queue
+      (leased claims, exponential backoff, max attempts); without a provider deliveries are
+      recorded `NOT_CONFIGURED`, matching the known limitation; optional Resend sender
+- [x] Alerts history, Reports (uptime %, response, incidents, issues, findings, score) and
+      seven CSV exports with formula-injection protection; 404 for non-members
+- [x] Account page: password change revokes all other sessions
+- [x] Nonce-based CSP via `src/proxy.ts` (every script tag verified), `/api/health`
+- [x] `prisma/migrations/0_baseline` verified against an empty database (fingerprint match)
+- [x] Security audit: `recovery/SECURITY-AUDIT.md` (all 25 actions auth-checked; 0 prod vulns)
+- [x] Tests: see final count in the commit message
+
+### Open items
+
+- [ ] **Needs you:** `RESEND_API_KEY` + `EMAIL_FROM` (+ `APP_URL`) to send real email.
+- [ ] Not implemented: password reset, email verification, member invitations.
+- [ ] See `recovery/SECURITY-AUDIT.md` for the remaining accepted and blocked findings.

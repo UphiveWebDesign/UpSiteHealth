@@ -32,6 +32,30 @@ export function slugify(value: string): string {
   return slug || "org";
 }
 
+/**
+ * Changes a password after verifying the current one, and revokes every
+ * session for the user (the caller starts a fresh one for this device).
+ */
+export async function changePassword(
+  db: PrismaClient,
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<boolean> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { passwordHash: true },
+  });
+  if (!(await verifyPassword(currentPassword, user?.passwordHash)))
+    return false;
+  const passwordHash = await hashPassword(newPassword);
+  await db.$transaction([
+    db.user.update({ where: { id: userId }, data: { passwordHash } }),
+    db.session.deleteMany({ where: { userId } }),
+  ]);
+  return true;
+}
+
 export class EmailTakenError extends Error {
   constructor() {
     super("An account with that email already exists.");

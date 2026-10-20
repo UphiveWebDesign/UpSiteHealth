@@ -24,6 +24,11 @@ const serverEnvSchema = z.object({
   GEMINI_MODEL: optional(z.string()),
   PERPLEXITY_API_KEY: optional(z.string()),
   PERPLEXITY_PRESET: optional(z.string()),
+  // Email notifications via Resend. Both unset → deliveries become NOT_CONFIGURED.
+  RESEND_API_KEY: optional(z.string()),
+  EMAIL_FROM: optional(z.string()),
+  // Public base URL used in email links, e.g. https://app.example.com
+  APP_URL: optional(z.url()),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

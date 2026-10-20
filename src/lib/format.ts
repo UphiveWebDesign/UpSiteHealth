@@ -1,3 +1,8 @@
+/** Start of a trailing window of `days` days, e.g. for "last 30 days" queries. */
+export function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * 86_400_000);
+}
+
 const UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
   ["year", 365 * 24 * 3600],
   ["month", 30 * 24 * 3600],

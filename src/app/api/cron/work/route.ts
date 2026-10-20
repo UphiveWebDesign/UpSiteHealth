@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { makeProvider } from "@/lib/ai-search/config";
 import { processAiSearchRuns } from "@/lib/ai-search/runner";
+import { processDeliveryJobs, resendSender } from "@/lib/alerts/delivery";
 import { hasBearerSecret } from "@/lib/auth/bearer";
 import { processCrawls } from "@/lib/crawler/engine";
 import { db } from "@/lib/db";
@@ -42,7 +43,16 @@ async function handle(request: Request) {
   });
   const crawling = await processCrawls(db(), { deadline: at(0.7) });
   const aiRuns = await processAiSearchRuns(db(), makeProvider, {
-    deadline: at(0.85),
+    deadline: at(0.8),
+  });
+  const { RESEND_API_KEY, EMAIL_FROM, APP_URL } = serverEnv();
+  const notifications = await processDeliveryJobs(db(), {
+    sender:
+      RESEND_API_KEY && EMAIL_FROM
+        ? resendSender(RESEND_API_KEY, EMAIL_FROM)
+        : null,
+    deadline: at(0.9),
+    appUrl: APP_URL,
   });
   const refreshed = await refreshStaleSnapshots(db(), { limit: 10 });
   for (const website of refreshed) await syncRecommendations(db(), website);
@@ -54,6 +64,7 @@ async function handle(request: Request) {
     monitoring,
     crawling,
     aiRuns,
+    notifications,
     snapshots: refreshed.length,
   });
 }

@@ -14,9 +14,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             UpSiteHealth
           </Link>
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-zinc-600 dark:text-zinc-400">
+            <Link
+              href="/account"
+              className="text-zinc-600 hover:underline dark:text-zinc-400"
+            >
               {user.email}
-            </span>
+            </Link>
             <form action={logout}>
               <Button type="submit" variant="ghost">
                 Sign out
