@@ -12,8 +12,11 @@ const serverEnvSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
-  // Bearer secret for /api/cron/work. Unset → the endpoint is disabled.
-  CRON_SECRET: z.string().min(32, "must be at least 32 characters").optional(),
+  // Bearer secret for /api/cron/work. Unset or empty → the endpoint is disabled.
+  CRON_SECRET: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(32, "must be at least 32 characters").optional(),
+  ),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
