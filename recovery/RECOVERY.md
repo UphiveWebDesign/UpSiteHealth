@@ -61,7 +61,31 @@ application is being **reconstructed**, not restored. The live Supabase database
 
 ## Sprint 2 — Websites, monitoring, crawler, SEO, issues
 
-- [ ] Not started
+- [x] SSRF protection: resolve once, reject any non-public answer (IPv4/IPv6 incl. mapped,
+      NAT64, 6to4, metadata ranges), connect to the pinned IP, re-check every redirect hop
+- [x] Uptime / SSL / DNS checks with production outcome values and `result` shapes
+      (verified live against example.com and badssl.com)
+- [x] Durable Postgres job queue: exactly-once scheduling (`FOR UPDATE SKIP LOCKED`),
+      leased claims, stale-lease retry ×3, scheduler heartbeat `{queueDepth, claimedWebsites}`
+- [x] Website status derivation and monitoring issues (UPTIME → CRITICAL; auto-resolve)
+- [x] Crawler: robots.txt, sitemaps, depth/page/URL budgets, recorded skips, cancellation,
+      `PARTIAL` on budget, production `result` JSON
+- [x] Technical SEO: production rule ids/thresholds/fingerprints + reconstructed rules;
+      fingerprint sync that only resolves findings on re-crawled pages
+- [x] `/api/cron/work` (bearer `CRON_SECRET`, constant-time compare) drives monitoring + crawls
+- [x] UI: overview dashboard, websites (list/add/detail/settings/delete), check now,
+      crawl start/cancel/run detail, SEO findings (ignore/reopen), issues (status/assign), clients
+- [x] Role gates server-side in every action (MEMBER edit, MANAGER delete/clients)
+- [x] End-to-end against the production build: real checks + real crawl via the cron endpoint
+- [x] Tests: 180+ passing (unit, local-Postgres integration, opt-in live network)
+
+### Open items
+
+- [ ] **Needs you:** set `CRON_SECRET` and schedule `GET /api/cron/work` every minute
+      (Vercel Cron or any external scheduler) once deployed.
+- [ ] `SKIP LOCKED` concurrency is verified by design only — PGlite has one connection.
+- [ ] Crawler politeness is budget-based (no per-host delay); add a delay if sites complain.
+- [ ] Alerts (`alert_events`) for monitoring/crawl events are Sprint 4.
 
 ## Sprint 3 — Scoring, PageSpeed, AI Search, recommendations
 

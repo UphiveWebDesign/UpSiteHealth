@@ -127,15 +127,19 @@ export function claimJobs(
   workerId: string,
   limit: number,
   now = new Date(),
+  websiteId?: string,
 ): Promise<ClaimedJob[]> {
   const leaseUntil = new Date(now.getTime() + CLAIM_LEASE_MS);
+  const onlyWebsite = websiteId
+    ? Prisma.sql`AND "websiteId" = ${websiteId}`
+    : Prisma.empty;
   return db.$queryRaw<ClaimedJob[]>`
     UPDATE monitoring_jobs
     SET status = 'CLAIMED', "claimedAt" = ${now}, "claimExpiresAt" = ${leaseUntil},
         "workerId" = ${workerId}, "updatedAt" = ${now}
     WHERE id IN (
       SELECT id FROM monitoring_jobs
-      WHERE status = 'QUEUED' AND "scheduledFor" <= ${now}
+      WHERE status = 'QUEUED' AND "scheduledFor" <= ${now} ${onlyWebsite}
       ORDER BY priority ASC, "scheduledFor" ASC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
@@ -316,6 +320,8 @@ export type ProcessOptions = {
   batchSize?: number;
   concurrency?: number;
   runner?: Runner;
+  /** Restrict to one website (used by "Check now" inside a user request). */
+  websiteId?: string;
 };
 
 /** Claims and executes jobs until the queue is empty or the deadline passes. */
@@ -326,7 +332,13 @@ export async function processMonitoringJobs(
   const counts = { COMPLETED: 0, FAILED: 0, SKIPPED: 0 };
   await recoverStaleJobs(db);
   while (Date.now() < opts.deadline) {
-    const jobs = await claimJobs(db, opts.workerId, opts.batchSize ?? 10);
+    const jobs = await claimJobs(
+      db,
+      opts.workerId,
+      opts.batchSize ?? 10,
+      new Date(),
+      opts.websiteId,
+    );
     if (jobs.length === 0) break;
     await inPool(jobs, opts.concurrency ?? 5, async (job) => {
       counts[await executeJob(db, job, opts.runner)]++;

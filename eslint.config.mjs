@@ -6,6 +6,15 @@ import prettier from "eslint-config-prettier/flat";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  {
+    rules: {
+      // `_prev` etc. are required by APIs such as useActionState.
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
   // Must come last: turns off stylistic rules that Prettier owns.
   prettier,
   // Override default ignores of eslint-config-next.
