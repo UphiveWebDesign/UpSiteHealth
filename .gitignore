@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets (allow the safe template only)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Supabase CLI local state
+supabase/.branches/
+supabase/.temp/
+
+# Database exports (may contain real data)
+*.dump
+backups/
+
+# Next.js / build output
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+*.tsbuildinfo
+
+# Prisma generated client
+src/generated/
+generated/
+
+# Testing
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+
+# Vercel
+.vercel
