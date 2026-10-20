@@ -10,7 +10,9 @@ export function testDb(): PrismaClient {
     throw new Error("TEST_DATABASE_URL must point at localhost");
   }
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL }),
+    // One connection: `prisma dev` (PGlite) cannot serve concurrent sessions.
+    // Real row-lock concurrency (SKIP LOCKED) therefore is not exercised here.
+    adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }),
   });
 }
 
