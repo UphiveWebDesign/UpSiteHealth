@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import type { CheckOutcome, CheckType } from "@/generated/prisma/enums";
+import type { CheckOutcome } from "@/generated/prisma/enums";
 import { Sparkline } from "@/components/score";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/feedback";
@@ -21,7 +21,7 @@ import {
 } from "@/lib/format";
 import { uptimePercent } from "@/lib/insights/next-steps";
 import { requireOrgContext } from "@/lib/tenancy/context";
-import { MONITORING_CHECK_TYPES } from "@/lib/monitoring/rules";
+import { monitoringHistoryWhere } from "@/lib/monitoring/rules";
 
 export const metadata: Metadata = { title: "Monitoring · UpSiteHealth" };
 
@@ -79,23 +79,12 @@ export default async function MonitoringPage({
         select: { responseTimeMs: true, outcome: true },
       }),
       ctx.db.websiteCheck.findMany({
-        where: {
-          websiteId,
-          createdAt: { gte: since },
-          type:
-            type === "ALL"
-              ? { in: [...MONITORING_CHECK_TYPES] }
-              : (type as CheckType),
-        },
+        where: monitoringHistoryWhere(websiteId, since, type),
         orderBy: { createdAt: "desc" },
         take: 100,
       }),
       ctx.db.websiteCheck.count({
-        where: {
-          websiteId,
-          createdAt: { gte: since },
-          type: { in: [...MONITORING_CHECK_TYPES] },
-        },
+        where: monitoringHistoryWhere(websiteId, since, "ALL"),
       }),
     ]);
 

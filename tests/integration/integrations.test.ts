@@ -10,6 +10,7 @@ import { latestProbe, loadIntegrationEvidence } from "@/lib/integrations/load";
 import { ProbeDeadlineError } from "@/lib/integrations/probe";
 import {
   claimIntegrationProbe,
+  PROBE_ROWS_KEPT,
   PROBE_STALE_MS,
   probeRows,
   runIntegrationCheck,
@@ -21,7 +22,12 @@ import {
   recommendationMeta,
   syncRecommendations,
 } from "@/lib/recommendations/generate";
+import { loadWebsiteSummaries } from "@/lib/insights/signals";
+import { monitoringHistoryWhere } from "@/lib/monitoring/rules";
+import { executeJob } from "@/lib/monitoring/worker";
 import { buildExport } from "@/lib/reports/exports";
+import { organizationReport } from "@/lib/reports/summary";
+import { recordScoreSnapshot } from "@/lib/scoring/snapshots";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
@@ -494,6 +500,91 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(meta.priorityRationale).toContain(
         "2 of 2 analysed pages · 3 more pages not analysed in the latest crawl",
       );
+    });
+
+    test("L5: only the newest probe rows are kept; other checks are untouched", async () => {
+      const { site, scope } = await setup("retain");
+      // A non-probe SEO-type row (e.g. legacy data) must never be deleted.
+      const legacy = await db.websiteCheck.create({
+        data: {
+          ...scope,
+          type: "SEO",
+          status: "COMPLETED",
+          outcome: "SUCCESS",
+        },
+      });
+      for (let i = 0; i < PROBE_ROWS_KEPT + 3; i++) {
+        await runIntegrationCheck(db, site, probeDeps());
+      }
+      expect(await db.websiteCheck.count({ where: probeRows(scope) })).toBe(
+        PROBE_ROWS_KEPT,
+      );
+      expect(
+        await db.websiteCheck.findUnique({ where: { id: legacy.id } }),
+      ).not.toBeNull();
+      expect(await latestProbe(db, scope)).not.toBeNull();
+    });
+
+    test("probe rows never affect status, scores, summaries, reports, exports or history", async () => {
+      const { org, tdb, site, scope } = await setup("isolate");
+      const runCheck = async (type: "UPTIME" | "SSL" | "DNS") => {
+        const job = await db.monitoringJob.create({
+          data: { ...scope, type, scheduledFor: new Date() },
+        });
+        await executeJob(db, job, async (t) => ({
+          type: t,
+          outcome: "SUCCESS",
+          result: t === "UPTIME" ? null : {},
+          responseTimeMs: 40,
+        }));
+      };
+      for (const t of ["UPTIME", "SSL", "DNS"] as const) await runCheck(t);
+      const since = new Date(Date.now() - 86_400_000);
+      const snapshot = async () => {
+        const [w, summary, report, csv, history, score] = await Promise.all([
+          db.website.findUniqueOrThrow({ where: { id: site.id } }),
+          loadWebsiteSummaries(tdb, { websiteIds: [site.id] }),
+          organizationReport(tdb, 7),
+          buildExport(tdb, "checks", { days: 7, websiteId: site.id }),
+          db.websiteCheck.findMany({
+            where: monitoringHistoryWhere(site.id, since, "ALL"),
+            select: { id: true },
+          }),
+          recordScoreSnapshot(db, { id: site.id, organizationId: org.id }),
+        ]);
+        const s = summary[0];
+        return {
+          status: w.status,
+          uptime: s.uptime24h,
+          lastResponse: s.lastResponseMs,
+          report: report.find((r) => r.websiteId === site.id),
+          csv,
+          history: history.length,
+          score: [score.score, score.measuredWeight],
+        };
+      };
+      const before = await snapshot();
+
+      // Every kind of probe row: completed, failed and running.
+      await runIntegrationCheck(db, site, probeDeps());
+      await runIntegrationCheck(db, site, {
+        ...probeDeps(),
+        deadline: Date.now() - 1,
+      }).catch(() => {});
+      await claimIntegrationProbe(db, site);
+      await runCheck("UPTIME"); // status is recomputed with probe rows present
+
+      const after = await snapshot();
+      expect(after.status).toBe(before.status);
+      expect(after.score).toEqual(before.score);
+      expect(after.lastResponse).toBe(before.lastResponse);
+      expect(after.uptime.percent).toBe(before.uptime.percent);
+      expect(after.uptime.checks).toBe(before.uptime.checks + 1); // the new uptime check only
+      expect(after.report?.conclusiveChecks).toBe(
+        (before.report?.conclusiveChecks ?? 0) + 1,
+      );
+      expect(after.history).toBe(before.history + 1);
+      expect(after.csv).not.toContain(",SEO,");
     });
 
     test("tenant isolation and scheduling", async () => {

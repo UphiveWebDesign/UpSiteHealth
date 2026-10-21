@@ -142,6 +142,11 @@ export function confirmResolved(
       case "BROKEN":
         return YES; // it now loads, or is conclusively absent
       case "BLOCKED":
+        return r.status === "missing" ||
+          (r.blocksGooglebot ?? r.blocksAll) === false
+          ? YES
+          : no("robots.txt rules could not be confirmed.");
+      case "BLOCKS_OTHERS":
         return r.status === "missing" || r.blocksAll === false
           ? YES
           : no("robots.txt rules could not be confirmed.");

@@ -110,6 +110,26 @@ describe("probe-based tasks need a conclusive recheck", () => {
     );
   });
 
+  test("whole-site block resolved once Googlebot is allowed, even if others stay blocked", () => {
+    const googleOnly = probe({
+      robots: {
+        status: "found",
+        httpStatus: 200,
+        error: null,
+        blocksAll: true,
+        blocksGooglebot: false,
+        sitemaps: [],
+      },
+    });
+    expect(
+      confirmResolved("ROBOTS", "BLOCKED", ev(null, googleOnly), []).conclusive,
+    ).toBe(true);
+    expect(
+      confirmResolved("ROBOTS", "BLOCKS_OTHERS", ev(null, googleOnly), [])
+        .conclusive,
+    ).toBe(false);
+  });
+
   test("missing sitemap followed by a fetch failure stays open", () => {
     const failed = probe({
       sitemaps: {

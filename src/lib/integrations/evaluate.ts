@@ -593,16 +593,33 @@ function robots(e: IntegrationEvidence): IntegrationStatus {
     });
   }
   const problems: IntegrationProblem[] = [];
-  if (r.blocksAll) {
+  // Googlebot follows its own group when there is one. Probes stored
+  // before this was recorded fall back to the generic rules.
+  const googleBlocked = r.blocksGooglebot ?? r.blocksAll;
+  if (googleBlocked) {
     problems.push({
       code: "BLOCKED",
       title: "robots.txt blocks the whole site",
-      summary:
-        'robots.txt disallows "/" for all crawlers, so search engines are asked not to crawl any page.',
+      summary: r.blocksAll
+        ? 'robots.txt disallows "/" for all crawlers, including Googlebot, so search engines are asked not to crawl any page.'
+        : 'robots.txt disallows "/" for Googlebot, so Google is asked not to crawl any page.',
       severity: "CRITICAL",
       confidence: "high",
       action:
         "Remove the site-wide Disallow rule unless the site is intentionally hidden (for example, a staging site).",
+      urls: [`${new URL(e.websiteUrl).origin}/robots.txt`],
+      task: true,
+    });
+  } else if (r.blocksAll) {
+    problems.push({
+      code: "BLOCKS_OTHERS",
+      title: "robots.txt blocks crawlers without their own rules",
+      summary:
+        'robots.txt disallows "/" for every crawler without its own group. Googlebot has its own rules and is allowed, but other search engines (such as Bing) may be blocked.',
+      severity: "MEDIUM",
+      confidence: "high",
+      action:
+        "If other search engines should crawl the site, allow them (for example, remove Disallow: / from the User-agent: * group).",
       urls: [`${new URL(e.websiteUrl).origin}/robots.txt`],
       task: true,
     });
@@ -621,8 +638,14 @@ function robots(e: IntegrationEvidence): IntegrationStatus {
   }
   return finish({
     ...base,
-    state: r.blocksAll ? "needs-attention" : "verified",
-    headline: r.blocksAll ? "Blocks all crawlers" : "Found and allows crawling",
+    state: googleBlocked || r.blocksAll ? "needs-attention" : "verified",
+    headline: googleBlocked
+      ? r.blocksAll
+        ? "Blocks all crawlers"
+        : "Blocks Googlebot"
+      : r.blocksAll
+        ? "Allows Googlebot, blocks other crawlers"
+        : "Found and allows crawling",
     evidence: [
       "HTTP 200",
       r.sitemaps.length

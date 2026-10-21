@@ -33,8 +33,13 @@ export type ProbeResult = {
   version: 1;
   robots: FetchStatus & {
     status: "found" | "missing" | "error";
-    /** robots.txt disallows "/" for all crawlers. Null when not found. */
+    /** robots.txt disallows "/" for crawlers without their own group. Null when not found. */
     blocksAll: boolean | null;
+    /**
+     * Whether Googlebot, using its own group if there is one, is blocked
+     * from "/". Absent on probes stored before this field existed.
+     */
+    blocksGooglebot?: boolean | null;
     sitemaps: string[];
   };
   sitemaps: {
@@ -90,15 +95,28 @@ function failure(error: unknown): FetchStatus {
   };
 }
 
+/** Rejects with ETIMEOUT after `ms`, so a slow lookup cannot outlive the budget. */
+function withinBudget<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(Object.assign(new Error("timeout"), { code: "ETIMEOUT" })),
+        ms,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function defaultResolveTxt(host: string): Promise<string[][]> {
   const resolver = new Resolver({ timeout: 5_000, tries: 1 });
   return resolver.resolveTxt(host);
 }
 
-/** True if robots.txt blocks the whole site for every crawler. */
-function blocksAll(text: string): boolean {
-  const generic = parseRobots(text, "*");
-  return !generic.isAllowed("https://robots.check/");
+/** True if robots.txt blocks "/" for this user agent (its most specific group). */
+function blocksRoot(text: string, userAgent: string): boolean {
+  return !parseRobots(text, userAgent).isAllowed("https://robots.check/");
 }
 
 export async function probeIntegrations(
@@ -148,7 +166,8 @@ export async function probeIntegrations(
         status: "found",
         httpStatus: 200,
         error: null,
-        blocksAll: blocksAll(text),
+        blocksAll: blocksRoot(text, "*"),
+        blocksGooglebot: blocksRoot(text, "Googlebot"),
         sitemaps: parseRobots(text, userAgent).sitemaps.slice(0, 20),
       };
     } else if (res.status === 404 || res.status === 410) {
@@ -227,9 +246,11 @@ export async function probeIntegrations(
   let dnsTxt: ProbeResult["dnsTxt"];
   overrun();
   try {
-    const records = await (deps.resolveTxt ?? defaultResolveTxt)(
-      website.domain,
+    const records = await withinBudget(
+      (deps.resolveTxt ?? defaultResolveTxt)(website.domain),
+      budget(5_000),
     );
+    overrun();
     dnsTxt = {
       status: "ok",
       googleTokens: records
@@ -238,6 +259,7 @@ export async function probeIntegrations(
       error: null,
     };
   } catch (error) {
+    if (error instanceof ProbeDeadlineError) throw error;
     const code = (error as { code?: string }).code;
     // No TXT records at all is an answer, not a failure.
     dnsTxt =

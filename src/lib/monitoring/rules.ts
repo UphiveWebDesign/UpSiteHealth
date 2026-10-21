@@ -22,6 +22,19 @@ export const MONITORING_CHECK_TYPES = [
   "DNS",
 ] as const satisfies ReadonlyArray<CheckType>;
 
+/** Where-clause for the monitoring history list and its count. */
+export function monitoringHistoryWhere(
+  websiteId: string,
+  since: Date,
+  type: CheckType | "ALL",
+) {
+  return {
+    websiteId,
+    createdAt: { gte: since },
+    type: type === "ALL" ? { in: [...MONITORING_CHECK_TYPES] } : type,
+  };
+}
+
 export const DEFAULT_MONITORING_CHECKS = [
   { type: "UPTIME", intervalMinutes: 5 },
   { type: "DNS", intervalMinutes: 30 },

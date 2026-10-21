@@ -130,6 +130,32 @@ describe("public checks", () => {
     ).toMatchObject({ status: "missing", httpStatus: 404 });
   });
 
+  test("robots.txt: Googlebot's own group is read separately from the generic rules", async () => {
+    routes = {
+      "site.test/robots.txt": send(
+        200,
+        "User-agent: *\nDisallow: /\n\nUser-agent: Googlebot\nAllow: /",
+      ),
+    };
+    const r = await probeIntegrations(site(), [], {
+      policy: local,
+      resolveTxt: noTxt,
+    });
+    expect(r.robots).toMatchObject({ blocksAll: true, blocksGooglebot: false });
+  });
+
+  test("a DNS lookup that hangs cannot outlive the probe deadline", async () => {
+    const started = Date.now();
+    await expect(
+      probeIntegrations(site(), [], {
+        policy: local,
+        resolveTxt: () => new Promise<string[][]>(() => {}), // never answers
+        deadline: Date.now() + 1_500,
+      }),
+    ).rejects.toBeInstanceOf(ProbeDeadlineError);
+    expect(Date.now() - started).toBeLessThan(4_000);
+  });
+
   test("DNS: no TXT records is an answer; a resolver failure is an error", async () => {
     const enodata = Object.assign(new Error("x"), { code: "ENODATA" });
     const servfail = Object.assign(new Error("x"), { code: "ESERVFAIL" });

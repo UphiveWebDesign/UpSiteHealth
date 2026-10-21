@@ -35,7 +35,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
         name: "Measured",
         url: `https://m-${run}.example`,
       });
-      const fresh = await createWebsite(tdb, o.id, {
+      await createWebsite(tdb, o.id, {
         name: "Fresh",
         url: `https://f-${run}.example`,
       });

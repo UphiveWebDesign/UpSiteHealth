@@ -475,3 +475,45 @@ describe("missing versus unmeasured (M4, L1)", () => {
     ).toBe("detected");
   });
 });
+
+describe("robots.txt and Googlebot (L2)", () => {
+  const robots = (o: Partial<ProbeResult["robots"]>) =>
+    probe({
+      robots: {
+        status: "found",
+        httpStatus: 200,
+        error: null,
+        blocksAll: false,
+        sitemaps: [`${SITE}/sitemap.xml`],
+        ...o,
+      },
+    });
+  test("generic block with Googlebot allowed is not 'blocks all crawlers'", () => {
+    const r = evaluate(
+      null,
+      robots({ blocksAll: true, blocksGooglebot: false }),
+    )("ROBOTS");
+    expect(r.problems.map((p) => [p.code, p.severity])).toEqual([
+      ["BLOCKS_OTHERS", "MEDIUM"],
+    ]);
+    expect(r.headline).toBe("Allows Googlebot, blocks other crawlers");
+  });
+  test("Googlebot blocked by its own group is critical even if others are allowed", () => {
+    const r = evaluate(
+      null,
+      robots({ blocksAll: false, blocksGooglebot: true }),
+    )("ROBOTS");
+    expect(r.problems[0]).toMatchObject({
+      code: "BLOCKED",
+      severity: "CRITICAL",
+    });
+    expect(r.headline).toBe("Blocks Googlebot");
+  });
+  test("older probes without the Googlebot field fall back to the generic rules", () => {
+    const r = evaluate(
+      null,
+      robots({ blocksAll: true, blocksGooglebot: undefined }),
+    )("ROBOTS");
+    expect(r.problems[0].code).toBe("BLOCKED");
+  });
+});

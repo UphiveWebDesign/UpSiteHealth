@@ -15,6 +15,8 @@ export const PROBE_INTERVAL_MS = 24 * 3_600_000;
 export const PROBE_COOLDOWN_MS = 2 * 60_000;
 /** A RUNNING probe older than this was abandoned (e.g. the process died). */
 export const PROBE_STALE_MS = 10 * 60_000;
+/** Finished probe rows kept per website; older ones are deleted. */
+export const PROBE_ROWS_KEPT = 10;
 /** Namespace for the per-website advisory lock (arbitrary, fixed). */
 const LOCK_NAMESPACE = 4_207_101;
 
@@ -96,6 +98,29 @@ export async function claimIntegrationProbe(
   });
 }
 
+/**
+ * Keeps the newest PROBE_ROWS_KEPT finished probe rows for one website.
+ * Only rows created by the probe (matched by result kind) are deleted;
+ * running claims and every other check are untouched.
+ */
+export async function pruneProbeRows(db: PrismaClient, scope: Scope) {
+  const keep = await db.websiteCheck.findMany({
+    where: probeRows(scope),
+    orderBy: { createdAt: "desc" },
+    take: PROBE_ROWS_KEPT,
+    select: { id: true },
+  });
+  if (keep.length < PROBE_ROWS_KEPT) return 0;
+  const { count } = await db.websiteCheck.deleteMany({
+    where: {
+      ...probeRows(scope),
+      status: { in: ["COMPLETED", "FAILED"] },
+      id: { notIn: keep.map((k) => k.id) },
+    },
+  });
+  return count;
+}
+
 async function finishProbe(
   db: PrismaClient,
   checkId: string,
@@ -150,6 +175,10 @@ export async function runIntegrationCheck(
       deps,
     );
     await finishProbe(db, id, { status: "COMPLETED", result });
+    await pruneProbeRows(db, {
+      websiteId: website.id,
+      organizationId: website.organizationId,
+    });
     return result;
   } catch (error) {
     await finishProbe(db, id, {
