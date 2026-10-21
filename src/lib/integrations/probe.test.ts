@@ -109,6 +109,27 @@ describe("public checks", () => {
     expect(r.sitemaps.files[0]).toMatchObject({ httpStatus: 404 });
   });
 
+  test("BingSiteAuth.xml: only 404/410 or a file without a user is 'missing'", async () => {
+    routes = { "site.test/BingSiteAuth.xml": send(503) };
+    expect(
+      (
+        await probeIntegrations(site(), [], {
+          policy: local,
+          resolveTxt: noTxt,
+        })
+      ).bing,
+    ).toMatchObject({ status: "error", httpStatus: 503 });
+    routes = {};
+    expect(
+      (
+        await probeIntegrations(site(), [], {
+          policy: local,
+          resolveTxt: noTxt,
+        })
+      ).bing,
+    ).toMatchObject({ status: "missing", httpStatus: 404 });
+  });
+
   test("DNS: no TXT records is an answer; a resolver failure is an error", async () => {
     const enodata = Object.assign(new Error("x"), { code: "ENODATA" });
     const servfail = Object.assign(new Error("x"), { code: "ESERVFAIL" });

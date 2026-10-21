@@ -54,6 +54,10 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": type });
       res.end(body);
     };
+    if (host === "gtm-empty.test") {
+      // A published container that loads no GA4 tag.
+      return ok("application/javascript", "var data={};");
+    }
     if (host === "gtm.test") {
       return req.url === "/gtm.js?id=GTM-TEST12"
         ? ok("application/javascript", "var data={'tag_id':'G-TEST1234'};")
@@ -217,7 +221,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
       await runIntegrationCheck(db, site, {
         ...probeDeps(),
-        gtmOrigin: `http://gtm-missing.test:${port}`, // container has no GA4
+        gtmOrigin: `http://gtm-empty.test:${port}`, // published, but no GA4
       });
       await syncRecommendations(db, site);
       const task = await db.recommendation.findFirstOrThrow({

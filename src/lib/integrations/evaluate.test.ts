@@ -401,3 +401,77 @@ test("gtmIdsFromCrawl feeds the probe with unique container IDs", () => {
     }),
   ).toEqual(["GTM-AB12CD"]);
 });
+
+describe("missing versus unmeasured (M4, L1)", () => {
+  const gtmCheck = (
+    status: "available" | "not-found" | "error",
+    ga4Ids: string[] = [],
+  ) =>
+    probe({
+      gtm: [
+        {
+          id: "GTM-AB12CD",
+          status,
+          httpStatus:
+            status === "available" ? 200 : status === "not-found" ? 404 : null,
+          error: status === "error" ? "TIMEOUT" : null,
+          ga4Ids,
+        },
+      ],
+    });
+  const gtmPages = [page("/", { gtm: ["GTM-AB12CD"] })];
+
+  test("GA4 behind GTM: inconclusive container inspection is never 'missing'", () => {
+    for (const p of [null, gtmCheck("error"), gtmCheck("not-found")]) {
+      const ga4 = evaluate(gtmPages, p)("GA4");
+      expect(ga4).toMatchObject({ state: "not-checked", problems: [] });
+      expect(ga4.headline).toContain("could not be inspected");
+    }
+    expect(
+      evaluate(gtmPages, gtmCheck("available"))("GA4").problems[0],
+    ).toMatchObject({
+      code: "MISSING",
+      confidence: "medium",
+    });
+    expect(
+      evaluate(gtmPages, gtmCheck("available", ["G-ZZZ999"]))("GA4").state,
+    ).toBe("detected");
+  });
+
+  test("Search Console: a setup task needs both page source and DNS to have been read", () => {
+    const dnsError = probe({
+      dnsTxt: { status: "error", googleTokens: 0, error: "ESERVFAIL" },
+    });
+    const unmeasured = evaluate([page("/", null)], probe())("GSC");
+    expect(unmeasured).toMatchObject({ state: "not-checked", problems: [] });
+    expect(unmeasured.headline).toMatch(/^Not measured/);
+    expect(evaluate([page("/")], dnsError)("GSC")).toMatchObject({
+      state: "not-checked",
+      problems: [],
+    });
+    expect(
+      evaluate([page("/")], probe())("GSC").problems.map((p) => p.code),
+    ).toEqual(["UNCONFIRMED"]);
+    // Positive evidence from either source is enough to say "detected".
+    const dnsToken = probe({
+      dnsTxt: { status: "ok", googleTokens: 1, error: null },
+    });
+    expect(evaluate([page("/", null)], dnsToken)("GSC").state).toBe("detected");
+  });
+
+  test("Bing: 'Not in use' only when page source and the file were both checked", () => {
+    const fileError = probe({
+      bing: { status: "error", httpStatus: 503, error: null },
+    });
+    expect(evaluate([page("/", null)], probe())("BING").state).toBe(
+      "not-checked",
+    );
+    expect(evaluate([page("/")], fileError)("BING").state).toBe("not-checked");
+    expect(evaluate([page("/")], null)("BING").state).toBe("not-checked");
+    expect(evaluate([page("/")], probe())("BING").state).toBe("not-detected");
+    expect(
+      evaluate([page("/", { bingSiteVerification: ["X"] })], fileError)("BING")
+        .state,
+    ).toBe("detected");
+  });
+});

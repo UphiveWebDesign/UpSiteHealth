@@ -252,8 +252,10 @@ export async function probeIntegrations(
     const found =
       res.status === 200 &&
       /<user>[^<]+<\/user>/i.test(res.body.toString("utf8"));
+    // Only a definite answer counts as "missing"; 5xx etc. is unknown.
+    const absent = !found && [200, 404, 410].includes(res.status);
     bing = {
-      status: found ? "found" : "missing",
+      status: found ? "found" : absent ? "missing" : "error",
       httpStatus: res.status,
       error: null,
     };

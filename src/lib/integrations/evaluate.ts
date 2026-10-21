@@ -191,14 +191,19 @@ function ga4(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
     );
   }
   if (!direct.length && !viaGtm.length) {
-    if (gtmPages.length && !e.probe?.result.gtm.length) {
-      return {
-        ...notChecked(
-          base,
-          "GA4 may be set up inside Google Tag Manager. Run an integration check to inspect the public container.",
-          e.crawl.analyzedAt,
-        ),
-      };
+    // GA4 is often loaded by GTM. Absence is only conclusive when every
+    // container on the site was inspected and returned its contents.
+    const containers = uniq(gtmPages.flatMap((p) => p.tags!.gtm));
+    const uninspected = containers.filter(
+      (id) =>
+        e.probe?.result.gtm.find((g) => g.id === id)?.status !== "available",
+    );
+    if (uninspected.length) {
+      return notChecked(
+        base,
+        `GA4 may be set up inside Google Tag Manager, but ${uninspected.join(", ")} could not be inspected${e.probe ? "" : " yet"}. Run an integration check to inspect the public container.`,
+        e.crawl.analyzedAt,
+      );
     }
     problems.push({
       code: "MISSING",
@@ -430,16 +435,32 @@ function gsc(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
       checkedAt,
     };
   }
+  // Absence is only measured when both the page source and DNS were read.
+  if (!measured.length || dns?.status !== "ok") {
+    return {
+      ...notChecked(
+        base,
+        !measured.length
+          ? "Not measured: the page source has not been checked for a verification tag yet."
+          : "Not checked: DNS TXT records could not be read.",
+        checkedAt,
+      ),
+      evidence: [
+        measured.length
+          ? `No google-site-verification meta tag in ${plural(measured.length, "crawled page")}.`
+          : "Page source not measured yet.",
+        dns?.status === "ok"
+          ? "No google-site-verification DNS TXT record."
+          : "DNS TXT records not checked.",
+      ],
+    };
+  }
   return finish({
     ...base,
     headline: "No public verification token found",
     evidence: [
-      measured.length
-        ? `No google-site-verification meta tag in ${plural(measured.length, "crawled page")}.`
-        : "Page source not measured yet.",
-      dns?.status === "ok"
-        ? "No google-site-verification DNS TXT record."
-        : "DNS TXT records not checked.",
+      `No google-site-verification meta tag in ${plural(measured.length, "crawled page")}.`,
+      "No google-site-verification DNS TXT record.",
     ],
     problems: [
       {
@@ -487,6 +508,16 @@ function bing(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
   if (meta.length)
     evidence.push(`msvalidate.01 meta tag on ${plural(meta.length, "page")}.`);
   if (file?.status === "found") evidence.push("BingSiteAuth.xml is published.");
+  // "Not in use" needs both sources read conclusively.
+  if (!evidence.length && (!measured.length || file?.status !== "missing")) {
+    return notChecked(
+      base,
+      !measured.length
+        ? "Not measured: the page source has not been checked for a Bing tag yet."
+        : "Not checked: BingSiteAuth.xml could not be checked.",
+      e.probe?.checkedAt ?? e.crawl?.analyzedAt ?? null,
+    );
+  }
   return {
     ...base,
     state: evidence.length ? "detected" : "not-detected",
