@@ -9,6 +9,7 @@ import { createWebsite } from "@/lib/websites/service";
 import { loadBaseline } from "@/lib/workflow/baseline";
 import { loadPlan } from "@/lib/workflow/plan";
 import { taskActivity, technicalProgress } from "@/lib/workflow/progress";
+import { loadReport } from "@/lib/workflow/report";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
 
 const policy: NetPolicy = {
@@ -218,6 +219,51 @@ describe.skipIf(!TEST_DATABASE_URL)("SEO workflow (local database)", () => {
     });
     const plan = await loadPlan(db, scope);
     expect(plan.verify.map((i) => i.statusLabel)).toEqual(["Ready to verify"]);
+  });
+
+  test("report with no crawl data and no search data says so; nothing is invented", async () => {
+    const { org, tdb, site } = await setup("report-empty");
+    const r = await loadReport(tdb, db, org.id, site.id, "28d");
+    expect(r).not.toBeNull();
+    expect(r!.baseline.state).toBe("none");
+    expect(r!.technical.state).toBe("not-comparable");
+    expect(r!.openAtStart).toBeNull();
+    expect(r!.fixed).toEqual([]);
+    expect(r!.sources.find((s) => s.label === "Search Console")?.detail).toBe(
+      "Not connected",
+    );
+    expect(r!.sources.find((s) => s.label === "Google Analytics")?.detail).toBe(
+      "Not connected",
+    );
+    expect(r!.gaps.join(" ")).toContain("No baseline");
+    expect(r!.activity.reportedDone).toBe(0);
+  });
+
+  test("report counts: findings at start and end, resolved, and work stay separate", async () => {
+    const { org, tdb, site, crawl } = await setup("report");
+    const a = await crawl();
+    aboutTitle = "About the test company";
+    let b;
+    try {
+      b = await crawl();
+    } finally {
+      aboutTitle = LONG;
+    }
+    // Crawls run seconds apart; date crawl A before the reporting period.
+    await db.crawlRun.update({
+      where: { id: a.id },
+      data: {
+        seoAnalyzedAt: new Date(b.seoAnalyzedAt!.getTime() - 10 * 86_400_000),
+      },
+    });
+    const now = new Date(b.seoAnalyzedAt!.getTime() + 86_400_000);
+    const r = await loadReport(tdb, db, org.id, site.id, "7d", now);
+    expect(a.status).toBe("COMPLETED");
+    expect(r!.technical.state).toBe("compared");
+    expect(r!.fixed.map((f) => f.ruleId)).toContain("TECH_TITLE_TOO_LONG");
+    expect(r!.openAtStart! - r!.openAtEnd!).toBeGreaterThanOrEqual(1);
+    // No task was marked done: resolved findings are not reported as work.
+    expect(r!.activity.reportedDone).toBe(0);
   });
 
   test("everything is scoped to the organization", async () => {

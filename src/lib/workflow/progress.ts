@@ -1,8 +1,10 @@
 import type { PrismaClient } from "@/generated/prisma/client";
+import type { RecommendationPriority } from "@/generated/prisma/enums";
 import {
   loadRecommendationContext,
   recommendationState,
   buildRecommendations,
+  type RecommendationState,
 } from "@/lib/recommendations/generate";
 import {
   loadCrawlComparisonBetween,
@@ -132,6 +134,12 @@ export type TaskActivity = {
   /** Open work right now (not period-bound). */
   openNow: number;
   dateSource: "last-updated";
+  items: Array<{
+    id: string;
+    title: string;
+    priority: RecommendationPriority;
+    state: RecommendationState["kind"];
+  }>;
 };
 
 /** Task activity for a period (system code: root client with explicit scope). */
@@ -153,6 +161,7 @@ export async function taskActivity(
         issueId: true,
         status: true,
         updatedAt: true,
+        priority: true,
       },
     }),
     db.recommendation.count({
@@ -169,5 +178,11 @@ export async function taskActivity(
     awaitingRecheck: states.filter((k) => k === "awaiting-recheck").length,
     openNow,
     dateSource: "last-updated",
+    items: done.map((r, i) => ({
+      id: r.id,
+      title: r.title,
+      priority: r.priority,
+      state: states[i],
+    })),
   };
 }

@@ -15,6 +15,7 @@ export function WebsiteNav({
     { href: `${base}/seo`, label: "SEO findings" },
     { href: `${base}/plan`, label: "SEO plan" },
     { href: `${base}/progress`, label: "Progress" },
+    { href: `${base}/report`, label: "Report" },
     { href: `${base}/recommendations`, label: "Recommendations" },
     { href: `${base}/crawls`, label: "Crawls" },
     { href: `${base}/integrations`, label: "Integrations" },
@@ -24,7 +25,7 @@ export function WebsiteNav({
   return (
     <nav
       aria-label="Website sections"
-      className="-mt-2 mb-6 overflow-x-auto border-b border-line"
+      className="-mt-2 mb-6 overflow-x-auto border-b border-line print:hidden"
     >
       <div className="flex min-w-max gap-5">
         {items.map((i) => (

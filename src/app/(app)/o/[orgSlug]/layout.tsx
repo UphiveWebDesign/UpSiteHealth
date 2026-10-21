@@ -39,7 +39,7 @@ export default async function OrgLayout({
   ];
   return (
     <div className="flex flex-col gap-6">
-      <div className="-mt-2 flex flex-wrap items-center gap-x-6 border-b border-line">
+      <div className="-mt-2 flex flex-wrap items-center gap-x-6 border-b border-line print:hidden">
         <Link
           href={base}
           className="flex h-11 items-center gap-2 pr-1 text-sm font-semibold text-ink"
@@ -74,7 +74,9 @@ export default async function OrgLayout({
           )}
         </Link>
       </div>
-      <WorkerStatusBanner status={workerStatus} />
+      <div className="print:hidden">
+        <WorkerStatusBanner status={workerStatus} />
+      </div>
       {children}
     </div>
   );
