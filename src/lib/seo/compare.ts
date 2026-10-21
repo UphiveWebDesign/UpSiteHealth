@@ -190,6 +190,73 @@ const RUN_SELECT = {
   sitemapUrlsDiscovered: true,
 } as const;
 
+type RunRow = {
+  id: string;
+  status: CrawlRunStatus;
+  seoAnalyzedAt: Date | null;
+  startedAt: Date | null;
+  pagesCrawled: number;
+  robotsTxtStatus: string | null;
+  sitemapUrlsDiscovered: number | null;
+};
+
+const info = (r: RunRow): ComparedRun => ({
+  id: r.id,
+  status: r.status,
+  analyzedAt: r.seoAnalyzedAt!,
+  startedAt: r.startedAt,
+  pagesCrawled: r.pagesCrawled,
+});
+
+/** One analysed crawl, re-checked with the current rules (tenant-scoped). */
+export async function loadCrawlSide(
+  db: TenantDb,
+  websiteUrl: string,
+  run: RunRow,
+): Promise<CrawlSide> {
+  const rows = await db.crawlPage.findMany({
+    where: { crawlRunId: run.id },
+    select: CRAWL_PAGE_SELECT,
+  });
+  return {
+    analyzedAt: run.seoAnalyzedAt!,
+    run,
+    ...analyzeCrawl(rows, run, new URL(websiteUrl).hostname),
+  };
+}
+
+async function compareRuns(
+  db: TenantDb,
+  websiteId: string,
+  websiteUrl: string,
+  previous: RunRow,
+  current: RunRow,
+): Promise<CrawlComparison> {
+  // Sequential: the local single-connection database cannot interleave.
+  const prevSide = await loadCrawlSide(db, websiteUrl, previous);
+  const curSide = await loadCrawlSide(db, websiteUrl, current);
+  const fingerprints = [
+    ...new Set(
+      [...prevSide.drafts, ...curSide.drafts].map((d) => d.fingerprint),
+    ),
+  ];
+  const stored = await db.seoFinding.findMany({
+    where: { websiteId, fingerprint: { in: fingerprints } },
+    select: { id: true, fingerprint: true, status: true, firstSeenAt: true },
+  });
+  const items = classifyChanges(
+    prevSide,
+    curSide,
+    new Map(stored.map((f) => [f.fingerprint, f])),
+  );
+  return {
+    current: info(current),
+    previous: info(previous),
+    items,
+    counts: countChanges(items),
+  };
+}
+
 /**
  * Compares `runId` (default: the latest analysed crawl) with the analysed
  * crawl before it. Tenant-scoped: only this organization's data is read.
@@ -219,13 +286,6 @@ export async function loadCrawlComparison(
     orderBy: { seoAnalyzedAt: "desc" },
     select: RUN_SELECT,
   });
-  const info = (r: typeof current): ComparedRun => ({
-    id: r.id,
-    status: r.status,
-    analyzedAt: r.seoAnalyzedAt!,
-    startedAt: r.startedAt,
-    pagesCrawled: r.pagesCrawled,
-  });
   if (!previous?.seoAnalyzedAt) {
     return {
       current: info(current),
@@ -234,40 +294,34 @@ export async function loadCrawlComparison(
       counts: countChanges([]),
     };
   }
+  return compareRuns(db, websiteId, website.url, previous, current);
+}
 
-  const host = new URL(website.url).hostname;
-  const side = async (r: typeof current): Promise<CrawlSide> => {
-    const rows = await db.crawlPage.findMany({
-      where: { crawlRunId: r.id },
-      select: CRAWL_PAGE_SELECT,
-    });
-    return {
-      analyzedAt: r.seoAnalyzedAt!,
-      run: r,
-      ...analyzeCrawl(rows, r, host),
-    };
-  };
-  // Sequential: the local single-connection database cannot interleave.
-  const prevSide = await side(previous);
-  const curSide = await side(current);
-  const fingerprints = [
-    ...new Set(
-      [...prevSide.drafts, ...curSide.drafts].map((d) => d.fingerprint),
-    ),
-  ];
-  const stored = await db.seoFinding.findMany({
-    where: { websiteId, fingerprint: { in: fingerprints } },
-    select: { id: true, fingerprint: true, status: true, firstSeenAt: true },
+/**
+ * Compares two specific analysed crawls of one website (tenant-scoped).
+ * Null if either crawl is not this website's or was never analysed.
+ */
+export async function loadCrawlComparisonBetween(
+  db: TenantDb,
+  websiteId: string,
+  fromRunId: string,
+  toRunId: string,
+): Promise<CrawlComparison | null> {
+  const website = await db.website.findFirst({
+    where: { id: websiteId },
+    select: { url: true },
   });
-  const items = classifyChanges(
-    prevSide,
-    curSide,
-    new Map(stored.map((f) => [f.fingerprint, f])),
-  );
-  return {
-    current: info(current),
-    previous: info(previous),
-    items,
-    counts: countChanges(items),
-  };
+  if (!website) return null;
+  const runs = await db.crawlRun.findMany({
+    where: {
+      websiteId,
+      id: { in: [fromRunId, toRunId] },
+      seoAnalyzedAt: { not: null },
+    },
+    select: RUN_SELECT,
+  });
+  const from = runs.find((r) => r.id === fromRunId);
+  const to = runs.find((r) => r.id === toRunId);
+  if (!from || !to) return null;
+  return compareRuns(db, websiteId, website.url, from, to);
 }

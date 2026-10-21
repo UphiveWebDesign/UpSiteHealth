@@ -13,6 +13,8 @@ export function WebsiteNav({
     { href: base, label: "Overview", exact: true },
     { href: `${base}/monitoring`, label: "Monitoring" },
     { href: `${base}/seo`, label: "SEO findings" },
+    { href: `${base}/plan`, label: "SEO plan" },
+    { href: `${base}/progress`, label: "Progress" },
     { href: `${base}/recommendations`, label: "Recommendations" },
     { href: `${base}/crawls`, label: "Crawls" },
     { href: `${base}/integrations`, label: "Integrations" },
