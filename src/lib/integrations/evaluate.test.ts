@@ -230,7 +230,11 @@ describe("problems", () => {
       }),
     )("GTM");
     expect(gtm.state).toBe("needs-attention");
-    expect(gtm.problems[0]).toMatchObject({ code: "BROKEN", severity: "HIGH" });
+    expect(gtm.problems[0]).toMatchObject({
+      code: "BROKEN_GTM_AB12CD",
+      severity: "HIGH",
+      confidence: "medium",
+    });
   });
 
   test("a GTM availability error is reported as unchecked, not broken", () => {

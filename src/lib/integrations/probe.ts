@@ -288,7 +288,11 @@ export async function probeIntegrations(
           error: "UNEXPECTED_HOST",
           ga4Ids: [],
         });
-      } else if (res.status === 200) {
+      } else if (
+        res.status === 200 &&
+        res.body.length > 0 &&
+        /javascript/i.test(String(res.headers["content-type"] ?? ""))
+      ) {
         const body = res.body.toString("utf8");
         gtm.push({
           id,
@@ -301,11 +305,12 @@ export async function probeIntegrations(
           ),
         });
       } else {
+        // Anything but a JavaScript 200 or a 404 is indeterminate.
         gtm.push({
           id,
           status: res.status === 404 ? "not-found" : "error",
           httpStatus: res.status,
-          error: null,
+          error: res.status === 200 ? "UNEXPECTED_RESPONSE" : null,
           ga4Ids: [],
         });
       }

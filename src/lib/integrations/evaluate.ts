@@ -87,7 +87,7 @@ export type IntegrationEvidence = {
   probe: { checkedAt: Date; result: ProbeResult } | null;
 };
 
-const MAX_URLS = 50;
+export const MAX_URLS = 50;
 /** Problems at or above this severity make an integration "needs attention". */
 const ATTENTION: IssueSeverity[] = ["CRITICAL", "HIGH", "MEDIUM"];
 
@@ -277,6 +277,11 @@ function ga4(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
   });
 }
 
+/** One task per unpublished container, so each keeps its own evidence. */
+export const gtmBrokenCode = (id: string) => `BROKEN_${id.replace(/-/g, "_")}`;
+export const gtmIdFromCode = (code: string) =>
+  /^BROKEN_(GTM_[A-Z0-9]+)$/.exec(code)?.[1].replace("_", "-") ?? null;
+
 function gtm(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
   const base = {
     key: "GTM" as const,
@@ -318,11 +323,11 @@ function gtm(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
       evidence.push(`${id}: published (Google serves the container).`);
     else if (c.status === "not-found") {
       problems.push({
-        code: "BROKEN",
+        code: gtmBrokenCode(id),
         title: `Publish or replace GTM container ${id}`,
-        summary: `Google returns HTTP 404 for ${id}: the container does not exist or has never been published, so none of its tags can load.`,
+        summary: `Google returned HTTP 404 for ${id}. That usually means the container does not exist or has not been published, in which case none of its tags load.`,
         severity: "HIGH",
-        confidence: "high",
+        confidence: "medium",
         action:
           "Check the container ID on the site, and publish the container in Tag Manager.",
         urls: withGtm
@@ -371,8 +376,8 @@ function gtm(e: IntegrationEvidence, pages: Analysed[]): IntegrationStatus {
   }
   return finish({
     ...base,
-    headline: problems.some((p) => p.code === "BROKEN")
-      ? "Container not published"
+    headline: problems.some((p) => p.code.startsWith("BROKEN_"))
+      ? "Container may not be published"
       : "Container detected · tags not verified",
     evidence,
     problems,

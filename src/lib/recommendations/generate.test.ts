@@ -333,7 +333,7 @@ describe("integration setup tasks and metadata", () => {
     ).toEqual({ kind: "integration", key: "GA4", code: "MISSING" });
   });
 
-  test("a task is completed only once the integration was actually checked", () => {
+  test("a task is completed only after a conclusive recheck of its own evidence", () => {
     const rec = {
       title: "Set up Google Analytics 4 (INT_GA4_MISSING)",
       issueId: null,
@@ -342,8 +342,38 @@ describe("integration setup tasks and metadata", () => {
       heldReason(rec, ctx({ integrations: [status("not-checked")] })),
     ).toBe("unverified");
     expect(heldReason(rec, ctx())).toBe("unverified");
+    // Checked, but the problem's own source was not conclusively rechecked.
+    expect(heldReason(rec, ctx({ integrations: [status("detected")] }))).toBe(
+      "unverified",
+    );
     expect(
-      heldReason(rec, ctx({ integrations: [status("detected")] })),
+      heldReason(
+        rec,
+        ctx({
+          integrations: [status("detected")],
+          integrationResolution: new Map([
+            ["INT_GA4_MISSING", { conclusive: false, reason: "r" }],
+          ]),
+        }),
+      ),
+    ).toBe("unverified");
+    expect(
+      heldReason(
+        rec,
+        ctx({
+          integrations: [status("detected")],
+          integrationResolution: new Map([
+            ["INT_GA4_MISSING", { conclusive: true }],
+          ]),
+        }),
+      ),
+    ).toBeNull();
+    // Still reported: not held (it is still an active task, not "fixed").
+    expect(
+      heldReason(
+        rec,
+        ctx({ integrations: [status("needs-attention", [missing])] }),
+      ),
     ).toBeNull();
   });
 

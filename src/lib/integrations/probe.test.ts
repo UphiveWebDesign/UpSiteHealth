@@ -176,6 +176,7 @@ describe("GTM availability", () => {
       "gtm.test/gtm.js?id=GTM-AB12CD": send(
         200,
         "var x={'vtp_tagId':'G-ZZZ999'};",
+        { "content-type": "application/javascript" },
       ),
       "gtm.test/gtm.js?id=GTM-NOPE00": send(404),
       "gtm.test/gtm.js?id=GTM-MOVED1": send(302, "", {
@@ -222,6 +223,28 @@ describe("GTM availability", () => {
       "gtm.test/gtm.js?id=GTM-AB12CD",
       "gtm.test/gtm.js?id=GTM-NOPE00",
       "gtm.test/gtm.js?id=GTM-MOVED1",
+    ]);
+  });
+
+  test("a 200 that is not JavaScript (e.g. a sign-in page) is indeterminate, not published", async () => {
+    routes = {
+      "gtm.test/gtm.js?id=GTM-HTML01": send(200, "<html>sign in</html>", {
+        "content-type": "text/html",
+      }),
+    };
+    const r = await probeIntegrations(site(), ["GTM-HTML01"], {
+      policy: local,
+      resolveTxt: noTxt,
+      gtmOrigin: gtmOrigin(),
+    });
+    expect(r.gtm).toEqual([
+      {
+        id: "GTM-HTML01",
+        status: "error",
+        httpStatus: 200,
+        error: "UNEXPECTED_RESPONSE",
+        ga4Ids: [],
+      },
     ]);
   });
 

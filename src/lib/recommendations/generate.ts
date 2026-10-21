@@ -13,7 +13,14 @@ import {
   type IntegrationKey,
   type IntegrationStatus,
 } from "@/lib/integrations/evaluate";
-import { loadIntegrationEvidence } from "@/lib/integrations/load";
+import {
+  loadEvidenceHistory,
+  loadIntegrationEvidence,
+} from "@/lib/integrations/load";
+import {
+  confirmResolved,
+  type ResolutionCheck,
+} from "@/lib/integrations/resolution";
 import { issueResolution, type IssueResolution } from "@/lib/monitoring/rules";
 import { BENEFIT } from "./benefits";
 import {
@@ -179,6 +186,11 @@ export type RecommendationContext = {
   >;
   /** Integration health at load time. */
   integrations: IntegrationStatus[];
+  /**
+   * For integration tasks whose problem is no longer reported: whether the
+   * evidence source was rechecked conclusively (keyed by task id).
+   */
+  integrationResolution?: Map<string, ResolutionCheck>;
   /** Open findings per SEO rule: affected URLs and readable evidence. */
   ruleDetails: Map<
     string,
@@ -268,6 +280,27 @@ export async function loadRecommendationContext(
   // Sequential: the local single-connection database cannot interleave.
   const evidence = await loadIntegrationEvidence(db, scope);
   const integrations = evidence ? evaluateIntegrations(evidence) : [];
+  const integrationResolution = new Map<string, ResolutionCheck>();
+  if (evidence) {
+    const tasks = await db.recommendation.findMany({
+      where: { ...scope, title: { contains: "(INT_" } },
+      select: { title: true, issueId: true },
+    });
+    let history: Awaited<ReturnType<typeof loadEvidenceHistory>> | null = null;
+    for (const t of tasks) {
+      const basis = recommendationBasis(t);
+      if (basis.kind !== "integration") continue;
+      const id = integrationTaskId(basis.key, basis.code);
+      const status = integrations.find((i) => i.key === basis.key);
+      if (!status || status.problems.some((p) => p.code === basis.code))
+        continue;
+      history ??= await loadEvidenceHistory(db, scope, evidence);
+      integrationResolution.set(
+        id,
+        confirmResolved(basis.key, basis.code, evidence, history),
+      );
+    }
+  }
   const openFindings = await db.seoFinding.findMany({
     where: { ...scope, status: "OPEN" },
     select: { ruleId: true, severity: true, evidence: true },
@@ -378,6 +411,7 @@ export async function loadRecommendationContext(
       integrations,
     },
     integrations,
+    integrationResolution,
     ruleDetails,
     analysedPages,
     issues: new Map(
@@ -467,13 +501,21 @@ export function matchDraft(
 export function heldReason(
   r: Pick<Existing, "title" | "issueId">,
   ctx: Pick<RecommendationContext, "issues" | "remainingRules"> &
-    Partial<Pick<RecommendationContext, "integrations">>,
+    Partial<
+      Pick<RecommendationContext, "integrations" | "integrationResolution">
+    >,
 ): "ignored" | "unverified" | null {
   const basis = recommendationBasis(r);
   if (basis.kind === "integration") {
-    // Gone only counts as fixed if the integration was actually checked.
+    // Gone counts as fixed only if its evidence source was rechecked
+    // conclusively (see integrations/resolution.ts).
     const status = ctx.integrations?.find((i) => i.key === basis.key);
-    return !status || status.state === "not-checked" ? "unverified" : null;
+    if (!status || status.state === "not-checked") return "unverified";
+    if (status.problems.some((p) => p.code === basis.code)) return null;
+    const check = ctx.integrationResolution?.get(
+      integrationTaskId(basis.key, basis.code),
+    );
+    return check?.conclusive ? null : "unverified";
   }
   if (basis.kind === "seo-rule") {
     const left = ctx.remainingRules.get(basis.ruleId);

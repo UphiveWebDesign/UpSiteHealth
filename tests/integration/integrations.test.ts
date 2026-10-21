@@ -29,6 +29,8 @@ const policy: NetPolicy = {
 const DESC =
   "A meta description that is long enough to pass the fifty character minimum.";
 let withGa4 = true;
+let aboutGa4 = true;
+let robotsMode: "ok" | "blocked" | "error" = "ok";
 
 const GA4 = `<script async src="https://www.googletagmanager.com/gtag/js?id=G-TEST1234"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-TEST1234');</script>`;
@@ -38,7 +40,7 @@ function html(title: string, body: string) {
   return `<!doctype html><html lang="en"><head><title>${title}</title>
     <meta name="description" content="${DESC} ${title}">
     <link rel="canonical" href="${origin}${title === "Home page of the site" ? "/" : "/about"}">
-    ${withGa4 ? GA4 : ""}${GTM}</head><body><h1>${title}</h1>${body}</body></html>`;
+    ${aboutGa4 || title !== "About the test company" ? `${withGa4 ? GA4 : ""}${GTM}` : ""}</head><body><h1>${title}</h1>${body}</body></html>`;
 }
 
 let server: Server;
@@ -59,9 +61,13 @@ beforeAll(async () => {
     }
     switch (req.url) {
       case "/robots.txt":
+        if (robotsMode === "error") {
+          res.writeHead(503);
+          return res.end();
+        }
         return ok(
           "text/plain",
-          `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml`,
+          `User-agent: *\n${robotsMode === "blocked" ? "Disallow: /" : "Allow: /"}\nSitemap: ${origin}/sitemap.xml`,
         );
       case "/sitemap.xml":
         return ok(
@@ -249,6 +255,61 @@ describe.skipIf(!TEST_DATABASE_URL)(
         (await db.recommendation.findUniqueOrThrow({ where: { id: task.id } }))
           .status,
       ).toBe("COMPLETED");
+    });
+
+    test("H1: a blocked robots.txt task stays open after a failed fetch, and closes after a good one", async () => {
+      const { site } = await setup("h1robots");
+      const task = () =>
+        db.recommendation.findFirst({
+          where: {
+            websiteId: site.id,
+            title: { contains: "(INT_ROBOTS_BLOCKED)" },
+          },
+        });
+      robotsMode = "blocked";
+      try {
+        await runIntegrationCheck(db, site, probeDeps());
+        await syncRecommendations(db, site);
+        expect((await task())?.status).toBe("PROPOSED");
+
+        robotsMode = "error"; // the problem disappears, but nothing was confirmed
+        await runIntegrationCheck(db, site, probeDeps());
+        await syncRecommendations(db, site);
+        expect((await task())?.status).toBe("PROPOSED");
+      } finally {
+        robotsMode = "ok";
+      }
+      await runIntegrationCheck(db, site, probeDeps());
+      await syncRecommendations(db, site);
+      expect((await task())?.status).toBe("COMPLETED");
+    });
+
+    test("H1: partial GA4 coverage stays open when a partial crawl skips the affected page", async () => {
+      const { org, tdb, site, crawl } = await setup("h1partial");
+      const task = () =>
+        db.recommendation.findFirst({
+          where: {
+            websiteId: site.id,
+            title: { contains: "(INT_GA4_PARTIAL)" },
+          },
+        });
+      aboutGa4 = false;
+      try {
+        await crawl();
+        await syncRecommendations(db, site);
+        expect((await task())?.status).toBe("PROPOSED");
+
+        // Only the home page is crawled: /about is skipped by the page budget.
+        await startCrawl(tdb, org.id, site.id, { maxPages: 1 });
+        await processCrawls(db, { deadline: Date.now() + 20_000, policy });
+        await syncRecommendations(db, site);
+        expect((await task())?.status).toBe("PROPOSED");
+      } finally {
+        aboutGa4 = true;
+      }
+      await crawl(); // /about revisited, now tagged
+      await syncRecommendations(db, site);
+      expect((await task())?.status).toBe("COMPLETED");
     });
 
     test("tenant isolation and scheduling", async () => {

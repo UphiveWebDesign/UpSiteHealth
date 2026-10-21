@@ -4,6 +4,18 @@ import { isProbeResult, PROBE_CHECK_TYPE } from "./probe";
 
 type Scope = { websiteId: string; organizationId: string };
 
+const PAGE_SELECT = {
+  url: true,
+  status: true,
+  httpStatus: true,
+  resourceType: true,
+  finalUrl: true,
+  canonicalUrl: true,
+  robotsMetaRaw: true,
+  depth: true,
+  result: true,
+} as const;
+
 /**
  * Latest crawl pages and latest public probe for one website (system code,
  * root client with an explicit organization + website scope). Returns null
@@ -29,17 +41,7 @@ export async function loadIntegrationEvidence(
   const pages = run
     ? await db.crawlPage.findMany({
         where: { crawlRunId: run.id, organizationId: scope.organizationId },
-        select: {
-          url: true,
-          status: true,
-          httpStatus: true,
-          resourceType: true,
-          finalUrl: true,
-          canonicalUrl: true,
-          robotsMetaRaw: true,
-          depth: true,
-          result: true,
-        },
+        select: PAGE_SELECT,
       })
     : [];
   return {
@@ -63,4 +65,37 @@ export async function latestProbe(db: PrismaClient, scope: Scope) {
   return row && isProbeResult(row.result)
     ? { checkedAt: row.completedAt ?? row.createdAt, result: row.result }
     : null;
+}
+
+/**
+ * Older analysed crawls (newest first), each paired with the current probe,
+ * so resolution checks can find where a problem was last seen.
+ */
+export async function loadEvidenceHistory(
+  db: PrismaClient,
+  scope: Scope,
+  current: IntegrationEvidence,
+  limit = 5,
+): Promise<IntegrationEvidence[]> {
+  if (!current.crawl) return [];
+  const runs = await db.crawlRun.findMany({
+    where: { ...scope, seoAnalyzedAt: { lt: current.crawl.analyzedAt } },
+    orderBy: { seoAnalyzedAt: "desc" },
+    take: limit,
+    select: { id: true, status: true, seoAnalyzedAt: true },
+  });
+  const out: IntegrationEvidence[] = [];
+  // Sequential: the local single-connection database cannot interleave.
+  for (const run of runs) {
+    const pages = await db.crawlPage.findMany({
+      where: { crawlRunId: run.id, organizationId: scope.organizationId },
+      select: PAGE_SELECT,
+    });
+    out.push({
+      websiteUrl: current.websiteUrl,
+      crawl: { status: run.status, analyzedAt: run.seoAnalyzedAt!, pages },
+      probe: current.probe,
+    });
+  }
+  return out;
 }
