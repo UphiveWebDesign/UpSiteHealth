@@ -7,7 +7,11 @@ import { processCrawls, startCrawl } from "@/lib/crawler/engine";
 import { cronStages } from "@/lib/cron/work";
 import { evaluateIntegrations } from "@/lib/integrations/evaluate";
 import { latestProbe, loadIntegrationEvidence } from "@/lib/integrations/load";
+import { ProbeDeadlineError } from "@/lib/integrations/probe";
 import {
+  claimIntegrationProbe,
+  PROBE_STALE_MS,
+  probeRows,
   runIntegrationCheck,
   websitesDueForProbe,
 } from "@/lib/integrations/service";
@@ -314,6 +318,72 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await crawl(); // /about revisited, now tagged
       await syncRecommendations(db, site);
       expect((await task())?.status).toBe("COMPLETED");
+    });
+
+    test("M1: simultaneous claims start one probe; stale claims expire; cooldown applies", async () => {
+      const { site, scope } = await setup("claim");
+      const claims = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          claimIntegrationProbe(db, site, { cooldownMs: 120_000 }),
+        ),
+      );
+      expect(claims.filter((c) => c.claimed)).toHaveLength(1);
+      expect(
+        claims.filter((c) => !c.claimed).map((c) => !c.claimed && c.reason),
+      ).toEqual(Array(4).fill("running"));
+      expect(
+        await db.websiteCheck.count({
+          where: { ...probeRows(scope), status: "RUNNING" },
+        }),
+      ).toBe(1);
+
+      // An abandoned claim does not block forever.
+      const later = new Date(Date.now() + PROBE_STALE_MS + 60_000);
+      const retry = await claimIntegrationProbe(db, site, { now: later });
+      expect(retry.claimed).toBe(true);
+      const rows = await db.websiteCheck.findMany({
+        where: probeRows(scope),
+        orderBy: { createdAt: "asc" },
+      });
+      expect(rows.map((r) => [r.status, r.errorMessage])).toEqual([
+        ["FAILED", "ABANDONED"],
+        ["RUNNING", null],
+      ]);
+
+      // Cooldown counts recent attempts, finished or not.
+      await db.websiteCheck.updateMany({
+        where: probeRows(scope),
+        data: { status: "FAILED" },
+      });
+      expect(
+        await claimIntegrationProbe(db, site, {
+          cooldownMs: PROBE_STALE_MS * 10,
+          now: later,
+        }),
+      ).toEqual({ claimed: false, reason: "cooldown" });
+    });
+
+    test("M1/L4: probes finish COMPLETED or FAILED and never carry a monitoring outcome", async () => {
+      const { site, scope } = await setup("finish");
+      await runIntegrationCheck(db, site, probeDeps());
+      await expect(
+        runIntegrationCheck(db, site, {
+          ...probeDeps(),
+          deadline: Date.now() - 1,
+        }),
+      ).rejects.toBeInstanceOf(ProbeDeadlineError);
+      const rows = await db.websiteCheck.findMany({
+        where: probeRows(scope),
+        orderBy: { createdAt: "asc" },
+      });
+      expect(rows.map((r) => [r.status, r.outcome, r.errorMessage])).toEqual([
+        ["COMPLETED", null, null],
+        ["FAILED", null, "DEADLINE"],
+      ]);
+      // A failed attempt is not mistaken for the latest probe result.
+      expect((await latestProbe(db, scope))?.result.robots.status).toBe(
+        "found",
+      );
     });
 
     test("tenant isolation and scheduling", async () => {

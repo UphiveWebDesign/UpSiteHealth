@@ -20,7 +20,7 @@ import { db } from "@/lib/db";
 import { runBackground } from "@/lib/log";
 import { serverEnv } from "@/lib/env";
 import {
-  lastProbeAt,
+  claimIntegrationProbe,
   PROBE_COOLDOWN_MS,
   runIntegrationCheck,
 } from "@/lib/integrations/service";
@@ -101,25 +101,32 @@ export async function runIntegrationCheckAction(
 ): Promise<FormState> {
   const ctx = await requireOrgContext(orgSlug, "MEMBER");
   const website = await websiteFor(ctx, websiteId);
-  const last = await lastProbeAt(db(), {
-    websiteId: website.id,
-    organizationId: website.organizationId,
+  // Claimed atomically before any work starts, so simultaneous requests
+  // cannot launch more than one probe for the same website.
+  const claim = await claimIntegrationProbe(db(), website, {
+    cooldownMs: PROBE_COOLDOWN_MS,
   });
-  if (last && Date.now() - last.getTime() < PROBE_COOLDOWN_MS) {
+  if (!claim.claimed) {
     return {
       error:
-        "An integration check ran moments ago. Try again in a couple of minutes.",
+        claim.reason === "running"
+          ? "An integration check is already running for this website."
+          : "An integration check ran moments ago. Try again in a couple of minutes.",
     };
   }
-  // A handful of bounded requests; runs after the response is sent.
+  // A handful of bounded requests; runs after the response is sent. If the
+  // process is stopped first, the RUNNING claim expires (PROBE_STALE_MS).
   after(() =>
     runBackground(
       "integration_check",
       { websiteId: website.id, organizationId: website.organizationId },
       async () => {
-        await runIntegrationCheck(db(), website, {
-          deadline: Date.now() + 55_000,
-        });
+        await runIntegrationCheck(
+          db(),
+          website,
+          { deadline: Date.now() + 55_000 },
+          claim.checkId,
+        );
         await syncRecommendations(db(), website);
       },
     ),

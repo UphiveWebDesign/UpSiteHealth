@@ -1,5 +1,4 @@
 import { Resolver } from "node:dns/promises";
-import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { parseRobots, parseSitemap } from "@/lib/crawler/robots";
 import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import {
@@ -19,6 +18,8 @@ import { strictPolicy, type NetPolicy } from "@/lib/net/ssrf";
 
 export const PROBE_CHECK_TYPE = "SEO" as const;
 export const PROBE_KIND = "integration-probe";
+/** Marks a claimed or failed probe row; never parsed as a probe result. */
+export const PROBE_ATTEMPT_KIND = "integration-probe-attempt";
 export const GTM_ORIGIN = "https://www.googletagmanager.com";
 const GTM_ID = /^GTM-[A-Z0-9]{4,12}$/;
 const MAX_SITEMAP_FILES = 5;
@@ -331,30 +332,6 @@ export async function probeIntegrations(
     bing,
     gtm,
   };
-}
-
-/** Runs the probe for one website and stores it (system code, root client). */
-export async function recordIntegrationProbe(
-  db: PrismaClient,
-  website: { id: string; organizationId: string; url: string; domain: string },
-  gtmIds: string[],
-  deps: ProbeDeps = {},
-): Promise<ProbeResult> {
-  const startedAt = new Date();
-  const result = await probeIntegrations(website, gtmIds, deps);
-  await db.websiteCheck.create({
-    data: {
-      organizationId: website.organizationId,
-      websiteId: website.id,
-      type: PROBE_CHECK_TYPE,
-      status: "COMPLETED",
-      outcome: "SUCCESS",
-      result: result as unknown as Prisma.InputJsonValue,
-      startedAt,
-      completedAt: new Date(),
-    },
-  });
-  return result;
 }
 
 export function isProbeResult(value: unknown): value is ProbeResult {

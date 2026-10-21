@@ -123,16 +123,21 @@ export function cronStages(deps: CronDeps): Stage[] {
         let probed = 0;
         let failed = 0;
         let deferred = 0;
+        let busy = 0;
         for (const website of due) {
           if (deadline - Date.now() < PROBE_MIN_MS) {
             deferred++;
             continue;
           }
           try {
-            await runIntegrationCheck(db, website, {
+            const result = await runIntegrationCheck(db, website, {
               ...deps.probeDeps,
               deadline,
             });
+            if (!result) {
+              busy++; // an on-demand check holds the claim
+              continue;
+            }
             await syncRecommendations(db, website);
             probed++;
           } catch (error) {
@@ -153,7 +158,7 @@ export function cronStages(deps: CronDeps): Stage[] {
             );
           }
         }
-        const result = { due: due.length, probed, failed, deferred };
+        const result = { due: due.length, probed, failed, deferred, busy };
         if (failed > 0) {
           throw new StageIncompleteError(
             `${failed} integration check(s) failed`,
