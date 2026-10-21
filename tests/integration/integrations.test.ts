@@ -386,6 +386,82 @@ describe.skipIf(!TEST_DATABASE_URL)(
       );
     });
 
+    test("M2: failing and slow websites back off, so healthy ones get checked", async () => {
+      const a = await setup("fair-a");
+      const b = await setup("fair-b");
+      const mine = [a.site.id, b.site.id];
+      const order = async (at: Date) =>
+        (await websitesDueForProbe(db, 100_000, at))
+          .map((w) => w.id)
+          .filter((id) => mine.includes(id));
+      const fail = async (
+        siteId: string,
+        orgId: string,
+        at: Date,
+        code = "ERROR",
+      ) =>
+        db.websiteCheck.create({
+          data: {
+            organizationId: orgId,
+            websiteId: siteId,
+            type: "SEO",
+            status: "FAILED",
+            errorMessage: code,
+            result: { kind: "integration-probe-attempt" },
+            createdAt: at,
+            startedAt: at,
+            completedAt: at,
+          },
+        });
+      const t0 = new Date();
+      const min = (n: number) => new Date(t0.getTime() + n * 60_000);
+      expect((await order(t0)).sort()).toEqual([...mine].sort());
+
+      // A fails (e.g. timed out): it backs off and B is now first in line.
+      await fail(a.site.id, a.org.id, t0, "DEADLINE");
+      expect(await order(min(1))).toEqual([b.site.id]);
+      expect(await order(min(61))).toEqual([b.site.id, a.site.id]);
+
+      // A second consecutive failure doubles the backoff (2 h).
+      await fail(a.site.id, a.org.id, min(61));
+      expect(await order(min(62 + 60))).toEqual([b.site.id]);
+      expect(await order(min(62 + 121))).toEqual([b.site.id, a.site.id]);
+
+      // A successful probe resets the backoff and is not due for 24 h.
+      await runIntegrationCheck(db, b.site, probeDeps());
+      expect(await order(min(62 + 121))).toEqual([a.site.id]);
+    });
+
+    test("M2: a cron round skips a website whose probe keeps failing and reaches the next", async () => {
+      const slow = await setup("round-slow");
+      const healthy = await setup("round-ok");
+      const deps = cronStages({
+        db,
+        workerId: `round-${run}`,
+        makeProvider: (_id, brand) => mockProvider(brand),
+        emailSender: null,
+        probeDeps: probeDeps(),
+      });
+      const stage = deps.find((s) => s.name === "integrations")!;
+      // Pretend the slow site ran out of budget on its last attempt.
+      await db.websiteCheck.create({
+        data: {
+          organizationId: slow.org.id,
+          websiteId: slow.site.id,
+          type: "SEO",
+          status: "FAILED",
+          errorMessage: "DEADLINE",
+          result: { kind: "integration-probe-attempt" },
+        },
+      });
+      // Other local test websites may also be due; run rounds until ours is done.
+      for (let i = 0; i < 20 && !(await latestProbe(db, healthy.scope)); i++) {
+        await stage.run({ deadline: Date.now() + 120_000 });
+      }
+      expect(await latestProbe(db, healthy.scope)).not.toBeNull();
+      expect(await latestProbe(db, slow.scope)).toBeNull(); // still backing off
+    });
+
     test("tenant isolation and scheduling", async () => {
       const { site, scope } = await setup("tenant");
       const other = await db.organization.create({

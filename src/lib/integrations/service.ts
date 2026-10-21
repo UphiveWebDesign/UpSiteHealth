@@ -160,28 +160,48 @@ export async function runIntegrationCheck(
   }
 }
 
-/** Monitored websites never probed, or probed more than a day ago; oldest first. */
+/**
+ * Monitored websites due for a probe, fairest first, as one bounded query.
+ *
+ * Due: no successful probe in PROBE_INTERVAL_MS, and the last attempt is
+ * older than the retry backoff (1 h after one failure, doubling per
+ * consecutive failure, at most 24 h). Ordered by the last attempt, never
+ * tried first, so a failing or slow website moves behind the others
+ * instead of holding the front of the queue. System code: selection spans
+ * organizations; each website is then processed in its own scope.
+ */
 export async function websitesDueForProbe(
   db: PrismaClient,
   limit: number,
   now = new Date(),
 ): Promise<Site[]> {
-  const [sites, probed] = await Promise.all([
-    db.website.findMany({
-      where: { monitoringEnabled: true },
-      select: { id: true, organizationId: true, url: true, domain: true },
-    }),
-    db.websiteCheck.groupBy({
-      by: ["websiteId"],
-      where: probeRows(),
-      _max: { createdAt: true },
-    }),
-  ]);
-  const last = new Map(probed.map((p) => [p.websiteId, p._max.createdAt]));
-  return sites
-    .map((s) => ({ s, at: last.get(s.id)?.getTime() ?? 0 }))
-    .filter(({ at }) => now.getTime() - at >= PROBE_INTERVAL_MS)
-    .sort((a, b) => a.at - b.at)
-    .slice(0, limit)
-    .map(({ s }) => s);
+  const okBefore = new Date(now.getTime() - PROBE_INTERVAL_MS);
+  return db.$queryRaw<Site[]>`
+    SELECT w.id, w."organizationId", w.url, w.domain
+    FROM websites w
+    LEFT JOIN LATERAL (
+      SELECT
+        max(c."createdAt") FILTER (WHERE c.status = 'COMPLETED') AS last_ok,
+        max(c."createdAt") AS last_try
+      FROM website_checks c
+      WHERE c."websiteId" = w.id AND c.type = 'SEO'
+        AND c.result->>'kind' LIKE 'integration-probe%'
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS failures
+      FROM website_checks f
+      WHERE f."websiteId" = w.id AND f.type = 'SEO' AND f.status = 'FAILED'
+        AND f.result->>'kind' LIKE 'integration-probe%'
+        AND (p.last_ok IS NULL OR f."createdAt" > p.last_ok)
+    ) q ON true
+    WHERE w."monitoringEnabled"
+      AND (p.last_ok IS NULL OR p.last_ok < ${okBefore}::timestamp)
+      AND (
+        p.last_try IS NULL
+        OR p.last_try < ${now}::timestamp - make_interval(
+          hours => LEAST(power(2, GREATEST(q.failures - 1, 0))::int, 24)
+        )
+      )
+    ORDER BY p.last_try ASC NULLS FIRST, w.id
+    LIMIT ${limit}`;
 }
