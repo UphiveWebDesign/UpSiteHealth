@@ -5,6 +5,7 @@ import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import { RecommendationDetails } from "@/components/recommendation-meta";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
@@ -17,6 +18,7 @@ import {
   buildRecommendations,
   loadRecommendationContext,
   recommendationBasis,
+  recommendationMeta,
   recommendationState,
   type RecommendationBasis,
   type RecommendationState,
@@ -67,6 +69,7 @@ const SOURCE: Record<RecommendationBasis["kind"], string> = {
   "seo-rule": "crawl",
   performance: "PageSpeed test",
   "ai-search": "AI Search run",
+  integration: "crawl or integration check",
 };
 
 /** One line saying what the latest evidence shows, or null when nothing to add. */
@@ -160,6 +163,7 @@ export default async function RecommendationsPage({
   const withState = all.map((r) => ({
     ...r,
     state: recommendationState(r, drafts, rctx),
+    meta: recommendationMeta(r, rctx),
   }));
   // Done items that a recheck still detects belong back on the to-do list.
   const isOpen = (r: (typeof withState)[number]) =>
@@ -281,11 +285,10 @@ export default async function RecommendationsPage({
                           {r.recommendedAction}
                         </p>
                       </div>
-                      {r.expectedImpact && (
-                        <p className="mt-2 text-xs text-muted">
-                          Expected impact: {r.expectedImpact}
-                        </p>
-                      )}
+                      <RecommendationDetails
+                        meta={r.meta}
+                        fallbackBenefit={r.expectedImpact}
+                      />
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                         <span className="text-xs text-muted">
                           Updated {formatRelative(r.updatedAt)}

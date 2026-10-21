@@ -1,6 +1,7 @@
 import type { TenantDb } from "@/lib/tenancy/scope";
 import { toCsv } from "./csv";
 import { organizationReport } from "./summary";
+import { MONITORING_CHECK_TYPES } from "@/lib/monitoring/rules";
 
 export const MAX_EXPORT_ROWS = 50_000;
 export const DATASETS = [
@@ -86,8 +87,13 @@ export async function buildExport(
       );
     }
     case "checks": {
+      // Monitoring checks only; integration probes are not check history.
       const rows = await db.websiteCheck.findMany({
-        where: { ...site, createdAt: { gte: since } },
+        where: {
+          ...site,
+          createdAt: { gte: since },
+          type: { in: [...MONITORING_CHECK_TYPES] },
+        },
         orderBy: { createdAt: "desc" },
         take,
         include: { website: { select: { domain: true } } },

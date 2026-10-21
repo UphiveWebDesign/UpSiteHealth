@@ -6,7 +6,26 @@ import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import { normalizeCrawlUrl } from "@/lib/crawler/urls";
+import { describeEvidence } from "@/lib/insights/seo";
+import {
+  evaluateIntegrations,
+  type IntegrationKey,
+  type IntegrationStatus,
+} from "@/lib/integrations/evaluate";
+import { loadIntegrationEvidence } from "@/lib/integrations/load";
 import { issueResolution, type IssueResolution } from "@/lib/monitoring/rules";
+import { BENEFIT } from "./benefits";
+import {
+  aiSearchMeta,
+  integrationMeta,
+  ISSUE_BENEFIT,
+  issueMeta,
+  performanceMeta,
+  SEO_RULE_META,
+  seoRuleMeta,
+  type RecommendationMeta,
+} from "./metadata";
 
 /**
  * RECONSTRUCTED recommendation engine. Production had no recommendation rows,
@@ -31,6 +50,7 @@ export type RecommendationInputs = {
     title: string;
     description: string;
     severity: IssueSeverity;
+    category?: CheckType;
   }>;
   findingGroups: Array<{
     ruleId: string;
@@ -45,7 +65,13 @@ export type RecommendationInputs = {
     clsScore: number | null;
   } | null;
   aiSearch: { results: number; mentioned: number } | null;
+  /** Integration health; problems marked `task` become setup tasks. */
+  integrations?: IntegrationStatus[];
 };
+
+/** Title suffix that identifies an integration setup task. */
+export const integrationTaskId = (key: IntegrationKey, code: string) =>
+  `INT_${key}_${code}`;
 
 const PRIORITY: Record<IssueSeverity, RecommendationPriority> = {
   CRITICAL: "CRITICAL",
@@ -65,8 +91,7 @@ export function buildRecommendations(
       title: `Resolve: ${issue.title}`,
       explanation: issue.description,
       priority: PRIORITY[issue.severity],
-      expectedImpact:
-        "Restores availability and trust signals for visitors and search engines.",
+      expectedImpact: BENEFIT[ISSUE_BENEFIT[issue.category ?? "UPTIME"]].text,
       recommendedAction:
         "Investigate the failing check on the website page and fix the root cause.",
       issueId: issue.id,
@@ -80,9 +105,7 @@ export function buildRecommendations(
       explanation: `${g.count} open finding${g.count === 1 ? "" : "s"} for this rule.`,
       priority: PRIORITY[g.severity],
       expectedImpact:
-        g.severity === "HIGH" || g.severity === "CRITICAL"
-          ? "High: affects how search engines crawl and index the site."
-          : "Moderate: improves search snippets and on-page quality.",
+        BENEFIT[SEO_RULE_META[g.ruleId]?.benefit ?? "crawling-indexing"].text,
       recommendedAction: g.recommendation,
       issueId: null,
     });
@@ -100,7 +123,7 @@ export function buildRecommendations(
       title: PAGE_SPEED_TITLE,
       explanation: `The latest PageSpeed score is ${p.score}/100${problems.length ? `, with ${problems.join(" and ")}` : ""}.`,
       priority: p.score < 50 ? "HIGH" : "MEDIUM",
-      expectedImpact: "Faster pages improve conversions and Core Web Vitals.",
+      expectedImpact: BENEFIT["user-experience"].text,
       recommendedAction:
         "Optimise images, defer non-critical JavaScript, and reserve space for media to prevent layout shift.",
       issueId: null,
@@ -113,12 +136,25 @@ export function buildRecommendations(
       title: AI_SEARCH_TITLE,
       explanation: `The brand was mentioned in ${ai.mentioned} of ${ai.results} recent AI answers.`,
       priority: "MEDIUM",
-      expectedImpact:
-        "More mentions in AI assistants' answers for your target queries.",
+      expectedImpact: BENEFIT["ai-visibility"].text,
       recommendedAction:
         "Publish clear, citable pages for your key services and locations, and earn mentions on sites AI assistants cite.",
       issueId: null,
     });
+  }
+
+  for (const status of input.integrations ?? []) {
+    for (const problem of status.problems) {
+      if (!problem.task) continue;
+      out.push({
+        title: `${problem.title} (${integrationTaskId(status.key, problem.code)})`,
+        explanation: problem.summary,
+        priority: PRIORITY[problem.severity],
+        expectedImpact: BENEFIT[status.benefit].text,
+        recommendedAction: problem.action,
+        issueId: null,
+      });
+    }
   }
   return out;
 }
@@ -135,8 +171,26 @@ export type RecommendationContext = {
       status: IssueStatus;
       category: CheckType;
       resolution: IssueResolution | null;
+      severity: IssueSeverity;
+      description: string;
+      firstSeenAt: Date;
+      lastSeenAt: Date;
     }
   >;
+  /** Integration health at load time. */
+  integrations: IntegrationStatus[];
+  /** Open findings per SEO rule: affected URLs and readable evidence. */
+  ruleDetails: Map<
+    string,
+    {
+      severity: IssueSeverity;
+      urls: string[];
+      samples: string[];
+      homepage: boolean;
+    }
+  >;
+  /** Loaded, analysed HTML pages in the latest crawl (null: no crawl). */
+  analysedPages: number | null;
   /** SEO rules that still have findings, by state. */
   remainingRules: Map<string, { open: number; ignored: number }>;
   /** When each source was last measured, to tell "not rechecked" from "still there". */
@@ -174,6 +228,7 @@ export async function loadRecommendationContext(
         status: true,
         category: true,
         resolvedAt: true,
+        firstSeenAt: true,
         lastSeenAt: true,
       },
     }),
@@ -209,6 +264,44 @@ export async function loadRecommendationContext(
       _max: { completedAt: true },
     }),
   ]);
+
+  // Sequential: the local single-connection database cannot interleave.
+  const evidence = await loadIntegrationEvidence(db, scope);
+  const integrations = evidence ? evaluateIntegrations(evidence) : [];
+  const openFindings = await db.seoFinding.findMany({
+    where: { ...scope, status: "OPEN" },
+    select: { ruleId: true, severity: true, evidence: true },
+    orderBy: { lastSeenAt: "desc" },
+    take: 5000,
+  });
+  const home = evidence ? normalizeCrawlUrl(evidence.websiteUrl) : null;
+  const ruleDetails: RecommendationContext["ruleDetails"] = new Map();
+  for (const f of openFindings) {
+    const d = ruleDetails.get(f.ruleId) ?? {
+      severity: f.severity,
+      urls: [],
+      samples: [],
+      homepage: false,
+    };
+    const url = (f.evidence as { url?: unknown } | null)?.url;
+    if (typeof url === "string") {
+      if (d.urls.length < 50) d.urls.push(url);
+      if (url === home) d.homepage = true;
+    }
+    const sample = describeEvidence(f.ruleId, f.evidence);
+    if (sample && d.samples.length < 3) {
+      d.samples.push(typeof url === "string" ? `${url}: ${sample}` : sample);
+    }
+    ruleDetails.set(f.ruleId, d);
+  }
+  const analysedPages = evidence?.crawl
+    ? evidence.crawl.pages.filter(
+        (p) =>
+          p.status === "CRAWLED" &&
+          p.resourceType === "HTML" &&
+          (p.httpStatus ?? 0) < 400,
+      ).length
+    : null;
 
   const resolvedTypes = [
     ...new Set(
@@ -259,11 +352,12 @@ export async function loadRecommendationContext(
     inputs: {
       openIssues: issues
         .filter((i) => ACTIVE_ISSUE.includes(i.status))
-        .map(({ id, title, description, severity }) => ({
+        .map(({ id, title, description, severity, category }) => ({
           id,
           title,
           description,
           severity,
+          category,
         })),
       findingGroups: [...openGroups.values()],
       performance: perf
@@ -281,7 +375,11 @@ export async function loadRecommendationContext(
             ).length,
           }
         : null,
+      integrations,
     },
+    integrations,
+    ruleDetails,
+    analysedPages,
     issues: new Map(
       issues.map((i) => [
         i.id,
@@ -289,6 +387,10 @@ export async function loadRecommendationContext(
           status: i.status,
           category: i.category,
           resolution: issueResolution(i, lastPass.get(i.category) ?? null),
+          severity: i.severity,
+          description: i.description,
+          firstSeenAt: i.firstSeenAt,
+          lastSeenAt: i.lastSeenAt,
         },
       ]),
     ),
@@ -310,6 +412,7 @@ export const AI_SEARCH_TITLE = "Increase brand visibility in AI search answers";
 
 export type RecommendationBasis =
   | { kind: "issue"; issueId: string | null }
+  | { kind: "integration"; key: IntegrationKey; code: string }
   | { kind: "seo-rule"; ruleId: string }
   | { kind: "performance" }
   | { kind: "ai-search" };
@@ -322,6 +425,14 @@ export function recommendationBasis(r: {
   if (r.title === PAGE_SPEED_TITLE) return { kind: "performance" };
   if (r.title === AI_SEARCH_TITLE) return { kind: "ai-search" };
   const rule = /\(([A-Z0-9_]+)\)$/.exec(r.title);
+  const integration = rule && /^INT_([A-Z0-9]+)_([A-Z0-9_]+)$/.exec(rule[1]);
+  if (integration && !r.issueId) {
+    return {
+      kind: "integration",
+      key: integration[1] as IntegrationKey,
+      code: integration[2],
+    };
+  }
   if (rule && !r.issueId) return { kind: "seo-rule", ruleId: rule[1] };
   return { kind: "issue", issueId: r.issueId };
 }
@@ -355,9 +466,15 @@ export function matchDraft(
  */
 export function heldReason(
   r: Pick<Existing, "title" | "issueId">,
-  ctx: Pick<RecommendationContext, "issues" | "remainingRules">,
+  ctx: Pick<RecommendationContext, "issues" | "remainingRules"> &
+    Partial<Pick<RecommendationContext, "integrations">>,
 ): "ignored" | "unverified" | null {
   const basis = recommendationBasis(r);
+  if (basis.kind === "integration") {
+    // Gone only counts as fixed if the integration was actually checked.
+    const status = ctx.integrations?.find((i) => i.key === basis.key);
+    return !status || status.state === "not-checked" ? "unverified" : null;
+  }
   if (basis.kind === "seo-rule") {
     const left = ctx.remainingRules.get(basis.ruleId);
     if (left?.open) return "unverified"; // below the threshold, but not fixed
@@ -467,6 +584,10 @@ function evidenceTime(
       const issue = basis.issueId ? ctx.issues.get(basis.issueId) : undefined;
       return issue ? (ctx.evidenceAt.checks[issue.category] ?? null) : null;
     }
+    case "integration":
+      return (
+        ctx.integrations.find((i) => i.key === basis.key)?.checkedAt ?? null
+      );
   }
 }
 
@@ -499,4 +620,46 @@ export function recommendationState(
   return at && at > r.updatedAt
     ? { kind: "still-detected", checkedAt: at }
     : { kind: "awaiting-recheck" };
+}
+
+/**
+ * Evidence, benefit, confidence, effort, priority rationale and verification
+ * for one recommendation, from the same data that generated it. Null when
+ * the evidence behind it is no longer available (e.g. after it was fixed).
+ */
+export function recommendationMeta(
+  r: { title: string; issueId: string | null },
+  ctx: RecommendationContext,
+): RecommendationMeta | null {
+  const basis = recommendationBasis(r);
+  switch (basis.kind) {
+    case "seo-rule": {
+      const d = ctx.ruleDetails.get(basis.ruleId);
+      if (!d) return null;
+      return seoRuleMeta({
+        ruleId: basis.ruleId,
+        severity: d.severity,
+        open: ctx.remainingRules.get(basis.ruleId)?.open ?? d.urls.length,
+        urls: d.urls,
+        samples: d.samples,
+        analysedPages: ctx.analysedPages,
+        homepageAffected: d.homepage,
+      });
+    }
+    case "issue": {
+      const issue = basis.issueId ? ctx.issues.get(basis.issueId) : undefined;
+      return issue ? issueMeta(issue) : null;
+    }
+    case "performance":
+      return ctx.inputs.performance
+        ? performanceMeta(ctx.inputs.performance)
+        : null;
+    case "ai-search":
+      return ctx.inputs.aiSearch ? aiSearchMeta(ctx.inputs.aiSearch) : null;
+    case "integration": {
+      const status = ctx.integrations.find((i) => i.key === basis.key);
+      const problem = status?.problems.find((p) => p.code === basis.code);
+      return status && problem ? integrationMeta(status, problem) : null;
+    }
+  }
 }

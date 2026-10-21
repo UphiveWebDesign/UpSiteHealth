@@ -21,6 +21,7 @@ import {
 } from "@/lib/format";
 import { uptimePercent } from "@/lib/insights/next-steps";
 import { requireOrgContext } from "@/lib/tenancy/context";
+import { MONITORING_CHECK_TYPES } from "@/lib/monitoring/rules";
 
 export const metadata: Metadata = { title: "Monitoring · UpSiteHealth" };
 
@@ -81,13 +82,20 @@ export default async function MonitoringPage({
         where: {
           websiteId,
           createdAt: { gte: since },
-          ...(type === "ALL" ? {} : { type: type as CheckType }),
+          type:
+            type === "ALL"
+              ? { in: [...MONITORING_CHECK_TYPES] }
+              : (type as CheckType),
         },
         orderBy: { createdAt: "desc" },
         take: 100,
       }),
       ctx.db.websiteCheck.count({
-        where: { websiteId, createdAt: { gte: since } },
+        where: {
+          websiteId,
+          createdAt: { gte: since },
+          type: { in: [...MONITORING_CHECK_TYPES] },
+        },
       }),
     ]);
 

@@ -11,6 +11,7 @@ import {
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { CheckOutcome, CheckType } from "@/generated/prisma/enums";
 import { mockProvider } from "@/lib/ai-search/providers";
+import type { ProbeDeps } from "@/lib/integrations/probe";
 import { AI_RUN_STALE_MS, recoverStaleAiRuns } from "@/lib/ai-search/runner";
 import { processDeliveryJobs } from "@/lib/alerts/delivery";
 import { finalizeCrawlRun } from "@/lib/crawler/engine";
@@ -27,6 +28,12 @@ import { processMonitoringJobs } from "@/lib/monitoring/worker";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
+
+/** Keeps the integrations stage off the network in cron tests. */
+const offlineProbe: ProbeDeps = {
+  policy: { resolve: async () => [], isAllowed: () => false },
+  resolveTxt: async () => [],
+};
 
 describe.skipIf(!TEST_DATABASE_URL)(
   "reliability hardening (local database)",
@@ -138,6 +145,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
         makeProvider: (_id, brand) => mockProvider(brand),
         emailSender: null,
         monitoringRunner: fakeRunner,
+        probeDeps: offlineProbe,
       }).map((s) =>
         s.name === "crawling"
           ? {
@@ -162,6 +170,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
         "monitoring",
         "ai-search",
         "notifications",
+        "integrations",
         "insights",
       ]) {
         expect(byName[name], name).toMatchObject({ ok: true });
@@ -177,6 +186,38 @@ describe.skipIf(!TEST_DATABASE_URL)(
           (e) => e.event === "cron_stage_failed" && e.stage === "crawling",
         ),
       ).toBe(true);
+    });
+
+    test("a failing integrations stage does not stop the insights stage", async () => {
+      await site("int-fail");
+      const stages = cronStages({
+        db,
+        workerId: `cron-int-${run}`,
+        makeProvider: (_id, brand) => mockProvider(brand),
+        emailSender: null,
+        monitoringRunner: async (type) => ({
+          type,
+          outcome: "SUCCESS",
+          result: type === "UPTIME" ? null : {},
+        }),
+        probeDeps: offlineProbe,
+      }).map((s) =>
+        s.name === "integrations"
+          ? {
+              ...s,
+              run: async () =>
+                Promise.reject(new Error("simulated probe outage")),
+            }
+          : s,
+      );
+      const report = await runStages(`cron-int-${run}`, stages, {
+        budgetMs: 20_000,
+      });
+      const byName = Object.fromEntries(report.stages.map((s) => [s.name, s]));
+      expect(report.status).toBe("partial");
+      expect(byName.integrations).toMatchObject({ ok: false });
+      expect(byName.insights).toMatchObject({ ok: true });
+      expect(byName.monitoring).toMatchObject({ ok: true });
     });
 
     test("a monitoring job that errors in the database does not sink the rest of its batch", async () => {

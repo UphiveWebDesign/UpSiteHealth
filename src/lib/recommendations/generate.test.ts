@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
+import type { IntegrationStatus } from "@/lib/integrations/evaluate";
+import { seoRuleMeta } from "./metadata";
 import {
   buildRecommendations,
   heldReason,
   matchDraft,
   recommendationBasis,
+  recommendationMeta,
   recommendationState,
   type RecommendationContext,
   type RecommendationDraft,
@@ -111,6 +114,9 @@ function ctx(o: Partial<RecommendationContext> = {}): RecommendationContext {
   return {
     inputs: none,
     issues: new Map(),
+    integrations: [],
+    ruleDetails: new Map(),
+    analysedPages: null,
     remainingRules: new Map(),
     evidenceAt: { crawl: null, checks: {}, performance: null, aiSearch: null },
     ...o,
@@ -198,6 +204,10 @@ describe("heldReason: never complete without evidence", () => {
               status: status as "RESOLVED",
               category: "UPTIME" as const,
               resolution,
+              severity: "CRITICAL" as const,
+              description: "d",
+              firstSeenAt: T0,
+              lastSeenAt: T0,
             },
           ],
         ]),
@@ -267,5 +277,185 @@ describe("recommendationState", () => {
         ctx(),
       ),
     ).toEqual({ kind: "dismissed" });
+  });
+});
+
+describe("integration setup tasks and metadata", () => {
+  const status = (
+    state: IntegrationStatus["state"],
+    problems: IntegrationStatus["problems"] = [],
+  ): IntegrationStatus => ({
+    key: "GA4",
+    name: "Google Analytics 4",
+    benefit: "measurement",
+    optional: false,
+    state,
+    headline: "h",
+    evidence: ["No GA4 tag found in the page source of 12 crawled pages."],
+    limitations: [],
+    problems,
+    verification:
+      "The next crawl checks the page source on every crawled page.",
+    checkedAt: T1,
+  });
+  const missing = {
+    code: "MISSING",
+    title: "Set up Google Analytics 4",
+    summary: "No GA4 tag found.",
+    severity: "MEDIUM" as const,
+    confidence: "high" as const,
+    action: "Add the Google tag.",
+    urls: [],
+    task: true,
+  };
+
+  test("problems become tasks; evidence-only problems do not", () => {
+    const recs = buildRecommendations({
+      ...none,
+      integrations: [
+        status("needs-attention", [
+          missing,
+          { ...missing, code: "X", task: false },
+        ]),
+      ],
+    });
+    expect(recs).toEqual([
+      expect.objectContaining({
+        title: "Set up Google Analytics 4 (INT_GA4_MISSING)",
+        priority: "MEDIUM",
+        recommendedAction: "Add the Google tag.",
+        expectedImpact:
+          "Lets you measure visits and conversions. It does not affect search rankings.",
+      }),
+    ]);
+    expect(
+      recommendationBasis({ title: recs[0].title, issueId: null }),
+    ).toEqual({ kind: "integration", key: "GA4", code: "MISSING" });
+  });
+
+  test("a task is completed only once the integration was actually checked", () => {
+    const rec = {
+      title: "Set up Google Analytics 4 (INT_GA4_MISSING)",
+      issueId: null,
+    };
+    expect(
+      heldReason(rec, ctx({ integrations: [status("not-checked")] })),
+    ).toBe("unverified");
+    expect(heldReason(rec, ctx())).toBe("unverified");
+    expect(
+      heldReason(rec, ctx({ integrations: [status("detected")] })),
+    ).toBeNull();
+  });
+
+  test("every kind of recommendation gets complete metadata", () => {
+    const c = ctx({
+      inputs: {
+        ...none,
+        performance: { score: 40, lcpMs: 4000, clsScore: 0.2 },
+        aiSearch: { results: 6, mentioned: 1 },
+      },
+      integrations: [status("needs-attention", [missing])],
+      analysedPages: 10,
+      remainingRules: new Map([
+        ["TECH_TITLE_TOO_LONG", { open: 9, ignored: 0 }],
+      ]),
+      ruleDetails: new Map([
+        [
+          "TECH_TITLE_TOO_LONG",
+          {
+            severity: "LOW" as const,
+            urls: ["https://a.example/"],
+            samples: ["https://a.example/: 72 characters (recommended max 60)"],
+            homepage: true,
+          },
+        ],
+      ]),
+      issues: new Map([
+        [
+          "i1",
+          {
+            status: "OPEN" as const,
+            category: "SSL" as const,
+            resolution: null,
+            severity: "HIGH" as const,
+            description: "Renew the certificate.",
+            firstSeenAt: T0,
+            lastSeenAt: T1,
+          },
+        ],
+      ]),
+    });
+    const metas = [
+      recommendationMeta(ruleRec, c),
+      recommendationMeta({ title: "Resolve: SSL", issueId: "i1" }, c),
+      recommendationMeta({ title: "Improve page speed", issueId: null }, c),
+      recommendationMeta(
+        {
+          title: "Increase brand visibility in AI search answers",
+          issueId: null,
+        },
+        c,
+      ),
+      recommendationMeta(
+        { title: "Set up Google Analytics 4 (INT_GA4_MISSING)", issueId: null },
+        c,
+      ),
+    ];
+    for (const m of metas) {
+      expect(m).not.toBeNull();
+      expect(m!.verification).toBeTruthy();
+      expect(m!.priorityRationale).toBeTruthy();
+      expect(m!.confidenceReason).toBeTruthy();
+      expect(m!.effortReason).toBeTruthy();
+      // No predicted impact percentages anywhere.
+      expect(JSON.stringify(m)).not.toMatch(/\d\s?%/);
+    }
+    const [seo, issue, perf, ai, ga4] = metas;
+    expect(seo).toMatchObject({
+      benefit: "search-appearance",
+      confidence: "high",
+      likelyTemplate: true,
+      coverage: { affected: 9, analysed: 10 },
+      urls: ["https://a.example/"],
+    });
+    expect(seo!.priorityRationale).toBe(
+      "Ranked by severity, then pages affected: Low severity · 9 of 10 analysed pages · includes the home page.",
+    );
+    expect(issue).toMatchObject({ benefit: "security-trust", effort: null });
+    expect(perf).toMatchObject({
+      benefit: "user-experience",
+      confidence: "medium",
+    });
+    expect(ai).toMatchObject({ benefit: "ai-visibility", confidence: "low" });
+    expect(ga4).toMatchObject({ benefit: "measurement", confidence: "high" });
+  });
+
+  test("metadata is null when its evidence is gone (never invented)", () => {
+    expect(recommendationMeta(ruleRec, ctx())).toBeNull();
+    expect(
+      recommendationMeta({ title: "Resolve: x", issueId: "missing" }, ctx()),
+    ).toBeNull();
+  });
+
+  test("the template label needs ≥ 80 % of analysed pages and at least 3 pages", () => {
+    const base = {
+      ruleId: "TECH_H1_MISSING",
+      severity: "MEDIUM" as const,
+      urls: [],
+      samples: [],
+      homepageAffected: false,
+    };
+    expect(
+      seoRuleMeta({ ...base, open: 8, analysedPages: 10 }).likelyTemplate,
+    ).toBe(true);
+    expect(
+      seoRuleMeta({ ...base, open: 7, analysedPages: 10 }).likelyTemplate,
+    ).toBe(false);
+    expect(
+      seoRuleMeta({ ...base, open: 2, analysedPages: 2 }).likelyTemplate,
+    ).toBe(false);
+    expect(
+      seoRuleMeta({ ...base, open: 5, analysedPages: null }).coverage,
+    ).toBeNull();
   });
 });

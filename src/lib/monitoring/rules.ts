@@ -11,6 +11,17 @@ import type { CheckResult } from "./checks";
  * failure produced a CRITICAL issue, and BLOCKED left a website HEALTHY.
  */
 
+/**
+ * The check types that make up monitoring (status, issues, history and the
+ * check-history export). Other types, such as the integration probe, are
+ * stored in the same table but never shown or counted as monitoring.
+ */
+export const MONITORING_CHECK_TYPES = [
+  "UPTIME",
+  "SSL",
+  "DNS",
+] as const satisfies ReadonlyArray<CheckType>;
+
 export const DEFAULT_MONITORING_CHECKS = [
   { type: "UPTIME", intervalMinutes: 5 },
   { type: "DNS", intervalMinutes: 30 },

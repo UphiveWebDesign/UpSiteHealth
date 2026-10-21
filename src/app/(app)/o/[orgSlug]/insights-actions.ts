@@ -19,6 +19,11 @@ import {
 import { db } from "@/lib/db";
 import { runBackground } from "@/lib/log";
 import { serverEnv } from "@/lib/env";
+import {
+  lastProbeAt,
+  PROBE_COOLDOWN_MS,
+  runIntegrationCheck,
+} from "@/lib/integrations/service";
 import { recordPageSpeed } from "@/lib/performance/pagespeed";
 import { syncRecommendations } from "@/lib/recommendations/generate";
 import { recordScoreSnapshot } from "@/lib/scoring/snapshots";
@@ -86,6 +91,40 @@ export async function runPageSpeedAction(
     ),
   );
   return { ok: "PageSpeed test started. Refresh in about a minute." };
+}
+
+/** Public integration probe (robots.txt, sitemaps, DNS, Bing, GTM). */
+export async function runIntegrationCheckAction(
+  orgSlug: string,
+  websiteId: string,
+  _prev: FormState,
+): Promise<FormState> {
+  const ctx = await requireOrgContext(orgSlug, "MEMBER");
+  const website = await websiteFor(ctx, websiteId);
+  const last = await lastProbeAt(db(), {
+    websiteId: website.id,
+    organizationId: website.organizationId,
+  });
+  if (last && Date.now() - last.getTime() < PROBE_COOLDOWN_MS) {
+    return {
+      error:
+        "An integration check ran moments ago. Try again in a couple of minutes.",
+    };
+  }
+  // A handful of bounded requests; runs after the response is sent.
+  after(() =>
+    runBackground(
+      "integration_check",
+      { websiteId: website.id, organizationId: website.organizationId },
+      async () => {
+        await runIntegrationCheck(db(), website, {
+          deadline: Date.now() + 55_000,
+        });
+        await syncRecommendations(db(), website);
+      },
+    ),
+  );
+  return { ok: "Integration check started. Refresh in about a minute." };
 }
 
 export async function refreshRecommendationsAction(

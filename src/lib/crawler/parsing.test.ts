@@ -124,13 +124,15 @@ describe("parsePage", () => {
     expect(page.wordCount).toBe(11);
   });
 
-  test("result JSON matches the production shape", () => {
+  test("result JSON matches the production shape (plus the additive tags key)", () => {
+    // Production keys are unchanged; `tags` is new and absent on older rows.
     expect(Object.keys(page.result).sort()).toEqual([
       "charset",
       "headings",
       "images",
       "links",
       "structuredData",
+      "tags",
     ]);
     expect(page.result.charset).toBe("utf-8");
     expect(page.result.headings).toEqual({
@@ -171,5 +173,58 @@ describe("parsePage", () => {
       true,
       false,
     ]);
+  });
+});
+
+describe("tracking and verification tags", () => {
+  const tagsOf = (head: string, body = "") =>
+    parsePage(
+      `<html><head>${head}</head><body>${body}</body></html>`,
+      "https://example.com/",
+    ).result.tags;
+
+  test("a standard GA4 install lists its ID once", () => {
+    expect(
+      tagsOf(`<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>
+        <script>window.dataLayer=[];function gtag(){dataLayer.push(arguments)}
+        gtag('js', new Date()); gtag('config', 'G-ABC123');</script>`),
+    ).toMatchObject({ ga4: ["G-ABC123"], gtagLoaders: 1, ua: [], gtm: [] });
+  });
+
+  test("duplicates stay visible: config twice, loader twice", () => {
+    const t =
+      tagsOf(`<script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>
+      <script async src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>
+      <script>gtag('config','G-ABC123'); gtag("config", "G-ABC123");</script>`);
+    expect(t.ga4).toEqual(["G-ABC123", "G-ABC123"]);
+    expect(t.gtagLoaders).toBe(2);
+  });
+
+  test("GTM snippet with its noscript fallback is one container", () => {
+    const t = tagsOf(
+      `<script>(function(w,d,s,l,i){var j=d.createElement(s);j.src='https://www.googletagmanager.com/gtm.js?id='+i;})(window,document,'script','dataLayer','GTM-AB12CD');</script>`,
+      `<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-AB12CD"></iframe></noscript>`,
+    );
+    expect(t.gtm).toEqual(["GTM-AB12CD"]);
+  });
+
+  test("old Universal Analytics IDs are recognised", () => {
+    expect(
+      tagsOf(`<script>ga('create', 'UA-12345-1', 'auto');</script>
+        <script async src="https://www.googletagmanager.com/gtag/js?id=UA-999999-2"></script>`)
+        .ua,
+    ).toEqual(["UA-12345-1", "UA-999999-2"]);
+  });
+
+  test("verification meta tags; look-alike hosts are ignored", () => {
+    const t = tagsOf(`<meta name="google-site-verification" content="abc">
+      <meta name="msvalidate.01" content="XYZ">
+      <script src="https://googletagmanager.com.evil.example/gtag/js?id=G-FAKE1234"></script>`);
+    expect(t).toMatchObject({
+      googleSiteVerification: ["abc"],
+      bingSiteVerification: ["XYZ"],
+      ga4: [],
+      gtagLoaders: 0,
+    });
   });
 });

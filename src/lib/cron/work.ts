@@ -7,6 +7,11 @@ import {
 import type { SearchProvider } from "@/lib/ai-search/providers";
 import { processDeliveryJobs, type EmailSender } from "@/lib/alerts/delivery";
 import { processCrawls } from "@/lib/crawler/engine";
+import { ProbeDeadlineError, type ProbeDeps } from "@/lib/integrations/probe";
+import {
+  runIntegrationCheck,
+  websitesDueForProbe,
+} from "@/lib/integrations/service";
 import { log } from "@/lib/log";
 import {
   processMonitoringJobs,
@@ -28,7 +33,14 @@ export type CronDeps = {
   appUrl?: string;
   /** Test seam: replaces the real network checks. Production leaves it unset. */
   monitoringRunner?: Runner;
+  /** Test seam for the integration probe (network policy, DNS, GTM origin). */
+  probeDeps?: ProbeDeps;
 };
+
+/** Websites probed per cron run; each probe makes a handful of requests. */
+const PROBES_PER_RUN = 2;
+/** Do not start a probe with less time than this left in the stage. */
+const PROBE_MIN_MS = 30_000;
 
 /** The production stage list, in order, with cumulative time-budget shares. */
 export function cronStages(deps: CronDeps): Stage[] {
@@ -87,7 +99,7 @@ export function cronStages(deps: CronDeps): Stage[] {
     },
     {
       name: "notifications",
-      until: 0.9,
+      until: 0.88,
       run: async ({ deadline }) => {
         const counts = await processDeliveryJobs(db, {
           sender: deps.emailSender,
@@ -101,6 +113,54 @@ export function cronStages(deps: CronDeps): Stage[] {
           );
         }
         return counts;
+      },
+    },
+    {
+      name: "integrations",
+      until: 0.95,
+      run: async ({ deadline }) => {
+        const due = await websitesDueForProbe(db, PROBES_PER_RUN);
+        let probed = 0;
+        let failed = 0;
+        let deferred = 0;
+        for (const website of due) {
+          if (deadline - Date.now() < PROBE_MIN_MS) {
+            deferred++;
+            continue;
+          }
+          try {
+            await runIntegrationCheck(db, website, {
+              ...deps.probeDeps,
+              deadline,
+            });
+            await syncRecommendations(db, website);
+            probed++;
+          } catch (error) {
+            // Out of budget is not a failure: it is retried next run.
+            if (error instanceof ProbeDeadlineError) {
+              deferred++;
+              continue;
+            }
+            failed++;
+            log.error(
+              "integration_probe_failed",
+              {
+                runId,
+                websiteId: website.id,
+                organizationId: website.organizationId,
+              },
+              error,
+            );
+          }
+        }
+        const result = { due: due.length, probed, failed, deferred };
+        if (failed > 0) {
+          throw new StageIncompleteError(
+            `${failed} integration check(s) failed`,
+            result,
+          );
+        }
+        return result;
       },
     },
     {

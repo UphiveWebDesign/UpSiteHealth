@@ -15,6 +15,7 @@ export function WebsiteNav({
     { href: `${base}/seo`, label: "SEO findings" },
     { href: `${base}/recommendations`, label: "Recommendations" },
     { href: `${base}/crawls`, label: "Crawls" },
+    { href: `${base}/integrations`, label: "Integrations" },
     { href: `${base}/ai-search`, label: "AI Search" },
     { href: `${base}/settings`, label: "Settings" },
   ];

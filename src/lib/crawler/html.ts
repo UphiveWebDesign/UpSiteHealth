@@ -24,6 +24,27 @@ export type StructuredDataBlock = {
   error: string | null;
 };
 
+/**
+ * Tracking and verification identifiers seen in the page source. Every
+ * occurrence is kept (capped), so duplicates stay visible. Presence is
+ * evidence that a tag is installed, never that it works.
+ */
+export type PageTags = {
+  /**
+   * GA4 measurement IDs (G-…): one entry per gtag('config') call, plus IDs
+   * that are only in a gtag.js URL. A standard install lists its ID once.
+   */
+  ga4: string[];
+  /** Separate gtag.js loader scripts on the page. */
+  gtagLoaders: number;
+  /** Google Tag Manager containers (GTM-…), from gtm.js, ns.html and snippets. */
+  gtm: string[];
+  /** Universal Analytics IDs (UA-…), which Google no longer processes. Same counting as ga4. */
+  ua: string[];
+  googleSiteVerification: string[];
+  bingSiteVerification: string[];
+};
+
 export type ParsedPage = {
   title: string | null;
   metaDescription: string | null;
@@ -37,6 +58,7 @@ export type ParsedPage = {
     images: PageImage[];
     links: PageLink[];
     structuredData: StructuredDataBlock[];
+    tags: PageTags;
   };
 };
 
@@ -49,6 +71,100 @@ function clean(text: string | undefined | null): string {
 
 function clip(text: string): string {
   return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text;
+}
+
+const MAX_TAGS = 20;
+const GTM_ID = /\bGTM-[A-Z0-9]{4,12}\b/g;
+const UA_ID = /\bUA-\d{4,10}-\d{1,4}\b/g;
+const GTAG_CONFIG =
+  /gtag\(\s*['"]config['"]\s*,\s*['"]([A-Z]{1,3}-[A-Z0-9-]{4,20})['"]/g;
+const GOOGLE_HOST =
+  /^(?:www\.)?googletagmanager\.com$|^(?:www\.)?google-analytics\.com$/i;
+
+const push = (into: string[], values: Iterable<string>) => {
+  for (const v of values) if (into.length < MAX_TAGS) into.push(v);
+};
+
+function googleScriptUrl(src: string, pageUrl: string): URL | null {
+  try {
+    const u = new URL(src, pageUrl);
+    return GOOGLE_HOST.test(u.hostname) ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Finds tracking and verification identifiers in the page source. */
+export function extractTags(root: HTMLElement, pageUrl: string): PageTags {
+  const tags: PageTags = {
+    ga4: [],
+    gtagLoaders: 0,
+    gtm: [],
+    ua: [],
+    googleSiteVerification: [],
+    bingSiteVerification: [],
+  };
+  const loaded = { ga4: [] as string[], ua: [] as string[] };
+  const configured = { ga4: [] as string[], ua: [] as string[] };
+  for (const script of root.querySelectorAll("script")) {
+    const src = script.getAttribute("src");
+    if (src) {
+      const u = googleScriptUrl(src, pageUrl);
+      const id = u?.searchParams.get("id") ?? "";
+      if (u?.pathname === "/gtag/js") {
+        tags.gtagLoaders++;
+        if (/^G-/.test(id)) loaded.ga4.push(id);
+        else if (/^UA-/.test(id)) loaded.ua.push(id);
+      } else if (u?.pathname === "/gtm.js" && /^GTM-/.test(id)) {
+        push(tags.gtm, [id]);
+      }
+      continue;
+    }
+    const code = script.text;
+    if (!code || code.length > 200_000) continue;
+    for (const m of code.matchAll(GTAG_CONFIG)) {
+      if (m[1].startsWith("G-")) configured.ga4.push(m[1]);
+      else if (m[1].startsWith("UA-")) configured.ua.push(m[1]);
+    }
+    // The standard GTM snippet passes the container ID to an inline loader.
+    if (/googletagmanager\.com\/gtm\.js/.test(code)) {
+      push(tags.gtm, code.match(GTM_ID) ?? []);
+    }
+    // analytics.js / ga.js style: ga('create', 'UA-…').
+    if (/\bga\(\s*['"]create['"]|_gaq\.push/.test(code)) {
+      configured.ua.push(...(code.match(UA_ID) ?? []));
+    }
+  }
+  for (const key of ["ga4", "ua"] as const) {
+    push(tags[key], configured[key]);
+    push(
+      tags[key],
+      loaded[key].filter((id) => !configured[key].includes(id)),
+    );
+  }
+  for (const frame of root.querySelectorAll("iframe[src]")) {
+    const u = googleScriptUrl(frame.getAttribute("src") ?? "", pageUrl);
+    const id = u?.searchParams.get("id") ?? "";
+    // The <noscript> fallback repeats the container; count it only if no
+    // script loader was found, so one normal install is not a "duplicate".
+    if (
+      u?.pathname === "/ns.html" &&
+      /^GTM-/.test(id) &&
+      !tags.gtm.includes(id)
+    ) {
+      push(tags.gtm, [id]);
+    }
+  }
+  for (const [name, into] of [
+    ["google-site-verification", tags.googleSiteVerification],
+    ["msvalidate.01", tags.bingSiteVerification],
+  ] as const) {
+    for (const m of root.querySelectorAll(`meta[name="${name}" i]`)) {
+      const v = attr(m, "content");
+      if (v) push(into, [v.slice(0, 100)]);
+    }
+  }
+  return tags;
 }
 
 function attr(el: HTMLElement | null, name: string): string | null {
@@ -133,6 +249,8 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
       }
     });
 
+  const tags = extractTags(root, pageUrl);
+
   const charsetEl = root.querySelector("meta[charset]");
   const httpEquiv = attr(
     root.querySelector('meta[http-equiv="content-type" i]'),
@@ -159,6 +277,6 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
     robotsMetaRaw: meta("robots"),
     language: attr(root.querySelector("html"), "lang"),
     wordCount,
-    result: { charset, headings, images, links, structuredData },
+    result: { charset, headings, images, links, structuredData, tags },
   };
 }
