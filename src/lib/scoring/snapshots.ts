@@ -129,8 +129,23 @@ export async function recordScoreSnapshot(
  */
 export async function refreshStaleSnapshots(
   db: PrismaClient,
-  { now = new Date(), maxAgeMinutes = 60, limit = 25 } = {},
-): Promise<{ refreshed: WebsiteRef[]; failed: number }> {
+  {
+    now = new Date(),
+    maxAgeMinutes = 60,
+    limit = 25,
+    deadline = Infinity,
+    reserveMs = 0,
+    clock = Date.now,
+  }: {
+    now?: Date;
+    maxAgeMinutes?: number;
+    limit?: number;
+    /** Epoch ms; no website is started with less than `reserveMs` left. */
+    deadline?: number;
+    reserveMs?: number;
+    clock?: () => number;
+  } = {},
+): Promise<{ refreshed: WebsiteRef[]; failed: number; deferred: number }> {
   const cutoff = new Date(now.getTime() - maxAgeMinutes * 60_000);
   const stale = await db.$queryRaw<WebsiteRef[]>`
     SELECT w.id, w."organizationId"
@@ -144,7 +159,13 @@ export async function refreshStaleSnapshots(
     LIMIT ${limit}`;
   const refreshed: WebsiteRef[] = [];
   let failed = 0;
+  let deferred = 0;
   for (const w of stale) {
+    // Not started: still stale, so the next run picks it up again.
+    if (deadline - clock() < reserveMs) {
+      deferred++;
+      continue;
+    }
     try {
       await recordScoreSnapshot(db, w, now);
       refreshed.push(w);
@@ -157,5 +178,5 @@ export async function refreshStaleSnapshots(
       );
     }
   }
-  return { refreshed, failed };
+  return { refreshed, failed, deferred };
 }

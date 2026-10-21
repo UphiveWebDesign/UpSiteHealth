@@ -35,16 +35,23 @@ export type CronDeps = {
   monitoringRunner?: Runner;
   /** Test seam for the integration probe (network policy, DNS, GTM origin). */
   probeDeps?: ProbeDeps;
+  /** Test seam: the clock stages compare with their deadline. */
+  clock?: () => number;
 };
 
 /** Websites probed per cron run; each probe makes a handful of requests. */
 const PROBES_PER_RUN = 2;
 /** Do not start a probe with less time than this left in the stage. */
 const PROBE_MIN_MS = 30_000;
+/** Time to leave for one website's recommendation sync. */
+const SYNC_MIN_MS = 3_000;
+/** Time to leave for one website's score snapshot plus its sync. */
+const INSIGHTS_SITE_MIN_MS = 5_000;
 
 /** The production stage list, in order, with cumulative time-budget shares. */
 export function cronStages(deps: CronDeps): Stage[] {
   const { db, workerId } = deps;
+  const clock = deps.clock ?? Date.now;
   const runId = workerId;
   return [
     { name: "schedule", until: 0.05, run: () => scheduleDueChecks(db) },
@@ -124,8 +131,9 @@ export function cronStages(deps: CronDeps): Stage[] {
         let failed = 0;
         let deferred = 0;
         let busy = 0;
+        let syncDeferred = 0;
         for (const website of due) {
-          if (deadline - Date.now() < PROBE_MIN_MS) {
+          if (deadline - clock() < PROBE_MIN_MS) {
             deferred++;
             continue;
           }
@@ -138,8 +146,14 @@ export function cronStages(deps: CronDeps): Stage[] {
               busy++; // an on-demand check holds the claim
               continue;
             }
-            await syncRecommendations(db, website);
             probed++;
+            // The probe is stored either way; the sync is idempotent and the
+            // insights stage repeats it within the hour.
+            if (deadline - clock() < SYNC_MIN_MS) {
+              syncDeferred++;
+              continue;
+            }
+            await syncRecommendations(db, website);
           } catch (error) {
             // Out of budget is not a failure: it is retried next run.
             if (error instanceof ProbeDeadlineError) {
@@ -158,10 +172,21 @@ export function cronStages(deps: CronDeps): Stage[] {
             );
           }
         }
-        const result = { due: due.length, probed, failed, deferred, busy };
-        if (failed > 0) {
+        const result = {
+          due: due.length,
+          probed,
+          failed,
+          deferred,
+          busy,
+          syncDeferred,
+        };
+        // Not started (deferred, busy) is retried automatically and is not
+        // a failure; failed probes or skipped follow-up work are reported.
+        if (failed > 0 || syncDeferred > 0) {
           throw new StageIncompleteError(
-            `${failed} integration check(s) failed`,
+            failed > 0
+              ? `${failed} integration check(s) failed`
+              : `${syncDeferred} recommendation sync(s) deferred for lack of time`,
             result,
           );
         }
@@ -171,13 +196,19 @@ export function cronStages(deps: CronDeps): Stage[] {
     {
       name: "insights",
       until: 1,
-      run: async () => {
-        const { refreshed, failed } = await refreshStaleSnapshots(db, {
-          limit: 10,
-        });
+      run: async ({ deadline }) => {
+        const { refreshed, failed, deferred } = await refreshStaleSnapshots(
+          db,
+          { limit: 10, deadline, reserveMs: INSIGHTS_SITE_MIN_MS, clock },
+        );
         let recommendationFailures = 0;
+        let syncDeferred = 0;
         // One website failing must not stop the others.
         for (const website of refreshed) {
+          if (deadline - clock() < SYNC_MIN_MS) {
+            syncDeferred++; // retried when its snapshot is next refreshed
+            continue;
+          }
           try {
             await syncRecommendations(db, website);
           } catch (error) {
@@ -197,8 +228,10 @@ export function cronStages(deps: CronDeps): Stage[] {
           snapshots: refreshed.length,
           snapshotFailures: failed,
           recommendationFailures,
+          deferred,
+          syncDeferred,
         };
-        if (failed > 0 || recommendationFailures > 0) {
+        if (failed > 0 || recommendationFailures > 0 || syncDeferred > 0) {
           throw new StageIncompleteError(
             "Some insights could not be refreshed",
             result,

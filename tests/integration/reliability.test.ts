@@ -12,6 +12,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { CheckOutcome, CheckType } from "@/generated/prisma/enums";
 import { mockProvider } from "@/lib/ai-search/providers";
 import type { ProbeDeps } from "@/lib/integrations/probe";
+import { StageIncompleteError } from "@/lib/cron/stages";
 import { AI_RUN_STALE_MS, recoverStaleAiRuns } from "@/lib/ai-search/runner";
 import { processDeliveryJobs } from "@/lib/alerts/delivery";
 import { finalizeCrawlRun } from "@/lib/crawler/engine";
@@ -218,6 +219,55 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(byName.integrations).toMatchObject({ ok: false });
       expect(byName.insights).toMatchObject({ ok: true });
       expect(byName.monitoring).toMatchObject({ ok: true });
+    });
+
+    test("M5: the insights stage does not start work it has no time for", async () => {
+      await site("deadline-insights"); // no snapshot yet, so it is stale
+      const stage = cronStages({
+        db,
+        workerId: `cron-dl-${run}`,
+        makeProvider: (_id, brand) => mockProvider(brand),
+        emailSender: null,
+        probeDeps: offlineProbe,
+      }).find((s) => s.name === "insights")!;
+      const result = (await stage.run({ deadline: Date.now() + 1_000 })) as {
+        snapshots: number;
+        deferred: number;
+      };
+      expect(result.snapshots).toBe(0);
+      expect(result.deferred).toBeGreaterThan(0); // reported, retried next run
+    });
+
+    test("M5: a recommendation sync skipped after a probe makes the stage incomplete", async () => {
+      await site("deadline-probe");
+      let offset = 0;
+      const start = Date.now();
+      const deadline = start + 120_000;
+      const stage = cronStages({
+        db,
+        workerId: `cron-dl2-${run}`,
+        makeProvider: (_id, brand) => mockProvider(brand),
+        emailSender: null,
+        // The probe "takes" almost the whole budget: the clock jumps while
+        // it runs, leaving no time for the recommendation sync.
+        probeDeps: {
+          ...offlineProbe,
+          resolveTxt: async () => {
+            offset = deadline - Date.now() - 1_000;
+            return [];
+          },
+        },
+        clock: () => Date.now() + offset,
+      }).find((s) => s.name === "integrations")!;
+      const error = await stage.run({ deadline }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(StageIncompleteError);
+      expect((error as StageIncompleteError).result).toMatchObject({
+        probed: 1,
+        syncDeferred: 1,
+      });
     });
 
     test("a monitoring job that errors in the database does not sink the rest of its batch", async () => {
