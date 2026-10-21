@@ -28,7 +28,10 @@ export function RecommendationDetails({
   }
   const benefit = BENEFIT[meta.benefit];
   const share = meta.coverage
-    ? Math.round((meta.coverage.affected / meta.coverage.analysed) * 100)
+    ? Math.min(
+        100,
+        Math.round((meta.coverage.affected / meta.coverage.analysed) * 100),
+      )
     : null;
   return (
     <div className="mt-3 flex flex-col gap-3">

@@ -196,6 +196,9 @@ export type RecommendationContext = {
     string,
     {
       severity: IssueSeverity;
+      scope: "PAGE" | "SITE";
+      /** Open findings on pages analysed in the latest crawl. */
+      onAnalysed: number;
       urls: string[];
       samples: string[];
       homepage: boolean;
@@ -303,21 +306,36 @@ export async function loadRecommendationContext(
   }
   const openFindings = await db.seoFinding.findMany({
     where: { ...scope, status: "OPEN" },
-    select: { ruleId: true, severity: true, evidence: true },
+    select: { ruleId: true, severity: true, scope: true, evidence: true },
     orderBy: { lastSeenAt: "desc" },
     take: 5000,
   });
   const home = evidence ? normalizeCrawlUrl(evidence.websiteUrl) : null;
+  // Pages the latest crawl loaded and analysed: the population for shares.
+  const analysed = new Set(
+    (evidence?.crawl?.pages ?? [])
+      .filter(
+        (p) =>
+          p.status === "CRAWLED" &&
+          p.resourceType === "HTML" &&
+          (p.httpStatus ?? 0) < 400 &&
+          !!p.result,
+      )
+      .map((p) => p.url),
+  );
   const ruleDetails: RecommendationContext["ruleDetails"] = new Map();
   for (const f of openFindings) {
     const d = ruleDetails.get(f.ruleId) ?? {
       severity: f.severity,
+      scope: f.scope,
+      onAnalysed: 0,
       urls: [],
       samples: [],
       homepage: false,
     };
     const url = (f.evidence as { url?: unknown } | null)?.url;
     if (typeof url === "string") {
+      if (f.scope === "PAGE" && analysed.has(url)) d.onAnalysed++;
       if (d.urls.length < 50) d.urls.push(url);
       if (url === home) d.homepage = true;
     }
@@ -327,14 +345,7 @@ export async function loadRecommendationContext(
     }
     ruleDetails.set(f.ruleId, d);
   }
-  const analysedPages = evidence?.crawl
-    ? evidence.crawl.pages.filter(
-        (p) =>
-          p.status === "CRAWLED" &&
-          p.resourceType === "HTML" &&
-          (p.httpStatus ?? 0) < 400,
-      ).length
-    : null;
+  const analysedPages = evidence?.crawl ? analysed.size : null;
 
   const resolvedTypes = [
     ...new Set(
@@ -681,6 +692,8 @@ export function recommendationMeta(
       return seoRuleMeta({
         ruleId: basis.ruleId,
         severity: d.severity,
+        scope: d.scope,
+        onAnalysed: d.onAnalysed,
         open: ctx.remainingRules.get(basis.ruleId)?.open ?? d.urls.length,
         urls: d.urls,
         samples: d.samples,

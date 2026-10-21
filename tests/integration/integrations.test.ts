@@ -462,6 +462,40 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(await latestProbe(db, slow.scope)).toBeNull(); // still backing off
     });
 
+    test("M3: template shares count only findings on pages the latest crawl analysed", async () => {
+      const { site, scope, crawl } = await setup("share");
+      await crawl(); // analyses / and /about
+      const run = await db.crawlRun.findFirstOrThrow({
+        where: { websiteId: site.id },
+      });
+      for (const path of ["/", "/about", "/ghost-1", "/ghost-2", "/ghost-3"]) {
+        await db.seoFinding.create({
+          data: {
+            ...scope,
+            crawlRunId: run.id,
+            ruleId: "TECH_H1_MULTIPLE",
+            scope: "PAGE",
+            severity: "LOW",
+            title: "Multiple H1",
+            description: "d",
+            recommendation: "r",
+            evidence: { url: `${origin}${path}` },
+            fingerprint: `TECH_H1_MULTIPLE::${origin}${path}`,
+          },
+        });
+      }
+      const ctx = await loadRecommendationContext(db, scope);
+      const meta = recommendationMeta(
+        { title: "Multiple H1 (TECH_H1_MULTIPLE)", issueId: null },
+        ctx,
+      )!;
+      expect(ctx.analysedPages).toBe(2);
+      expect(meta.coverage).toEqual({ affected: 2, analysed: 2 });
+      expect(meta.priorityRationale).toContain(
+        "2 of 2 analysed pages · 3 more pages not analysed in the latest crawl",
+      );
+    });
+
     test("tenant isolation and scheduling", async () => {
       const { site, scope } = await setup("tenant");
       const other = await db.organization.create({

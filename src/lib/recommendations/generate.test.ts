@@ -394,6 +394,8 @@ describe("integration setup tasks and metadata", () => {
           "TECH_TITLE_TOO_LONG",
           {
             severity: "LOW" as const,
+            scope: "PAGE" as const,
+            onAnalysed: 9,
             urls: ["https://a.example/"],
             samples: ["https://a.example/: 72 characters (recommended max 60)"],
             homepage: true,
@@ -467,25 +469,79 @@ describe("integration setup tasks and metadata", () => {
     ).toBeNull();
   });
 
-  test("the template label needs ≥ 80 % of analysed pages and at least 3 pages", () => {
+  describe("shared-template metrics (M3)", () => {
     const base = {
       ruleId: "TECH_H1_MISSING",
       severity: "MEDIUM" as const,
+      scope: "PAGE" as const,
       urls: [],
       samples: [],
       homepageAffected: false,
     };
-    expect(
-      seoRuleMeta({ ...base, open: 8, analysedPages: 10 }).likelyTemplate,
-    ).toBe(true);
-    expect(
-      seoRuleMeta({ ...base, open: 7, analysedPages: 10 }).likelyTemplate,
-    ).toBe(false);
-    expect(
-      seoRuleMeta({ ...base, open: 2, analysedPages: 2 }).likelyTemplate,
-    ).toBe(false);
-    expect(
-      seoRuleMeta({ ...base, open: 5, analysedPages: null }).coverage,
-    ).toBeNull();
+    test("needs ≥ 80 % of analysed pages and at least 3 pages", () => {
+      const at = (onAnalysed: number, analysedPages: number | null) =>
+        seoRuleMeta({ ...base, open: onAnalysed, onAnalysed, analysedPages });
+      expect(at(8, 10).likelyTemplate).toBe(true);
+      expect(at(7, 10).likelyTemplate).toBe(false);
+      expect(at(2, 2).likelyTemplate).toBe(false);
+      expect(at(5, null).coverage).toBeNull();
+    });
+
+    test("findings on pages the latest crawl did not analyse are counted separately", () => {
+      // Previously 120 open findings over 100 analysed pages read as 120%.
+      const m = seoRuleMeta({
+        ...base,
+        open: 120,
+        onAnalysed: 90,
+        analysedPages: 100,
+      });
+      expect(m.coverage).toEqual({ affected: 90, analysed: 100 });
+      expect(m.likelyTemplate).toBe(true);
+      expect(m.priorityRationale).toBe(
+        "Ranked by severity, then pages affected: Medium severity · 90 of 100 analysed pages · 30 more pages not analysed in the latest crawl.",
+      );
+      const few = seoRuleMeta({
+        ...base,
+        open: 50,
+        onAnalysed: 2,
+        analysedPages: 10,
+      });
+      expect(few).toMatchObject({
+        coverage: { affected: 2, analysed: 10 },
+        likelyTemplate: false,
+      });
+    });
+
+    test("never more than the analysed pages, even with inconsistent inputs", () => {
+      const m = seoRuleMeta({
+        ...base,
+        open: 30,
+        onAnalysed: 30,
+        analysedPages: 20,
+      });
+      expect(m.coverage!.affected).toBeLessThanOrEqual(m.coverage!.analysed);
+    });
+
+    test("site-wide rules and error pages have no page share", () => {
+      const site = seoRuleMeta({
+        ...base,
+        ruleId: "TECH_DUPLICATE_TITLE",
+        scope: "SITE",
+        open: 4,
+        onAnalysed: 0,
+        analysedPages: 10,
+      });
+      expect(site).toMatchObject({ coverage: null, likelyTemplate: false });
+      expect(site.priorityRationale).toContain("4 site-wide findings");
+      const errors = seoRuleMeta({
+        ...base,
+        ruleId: "TECH_HTTP_ERROR",
+        open: 9,
+        onAnalysed: 0,
+        analysedPages: 10,
+      });
+      expect(errors).toMatchObject({ coverage: null, likelyTemplate: false });
+      expect(errors.priorityRationale).toContain("9 affected pages");
+    });
   });
 });

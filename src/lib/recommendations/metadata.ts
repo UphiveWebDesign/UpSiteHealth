@@ -175,28 +175,51 @@ const SEVERITY_WORD: Record<IssueSeverity, string> = {
   INFO: "Informational",
 };
 
+/** Rules whose pages cannot be in the analysed population (they failed). */
+const NOT_ON_ANALYSED_PAGES = new Set(["TECH_HTTP_ERROR"]);
+
+const n = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
+
 export function seoRuleMeta(input: {
   ruleId: string;
   severity: IssueSeverity;
+  scope: "PAGE" | "SITE";
+  /** All open findings for the rule. */
   open: number;
+  /** Open page findings on pages successfully analysed in the latest crawl. */
+  onAnalysed: number;
   urls: string[];
   samples: string[];
+  /** Pages successfully analysed in the latest crawl (null: no crawl). */
   analysedPages: number | null;
   homepageAffected: boolean;
 }): RecommendationMeta {
   const rule = SEO_RULE_META[input.ruleId] ?? DEFAULT_RULE;
-  const share =
-    input.analysedPages && input.analysedPages > 0
-      ? Math.min(1, input.open / input.analysedPages)
-      : null;
+  // Numerator and denominator come from the same population: pages the
+  // latest crawl analysed. Site-wide rules and error pages have no share.
+  const measurable =
+    input.scope === "PAGE" &&
+    !NOT_ON_ANALYSED_PAGES.has(input.ruleId) &&
+    !!input.analysedPages;
+  const affected = Math.min(input.onAnalysed, input.analysedPages ?? 0);
+  const coverage = measurable
+    ? { affected, analysed: input.analysedPages! }
+    : null;
   const likelyTemplate =
-    share !== null && share >= TEMPLATE_SHARE && input.open >= 3;
-  const parts = [
-    `${SEVERITY_WORD[input.severity]} severity`,
-    input.analysedPages
-      ? `${input.open} of ${input.analysedPages} analysed pages`
-      : `${input.open} open finding${input.open === 1 ? "" : "s"}`,
-  ];
+    !!coverage &&
+    coverage.affected >= 3 &&
+    coverage.affected / coverage.analysed >= TEMPLATE_SHARE;
+  const elsewhere = input.open - (coverage ? affected : 0);
+  const parts = [`${SEVERITY_WORD[input.severity]} severity`];
+  if (input.scope === "SITE") parts.push(n(input.open, "site-wide finding"));
+  else if (coverage) {
+    parts.push(`${affected} of ${coverage.analysed} analysed pages`);
+    if (elsewhere > 0)
+      parts.push(
+        `${n(elsewhere, "more page")} not analysed in the latest crawl`,
+      );
+  } else parts.push(n(input.open, "affected page"));
   if (input.homepageAffected) parts.push("includes the home page");
   return {
     benefit: rule.benefit,
@@ -211,9 +234,7 @@ export function seoRuleMeta(input: {
     priorityRationale: `Ranked by severity, then pages affected: ${parts.join(" · ")}.`,
     evidence: input.samples,
     urls: input.urls,
-    coverage: input.analysedPages
-      ? { affected: input.open, analysed: input.analysedPages }
-      : null,
+    coverage,
     likelyTemplate,
     verification:
       "Confirmed by the next crawl, once every affected page loads and passes this check.",
