@@ -8,6 +8,7 @@ import {
   startCrawl,
 } from "@/lib/crawler/engine";
 import type { NetPolicy } from "@/lib/net/ssrf";
+import { loadCrawlComparison } from "@/lib/seo/compare";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
@@ -22,6 +23,7 @@ const DESC =
 let aboutTitle =
   "About us and a far too long page title that goes beyond sixty chars";
 let aboutStatus = 200;
+let levelOneStatus = 200;
 
 function pageHtml(title: string, body: string, desc = DESC) {
   return `<!doctype html><html lang="en"><head><title>${title}</title>
@@ -64,6 +66,10 @@ beforeAll(async () => {
         }
         return html(pageHtml(aboutTitle, "<p>About</p>"));
       case "/level1":
+        if (levelOneStatus !== 200) {
+          res.writeHead(levelOneStatus, { "content-type": "text/html" });
+          return res.end("<h1>Server error</h1>");
+        }
         return html(
           pageHtml("Level one page of the site", `<a href="/level2">L2</a>`),
         );
@@ -297,6 +303,91 @@ describe.skipIf(!TEST_DATABASE_URL)(
       // Only the home page was rechecked; it had no findings to fix, and
       // site-wide findings need a completed crawl.
       expect(after.every((f) => f.status === "OPEN")).toBe(true);
+    });
+
+    test("comparing crawls: fixed, new, not rechecked, came back, ignored — on real crawls", async () => {
+      const { org, tdb, site } = await setup("compare");
+      const longTitle =
+        "About us and a far too long page title that goes beyond sixty chars";
+      const recrawl = async () => {
+        await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+        await crawl();
+      };
+      const pick = (
+        c: Awaited<ReturnType<typeof loadCrawlComparison>>,
+        kind: string,
+      ) =>
+        c!.items
+          .filter((i) => i.kind === kind)
+          .map((i) => `${i.ruleId} ${i.url?.replace(origin, "") ?? "site"}`)
+          .sort();
+
+      await recrawl();
+      const first = await loadCrawlComparison(tdb, site.id);
+      expect(first?.previous).toBeNull();
+      expect(first?.items).toEqual([]);
+
+      // Ignore the home page image finding; it must never count as fixed.
+      await db.seoFinding.updateMany({
+        where: {
+          websiteId: site.id,
+          fingerprint: `TECH_IMAGE_MISSING_DIMENSIONS::${origin}/`,
+        },
+        data: { status: "IGNORED" },
+      });
+
+      // Crawl 2: /about fixed for real; /level1 now fails with HTTP 500.
+      aboutTitle = "About the test company";
+      levelOneStatus = 500;
+      try {
+        await recrawl();
+      } finally {
+        aboutTitle = longTitle;
+        levelOneStatus = 200;
+      }
+      const second = await loadCrawlComparison(tdb, site.id);
+      expect(second!.previous!.id).toBe(first!.current.id);
+      expect(pick(second, "fixed")).toEqual(["TECH_TITLE_TOO_LONG /about"]);
+      expect(pick(second, "new")).toEqual(["TECH_HTTP_ERROR /level1"]);
+      expect(pick(second, "not-rechecked")).toEqual([
+        "TECH_THIN_CONTENT /level1",
+      ]);
+      expect(
+        second!.items.find((i) => i.kind === "not-rechecked")?.reason,
+      ).toContain("HTTP 500");
+      expect(pick(second, "ignored")).toEqual([
+        "TECH_IMAGE_MISSING_DIMENSIONS /",
+      ]);
+      expect(pick(second, "came-back")).toEqual([]);
+
+      // Crawl 3: /about regresses; /level1 recovers.
+      await recrawl();
+      const third = await loadCrawlComparison(tdb, site.id);
+      expect(pick(third, "came-back")).toEqual(["TECH_TITLE_TOO_LONG /about"]);
+      expect(pick(third, "fixed")).toEqual(["TECH_HTTP_ERROR /level1"]);
+      const thin = third!.items.find(
+        (i) => i.ruleId === "TECH_THIN_CONTENT" && i.url === `${origin}/level1`,
+      );
+      expect(thin).toMatchObject({
+        kind: "unchanged",
+        previouslyUnchecked: true,
+      });
+      expect(third!.counts.fixed + third!.counts["came-back"]).toBe(2);
+
+      // Historical: comparing crawl 2 explicitly gives the same answer.
+      const again = await loadCrawlComparison(tdb, site.id, second!.current.id);
+      expect(again!.counts).toEqual(second!.counts);
+
+      // Another organization sees nothing.
+      const other = await db.organization.create({
+        data: { name: `other ${run}`, slug: `crawl-other-${run}` },
+      });
+      orgIds.push(other.id);
+      const otherDb = tenantDb(db, other.id);
+      expect(await loadCrawlComparison(otherDb, site.id)).toBeNull();
+      expect(
+        await loadCrawlComparison(otherDb, site.id, third!.current.id),
+      ).toBeNull();
     });
 
     test("a page budget makes the run PARTIAL with BUDGET_EXCEEDED skips", async () => {

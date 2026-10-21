@@ -1,8 +1,7 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { CrawlRunStatus } from "@/generated/prisma/enums";
-import type { PageImage, StructuredDataBlock } from "@/lib/crawler/html";
-import { pageRecheckGap, siteRecheckGap, type RecheckPage } from "./recheck";
-import { analyzePage, analyzeSite, type SeoPage } from "./rules";
+import { analyzeCrawl, CRAWL_PAGE_SELECT } from "./analyze";
+import { pageRecheckGap, siteRecheckGap } from "./recheck";
 
 type RunRef = {
   id: string;
@@ -31,47 +30,9 @@ export async function syncSeoFindings(
 ): Promise<{ created: number; updated: number; resolved: number }> {
   const rows = await db.crawlPage.findMany({
     where: { crawlRunId: run.id },
-    select: {
-      id: true,
-      url: true,
-      status: true,
-      skipReason: true,
-      resourceType: true,
-      httpStatus: true,
-      title: true,
-      metaDescription: true,
-      canonicalUrl: true,
-      robotsMetaRaw: true,
-      h1Count: true,
-      wordCount: true,
-      result: true,
-    },
+    select: CRAWL_PAGE_SELECT,
   });
-  const byUrl = new Map<string, RecheckPage>(rows.map((r) => [r.url, r]));
-  // Error pages are analysed (HTTP rule only); other pages only if parsed.
-  const pages: SeoPage[] = rows
-    .filter(
-      (r) =>
-        r.status === "CRAWLED" &&
-        r.resourceType === "HTML" &&
-        (r.result !== null || (r.httpStatus ?? 0) >= 400),
-    )
-    .map((r) => {
-      const result = (r.result ?? {}) as {
-        images?: PageImage[];
-        structuredData?: StructuredDataBlock[];
-      };
-      return {
-        ...r,
-        images: result.images ?? [],
-        structuredData: result.structuredData ?? [],
-      };
-    });
-
-  const drafts = [
-    ...pages.flatMap((p) => analyzePage(p, siteHost)),
-    ...analyzeSite(pages, run),
-  ];
+  const { drafts, byUrl } = analyzeCrawl(rows, run, siteHost);
 
   const existing = await db.seoFinding.findMany({
     where: { websiteId: run.websiteId, organizationId: run.organizationId },

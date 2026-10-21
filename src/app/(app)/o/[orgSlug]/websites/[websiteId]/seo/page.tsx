@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { IssueSeverity, SeoFindingStatus } from "@/generated/prisma/enums";
+import { ChangeSummary } from "@/components/crawl-changes";
 import { Badge } from "@/components/ui/badge";
 import { Callout, EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
@@ -14,6 +15,7 @@ import {
   findingTarget,
   groupFindings,
 } from "@/lib/insights/seo";
+import { loadCrawlComparison } from "@/lib/seo/compare";
 import { describeGap, pageRecheckGap, siteRecheckGap } from "@/lib/seo/recheck";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
@@ -126,6 +128,9 @@ export default async function SeoFindingsPage({
           },
         })
       : [];
+  const comparison = lastCrawl
+    ? await loadCrawlComparison(ctx.db, websiteId, lastCrawl.id)
+    : null;
   const pageByUrl = new Map(recheckPages.map((p) => [p.url, p]));
   const gapFor = new Map<string, string>();
   for (const f of unconfirmed) {
@@ -188,6 +193,16 @@ export default async function SeoFindingsPage({
         </Card>
       ) : (
         <>
+          {comparison && (
+            <div className="mb-6">
+              <Card>
+                <ChangeSummary
+                  comparison={comparison}
+                  href={`${base}/crawls/${comparison.current.id}`}
+                />
+              </Card>
+            </div>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <FilterTabs
               label="Finding status"

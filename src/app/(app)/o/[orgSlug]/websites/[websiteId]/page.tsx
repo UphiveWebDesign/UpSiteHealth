@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { CheckType, IssueSeverity } from "@/generated/prisma/enums";
+import { ChangeSummary } from "@/components/crawl-changes";
 import { NextStepList } from "@/components/next-steps";
 import { DimensionList, scoreTone, Sparkline } from "@/components/score";
 import { ActionForm } from "@/components/ui/action-form";
@@ -23,6 +24,7 @@ import {
 import { healthLabel, nextSteps } from "@/lib/insights/next-steps";
 import { loadWebsiteSummaries } from "@/lib/insights/signals";
 import type { DimensionScore } from "@/lib/scoring/score";
+import { loadCrawlComparison } from "@/lib/seo/compare";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import {
@@ -126,6 +128,9 @@ export default async function WebsitePage({
       : null;
   const steps = summary ? nextSteps(summary, base) : [];
   const findingTotal = findingCounts.reduce((s, f) => s + f._count, 0);
+  const comparison = lastCrawl
+    ? await loadCrawlComparison(ctx.db, websiteId)
+    : null;
   const [uptimeCheck, sslCheck, dnsCheck] = latest;
   const headlines: Record<CheckType, Headline> = {
     UPTIME: uptimeHeadline(uptimeCheck),
@@ -521,6 +526,14 @@ export default async function WebsitePage({
                     );
                   })}
                 </ul>
+              )}
+              {comparison && (
+                <div className="mt-4 border-t border-line pt-4">
+                  <ChangeSummary
+                    comparison={comparison}
+                    href={`${site}/crawls/${comparison.current.id}`}
+                  />
+                </div>
               )}
             </>
           )}

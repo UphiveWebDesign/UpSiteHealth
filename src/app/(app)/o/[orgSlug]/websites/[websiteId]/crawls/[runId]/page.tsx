@@ -1,6 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { CrawlSkipReason, Prisma } from "@/generated/prisma/client";
+import {
+  CHANGE_META,
+  ChangeList,
+  ChangeSummary,
+} from "@/components/crawl-changes";
 import { Badge } from "@/components/ui/badge";
 import { Callout, EmptyState } from "@/components/ui/feedback";
 import {
@@ -13,6 +18,7 @@ import {
 import { MetricValue, Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
 import { formatDateTime, formatMs, humanize } from "@/lib/format";
+import { CHANGE_KINDS, loadCrawlComparison } from "@/lib/seo/compare";
 import { requireOrgContext } from "@/lib/tenancy/context";
 
 export const metadata: Metadata = { title: "Crawl · UpSiteHealth" };
@@ -77,7 +83,7 @@ export default async function CrawlRunPage({
   searchParams,
 }: PageProps<"/o/[orgSlug]/websites/[websiteId]/crawls/[runId]">) {
   const { orgSlug, websiteId, runId } = await params;
-  const { show } = await searchParams;
+  const { show, change } = await searchParams;
   const filterKey = (
     typeof show === "string" && show in FILTERS ? show : "all"
   ) as keyof typeof FILTERS;
@@ -121,6 +127,13 @@ export default async function CrawlRunPage({
       ),
     ),
   ]);
+
+  // Sequential: keeps the local single-connection database happy.
+  const comparison = await loadCrawlComparison(ctx.db, websiteId, runId);
+  const changeKind =
+    CHANGE_KINDS.find((k) => k === change) ??
+    CHANGE_KINDS.find((k) => comparison?.counts[k]) ??
+    "new";
 
   const status =
     run.cancelRequested && run.status === "RUNNING" ? "CANCELLED" : run.status;
@@ -179,6 +192,52 @@ export default async function CrawlRunPage({
         />
       </dl>
 
+      {comparison && (
+        <div id="changes" className="mb-6 scroll-mt-6">
+          <Card
+            title="What changed since the previous crawl"
+            description="Both crawls are checked with the same rules. A finding counts as fixed only when this crawl loaded the page and confirmed the problem is gone."
+            padded={false}
+          >
+            <div className="px-5 pt-4 pb-2">
+              <ChangeSummary
+                comparison={comparison}
+                href={`${base}/crawls/${runId}`}
+              />
+            </div>
+            {comparison.previous && (
+              <>
+                {comparison.counts["not-rechecked"] > 0 &&
+                  comparison.current.status !== "COMPLETED" && (
+                    <div className="px-5 pt-2">
+                      <Callout tone="info">
+                        This crawl was {humanize(status).toLowerCase()}, so some
+                        pages and site-wide checks were not repeated. Those
+                        findings are listed as not rechecked, not fixed.
+                      </Callout>
+                    </div>
+                  )}
+                <div className="px-5 pt-4">
+                  <FilterTabs
+                    label="Change type"
+                    items={CHANGE_KINDS.map((k) => ({
+                      href: `${base}/crawls/${runId}?change=${k}${filterKey === "all" ? "" : `&show=${filterKey}`}#changes`,
+                      label: CHANGE_META[k].label,
+                      active: k === changeKind,
+                      count: comparison.counts[k],
+                    }))}
+                  />
+                  <p className="-mt-2 mb-2 text-sm text-muted">
+                    {CHANGE_META[changeKind].text}
+                  </p>
+                </div>
+                <ChangeList items={comparison.items} kind={changeKind} />
+              </>
+            )}
+          </Card>
+        </div>
+      )}
+
       <div className="mb-6 grid gap-6 lg:grid-cols-3">
         <Card title="Why pages were skipped" className="lg:col-span-2">
           {skipGroups.length === 0 ? (
@@ -229,7 +288,7 @@ export default async function CrawlRunPage({
           <FilterTabs
             label="Page filter"
             items={filterKeys.map((k, i) => ({
-              href: `${base}/crawls/${runId}${k === "all" ? "" : `?show=${k}`}`,
+              href: `${base}/crawls/${runId}${k === "all" ? "" : `?show=${k}`}${comparison ? `${k === "all" ? "?" : "&"}change=${changeKind}` : ""}`,
               label: FILTERS[k].label,
               active: k === filterKey,
               count: counts[i],
