@@ -1,12 +1,14 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
+import type { CrawlRunStatus } from "@/generated/prisma/enums";
 import type { PageImage, StructuredDataBlock } from "@/lib/crawler/html";
+import { pageRecheckGap, siteRecheckGap, type RecheckPage } from "./recheck";
 import { analyzePage, analyzeSite, type SeoPage } from "./rules";
 
 type RunRef = {
   id: string;
   organizationId: string;
   websiteId: string;
-  status: string;
+  status: CrawlRunStatus;
   robotsTxtStatus: string | null;
   sitemapUrlsDiscovered: number | null;
 };
@@ -16,9 +18,10 @@ type RunRef = {
  *
  * - New fingerprints are created OPEN; known ones are refreshed.
  * - RESOLVED findings that reappear are reopened; IGNORED ones stay ignored.
- * - An OPEN page finding is resolved only if its URL was re-crawled in this
- *   run, so a partial or cancelled crawl never "fixes" pages it didn't visit.
- * - Site-level findings are resolved only after a COMPLETED run.
+ * - An OPEN finding is resolved only when this run re-evaluated it (see
+ *   recheck.ts): its page loaded, was analysed and stored the data the rule
+ *   needs. A skipped page, an error page or a partial crawl never "fixes"
+ *   anything. Site-level findings need a COMPLETED run.
  */
 export async function syncSeoFindings(
   db: PrismaClient,
@@ -27,10 +30,13 @@ export async function syncSeoFindings(
   now = new Date(),
 ): Promise<{ created: number; updated: number; resolved: number }> {
   const rows = await db.crawlPage.findMany({
-    where: { crawlRunId: run.id, status: "CRAWLED", resourceType: "HTML" },
+    where: { crawlRunId: run.id },
     select: {
       id: true,
       url: true,
+      status: true,
+      skipReason: true,
+      resourceType: true,
       httpStatus: true,
       title: true,
       metaDescription: true,
@@ -41,28 +47,37 @@ export async function syncSeoFindings(
       result: true,
     },
   });
-  const pages: SeoPage[] = rows.map((r) => {
-    const result = (r.result ?? {}) as {
-      images?: PageImage[];
-      structuredData?: StructuredDataBlock[];
-    };
-    return {
-      ...r,
-      images: result.images ?? [],
-      structuredData: result.structuredData ?? [],
-    };
-  });
+  const byUrl = new Map<string, RecheckPage>(rows.map((r) => [r.url, r]));
+  // Error pages are analysed (HTTP rule only); other pages only if parsed.
+  const pages: SeoPage[] = rows
+    .filter(
+      (r) =>
+        r.status === "CRAWLED" &&
+        r.resourceType === "HTML" &&
+        (r.result !== null || (r.httpStatus ?? 0) >= 400),
+    )
+    .map((r) => {
+      const result = (r.result ?? {}) as {
+        images?: PageImage[];
+        structuredData?: StructuredDataBlock[];
+      };
+      return {
+        ...r,
+        images: result.images ?? [],
+        structuredData: result.structuredData ?? [],
+      };
+    });
 
   const drafts = [
     ...pages.flatMap((p) => analyzePage(p, siteHost)),
     ...analyzeSite(pages, run),
   ];
-  const crawledUrls = new Set(pages.map((p) => p.url));
 
   const existing = await db.seoFinding.findMany({
     where: { websiteId: run.websiteId, organizationId: run.organizationId },
     select: {
       id: true,
+      ruleId: true,
       fingerprint: true,
       status: true,
       scope: true,
@@ -120,9 +135,9 @@ export async function syncSeoFindings(
       const toResolve = existing
         .filter((f) => f.status === "OPEN" && !seen.has(f.fingerprint))
         .filter((f) => {
-          if (f.scope === "SITE") return run.status === "COMPLETED";
+          if (f.scope === "SITE") return !siteRecheckGap(f.ruleId, run);
           const url = (f.evidence as { url?: string } | null)?.url;
-          return url !== undefined && crawledUrls.has(url);
+          return url !== undefined && !pageRecheckGap(f.ruleId, byUrl.get(url));
         })
         .map((f) => f.id);
       if (toResolve.length) {

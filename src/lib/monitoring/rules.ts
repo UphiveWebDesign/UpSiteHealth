@@ -147,3 +147,24 @@ export function decideIssue(
       return { action: "none" };
   }
 }
+
+export type IssueResolution = "verified" | "unverified";
+
+/**
+ * How we know a RESOLVED issue is fixed. The worker resolves an issue on a
+ * passing check and stamps `lastSeenAt` with the same instant, so that is
+ * verified. A person can also mark it resolved: that stays "unverified" until
+ * a passing check of the same type completes after it (`lastPassAt`).
+ */
+export function issueResolution(
+  issue: { status: string; resolvedAt: Date | null; lastSeenAt: Date },
+  lastPassAt: Date | null,
+): IssueResolution | null {
+  if (issue.status !== "RESOLVED" || !issue.resolvedAt) return null;
+  if (issue.resolvedAt.getTime() <= issue.lastSeenAt.getTime()) {
+    return "verified";
+  }
+  return lastPassAt && lastPassAt >= issue.resolvedAt
+    ? "verified"
+    : "unverified";
+}

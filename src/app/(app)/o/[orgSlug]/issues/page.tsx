@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { formatRelative, humanize } from "@/lib/format";
+import { issueResolution } from "@/lib/monitoring/rules";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { assignIssueAction, setIssueStatusAction } from "../actions";
@@ -43,7 +44,7 @@ export default async function IssuesPage({
     typeof rawView === "string" && rawView in VIEWS ? rawView : "active";
   const ctx = await requireOrgContext(orgSlug);
 
-  const [issues, members] = await Promise.all([
+  const [issues, members, passes] = await Promise.all([
     ctx.db.issue.findMany({
       where: { status: { in: VIEWS[view] } },
       orderBy: [{ severity: "asc" }, { lastSeenAt: "desc" }],
@@ -56,12 +57,30 @@ export default async function IssuesPage({
     ctx.db.organizationMember.findMany({
       include: { user: { select: { id: true, name: true, email: true } } },
     }),
+    // Latest passing check per website and type: confirms resolutions.
+    view === "resolved"
+      ? ctx.db.websiteCheck.groupBy({
+          by: ["websiteId", "type"],
+          where: { status: "COMPLETED", outcome: "SUCCESS" },
+          _max: { completedAt: true },
+        })
+      : Promise.resolve([]),
   ]);
+  const lastPass = new Map(
+    passes.map((p) => [`${p.websiteId}:${p.type}`, p._max.completedAt]),
+  );
   const editor = can.editWebsites(ctx.role);
 
   return (
     <>
-      <PageHeader title="Issues" />
+      <PageHeader
+        title="Issues"
+        subtitle={
+          view === "resolved"
+            ? "An issue resolved by hand stays unconfirmed until its next check passes. If that check still fails, the issue reopens."
+            : undefined
+        }
+      />
       <FilterTabs
         label="Issue status"
         items={Object.keys(VIEWS).map((v) => ({
@@ -109,6 +128,26 @@ export default async function IssuesPage({
                   last {formatRelative(i.lastSeenAt)}
                 </td>
                 <td className={td}>
+                  {i.status === "RESOLVED" && (
+                    <div className="mb-1">
+                      {issueResolution(
+                        i,
+                        lastPass.get(`${i.website.id}:${i.category}`) ?? null,
+                      ) === "verified" ? (
+                        <Badge
+                          value="confirmed"
+                          tone="success"
+                          label="Confirmed by a check"
+                        />
+                      ) : (
+                        <Badge
+                          value="unconfirmed"
+                          tone="warning"
+                          label="Marked resolved · awaiting check"
+                        />
+                      )}
+                    </div>
+                  )}
                   {editor ? (
                     <form
                       action={setIssueStatusAction.bind(null, orgSlug, i.id)}

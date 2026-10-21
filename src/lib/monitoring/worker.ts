@@ -8,7 +8,12 @@ import {
 import { fanOutAlerts } from "@/lib/alerts/notify";
 import { log } from "@/lib/log";
 import { runCheck, type CheckResult } from "./checks";
-import { decideIssue, deriveWebsiteStatus, type LatestOutcomes } from "./rules";
+import {
+  decideIssue,
+  deriveWebsiteStatus,
+  issueResolution,
+  type LatestOutcomes,
+} from "./rules";
 
 /**
  * Durable monitoring queue on PostgreSQL (`monitoring_jobs`). This is system
@@ -213,22 +218,62 @@ async function applyIssue(
     });
     // A different problem of the same category (e.g. SSL expiring → expired) is new.
     return existing.title === decision.title ? "unchanged" : "opened";
-  } else {
-    await tx.issue.create({
-      data: {
+  }
+  // Marked resolved by a person, but no check has passed since: the problem
+  // never went away, so reopen it instead of starting a new, unrelated issue.
+  const markedResolved = await tx.issue.findFirst({
+    where: {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+      category: result.type,
+      status: "RESOLVED",
+    },
+    orderBy: { resolvedAt: "desc" },
+  });
+  if (markedResolved) {
+    const pass = await tx.websiteCheck.findFirst({
+      where: {
         organizationId: job.organizationId,
         websiteId: job.websiteId,
-        category: result.type,
-        severity: decision.severity,
-        title: decision.title,
-        description: decision.description,
-        detectedAt: now,
-        firstSeenAt: now,
-        lastSeenAt: now,
+        type: result.type,
+        status: "COMPLETED",
+        outcome: "SUCCESS",
+        completedAt: { gte: markedResolved.resolvedAt ?? now },
       },
+      select: { completedAt: true },
     });
-    return "opened";
+    if (
+      issueResolution(markedResolved, pass?.completedAt ?? null) ===
+      "unverified"
+    ) {
+      await tx.issue.update({
+        where: { id: markedResolved.id },
+        data: {
+          status: "OPEN",
+          resolvedAt: null,
+          lastSeenAt: now,
+          severity: decision.severity,
+          title: decision.title,
+          description: decision.description,
+        },
+      });
+      return markedResolved.title === decision.title ? "unchanged" : "opened";
+    }
   }
+  await tx.issue.create({
+    data: {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+      category: result.type,
+      severity: decision.severity,
+      title: decision.title,
+      description: decision.description,
+      detectedAt: now,
+      firstSeenAt: now,
+      lastSeenAt: now,
+    },
+  });
+  return "opened";
 }
 
 export type Runner = (type: CheckType, url: string) => Promise<CheckResult>;

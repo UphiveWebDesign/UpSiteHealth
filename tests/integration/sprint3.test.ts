@@ -13,7 +13,12 @@ import {
   startAiSearchRun,
 } from "@/lib/ai-search/runner";
 import { recordPageSpeed } from "@/lib/performance/pagespeed";
-import { syncRecommendations } from "@/lib/recommendations/generate";
+import {
+  buildRecommendations,
+  loadRecommendationContext,
+  recommendationState,
+  syncRecommendations,
+} from "@/lib/recommendations/generate";
 import { recordScoreSnapshot } from "@/lib/scoring/snapshots";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
@@ -124,6 +129,164 @@ describe.skipIf(!TEST_DATABASE_URL)(
         (await db.recommendation.findUniqueOrThrow({ where: { id: rec.id } }))
           .status,
       ).toBe("DISMISSED");
+    });
+
+    test("recommendations complete only on verified fixes; ignore and 'mark done' are never misreported", async () => {
+      const { site } = await setup("recverify");
+      const scope = {
+        organizationId: site.organizationId,
+        websiteId: site.id,
+      };
+      const analysedAt = new Date(Date.now() - 60_000);
+      const runRow = await db.crawlRun.create({
+        data: {
+          ...scope,
+          status: "COMPLETED",
+          maxPages: 10,
+          maxDepth: 2,
+          maxDiscoveredUrls: 100,
+          userAgent: "test",
+          seoAnalyzedAt: analysedAt,
+        },
+      });
+      const finding = (url: string) =>
+        db.seoFinding.create({
+          data: {
+            ...scope,
+            crawlRunId: runRow.id,
+            ruleId: "TECH_TITLE_TOO_LONG",
+            scope: "PAGE",
+            severity: "LOW",
+            title: "Page title is too long",
+            description: "d",
+            recommendation: "Shorten it",
+            evidence: { url },
+            fingerprint: `TECH_TITLE_TOO_LONG::${url}`,
+            lastSeenAt: analysedAt,
+          },
+        });
+      const f1 = await finding("https://a.example/1");
+      const f2 = await finding("https://a.example/2");
+      await syncRecommendations(db, site);
+      const rec = await db.recommendation.findFirstOrThrow({
+        where: { websiteId: site.id },
+      });
+      expect(rec.status).toBe("PROPOSED");
+
+      // Ignoring every finding is not a fix.
+      await db.seoFinding.updateMany({
+        where: { id: { in: [f1.id, f2.id] } },
+        data: { status: "IGNORED" },
+      });
+      expect((await syncRecommendations(db, site)).completed).toBe(0);
+      expect(
+        (await db.recommendation.findUniqueOrThrow({ where: { id: rec.id } }))
+          .status,
+      ).toBe("PROPOSED");
+      let ctx = await loadRecommendationContext(db, scope);
+      expect(
+        recommendationState(
+          await db.recommendation.findUniqueOrThrow({ where: { id: rec.id } }),
+          buildRecommendations(ctx.inputs),
+          ctx,
+        ),
+      ).toEqual({ kind: "ignored" });
+
+      // Reopened and marked done by the user while still detected: the sync
+      // keeps "done", and a later crawl shows it as still detected.
+      await db.seoFinding.updateMany({
+        where: { id: { in: [f1.id, f2.id] } },
+        data: { status: "OPEN" },
+      });
+      await db.recommendation.update({
+        where: { id: rec.id },
+        data: { status: "COMPLETED" },
+      });
+      await syncRecommendations(db, site);
+      const done = await db.recommendation.findUniqueOrThrow({
+        where: { id: rec.id },
+      });
+      expect(done.status).toBe("COMPLETED");
+      expect(
+        await db.recommendation.count({ where: { websiteId: site.id } }),
+      ).toBe(1);
+      ctx = await loadRecommendationContext(db, scope);
+      expect(
+        recommendationState(done, buildRecommendations(ctx.inputs), ctx).kind,
+      ).toBe("awaiting-recheck");
+      const recrawl = new Date(done.updatedAt.getTime() + 1000);
+      await db.crawlRun.update({
+        where: { id: runRow.id },
+        data: { seoAnalyzedAt: recrawl },
+      });
+      ctx = await loadRecommendationContext(db, scope);
+      expect(
+        recommendationState(done, buildRecommendations(ctx.inputs), ctx),
+      ).toEqual({ kind: "still-detected", checkedAt: recrawl });
+
+      // Resolved by a crawl: verified.
+      await db.seoFinding.updateMany({
+        where: { id: { in: [f1.id, f2.id] } },
+        data: { status: "RESOLVED", resolvedAt: recrawl },
+      });
+      ctx = await loadRecommendationContext(db, scope);
+      expect(
+        recommendationState(done, buildRecommendations(ctx.inputs), ctx).kind,
+      ).toBe("verified");
+    });
+
+    test("an issue recommendation follows its issue and waits for a check after a manual resolve", async () => {
+      const { site } = await setup("recissue");
+      const scope = {
+        organizationId: site.organizationId,
+        websiteId: site.id,
+      };
+      const seen = new Date(Date.now() - 60_000);
+      const issue = await db.issue.create({
+        data: {
+          ...scope,
+          category: "SSL",
+          severity: "HIGH",
+          title: "SSL certificate expires in 9 days",
+          description: "Renew",
+          firstSeenAt: seen,
+          lastSeenAt: seen,
+        },
+      });
+      await syncRecommendations(db, site);
+      await db.issue.update({
+        where: { id: issue.id },
+        data: { title: "SSL certificate expires in 8 days" },
+      });
+      await syncRecommendations(db, site);
+      const recs = await db.recommendation.findMany({
+        where: { websiteId: site.id },
+      });
+      expect(recs).toHaveLength(1);
+      expect(recs[0]).toMatchObject({
+        issueId: issue.id,
+        title: "Resolve: SSL certificate expires in 8 days",
+        status: "PROPOSED",
+      });
+
+      // Resolved by hand, no passing check yet: not completed.
+      await db.issue.update({
+        where: { id: issue.id },
+        data: { status: "RESOLVED", resolvedAt: new Date() },
+      });
+      expect((await syncRecommendations(db, site)).completed).toBe(0);
+
+      // A passing SSL check confirms it: now it completes.
+      await db.websiteCheck.create({
+        data: {
+          ...scope,
+          type: "SSL",
+          status: "COMPLETED",
+          outcome: "SUCCESS",
+          completedAt: new Date(Date.now() + 1000),
+        },
+      });
+      expect((await syncRecommendations(db, site)).completed).toBe(1);
     });
 
     test("AI search run with the mock provider records analysed results", async () => {

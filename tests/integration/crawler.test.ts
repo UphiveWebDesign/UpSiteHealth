@@ -21,6 +21,7 @@ const DESC =
   "A meta description that is long enough to pass the fifty character minimum.";
 let aboutTitle =
   "About us and a far too long page title that goes beyond sixty chars";
+let aboutStatus = 200;
 
 function pageHtml(title: string, body: string, desc = DESC) {
   return `<!doctype html><html lang="en"><head><title>${title}</title>
@@ -57,6 +58,10 @@ beforeAll(async () => {
           ),
         );
       case "/about":
+        if (aboutStatus !== 200) {
+          res.writeHead(aboutStatus, { "content-type": "text/html" });
+          return res.end("<h1>Server error</h1>");
+        }
         return html(pageHtml(aboutTitle, "<p>About</p>"));
       case "/level1":
         return html(
@@ -222,6 +227,76 @@ describe.skipIf(!TEST_DATABASE_URL)(
           where: { websiteId: site.id, fingerprint: before.fingerprint },
         }),
       ).toBe(1);
+    });
+
+    test("a page that starts failing keeps its findings open; only a successful recheck fixes them", async () => {
+      const { org, tdb, site } = await setup("broken");
+      const openCount = () =>
+        db.seoFinding.count({ where: { websiteId: site.id, status: "OPEN" } });
+      await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+      await crawl();
+      const longTitle = await db.seoFinding.findFirstOrThrow({
+        where: { websiteId: site.id, ruleId: "TECH_TITLE_TOO_LONG" },
+      });
+      const before = await openCount();
+
+      // The page now errors: its title finding cannot be rechecked, so it is
+      // NOT resolved, and the HTTP error is added — open counts go up.
+      aboutStatus = 500;
+      try {
+        await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+        await crawl();
+      } finally {
+        aboutStatus = 200;
+      }
+      const kept = await db.seoFinding.findUniqueOrThrow({
+        where: { id: longTitle.id },
+      });
+      expect(kept).toMatchObject({ status: "OPEN", resolvedAt: null });
+      expect(kept.lastSeenAt).toEqual(longTitle.lastSeenAt);
+      const httpError = await db.seoFinding.findFirstOrThrow({
+        where: {
+          websiteId: site.id,
+          fingerprint: `TECH_HTTP_ERROR::${origin}/about`,
+        },
+        select: { id: true, status: true },
+      });
+      expect(httpError.status).toBe("OPEN");
+      expect(await openCount()).toBe(before + 1);
+
+      // Fixed for real: loads again with a good title → both resolve.
+      aboutTitle = "About the test company";
+      try {
+        await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+        await crawl();
+      } finally {
+        aboutTitle =
+          "About us and a far too long page title that goes beyond sixty chars";
+      }
+      for (const id of [longTitle.id, httpError.id]) {
+        expect(
+          (await db.seoFinding.findUniqueOrThrow({ where: { id } })).status,
+        ).toBe("RESOLVED");
+      }
+    });
+
+    test("a partial crawl never resolves findings on pages it skipped", async () => {
+      const { org, tdb, site } = await setup("partial-keep");
+      await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+      await crawl();
+      const open = await db.seoFinding.findMany({
+        where: { websiteId: site.id, status: "OPEN" },
+        select: { id: true },
+      });
+      await startCrawl(tdb, org.id, site.id, { maxPages: 1 });
+      await crawl();
+      const after = await db.seoFinding.findMany({
+        where: { id: { in: open.map((f) => f.id) } },
+        select: { status: true, ruleId: true, scope: true },
+      });
+      // Only the home page was rechecked; it had no findings to fix, and
+      // site-wide findings need a completed crawl.
+      expect(after.every((f) => f.status === "OPEN")).toBe(true);
     });
 
     test("a page budget makes the run PARTIAL with BUDGET_EXCEEDED skips", async () => {

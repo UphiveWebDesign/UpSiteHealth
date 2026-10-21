@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { normalizeWebsiteUrl, WebsiteUrlError } from "@/lib/websites/url";
 import type { CheckResult } from "./checks";
-import { decideIssue, deriveWebsiteStatus } from "./rules";
+import { decideIssue, deriveWebsiteStatus, issueResolution } from "./rules";
 
 describe("normalizeWebsiteUrl", () => {
   test.each([
@@ -109,5 +109,31 @@ describe("decideIssue", () => {
     expect(decideIssue(r({ type: "DNS", outcome: "TIMEOUT" }))).toEqual({
       action: "none",
     });
+  });
+});
+
+describe("issueResolution", () => {
+  const t = (m: number) => new Date(Date.UTC(2026, 9, 21, 12, m));
+  test("open issues have no resolution", () => {
+    expect(
+      issueResolution(
+        { status: "OPEN", resolvedAt: null, lastSeenAt: t(0) },
+        t(5),
+      ),
+    ).toBeNull();
+  });
+  test("resolved by a passing check is verified", () => {
+    expect(
+      issueResolution(
+        { status: "RESOLVED", resolvedAt: t(5), lastSeenAt: t(5) },
+        null,
+      ),
+    ).toBe("verified");
+  });
+  test("resolved by hand stays unverified until a later check passes", () => {
+    const manual = { status: "RESOLVED", resolvedAt: t(10), lastSeenAt: t(0) };
+    expect(issueResolution(manual, null)).toBe("unverified");
+    expect(issueResolution(manual, t(9))).toBe("unverified");
+    expect(issueResolution(manual, t(15))).toBe("verified");
   });
 });

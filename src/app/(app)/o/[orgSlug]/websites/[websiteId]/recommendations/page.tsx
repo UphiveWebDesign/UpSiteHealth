@@ -11,7 +11,16 @@ import { CheckIcon } from "@/components/ui/icons";
 import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { WebsiteNav } from "@/components/website-nav";
-import { formatRelative } from "@/lib/format";
+import { db } from "@/lib/db";
+import { formatDateTime, formatRelative } from "@/lib/format";
+import {
+  buildRecommendations,
+  loadRecommendationContext,
+  recommendationBasis,
+  recommendationState,
+  type RecommendationBasis,
+  type RecommendationState,
+} from "@/lib/recommendations/generate";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import {
@@ -28,7 +37,6 @@ const PRIORITIES: RecommendationPriority[] = [
   "LOW",
 ];
 const OPEN: RecommendationStatus[] = ["PROPOSED", "IN_PROGRESS"];
-const CLOSED: RecommendationStatus[] = ["COMPLETED", "DISMISSED"];
 const PRIORITY_HEADING: Record<RecommendationPriority, string> = {
   CRITICAL: "Do now",
   HIGH: "Do next",
@@ -54,6 +62,75 @@ const TRANSITIONS: Record<
   DISMISSED: [{ to: "PROPOSED", label: "Restore" }],
 };
 
+const SOURCE: Record<RecommendationBasis["kind"], string> = {
+  issue: "monitoring check",
+  "seo-rule": "crawl",
+  performance: "PageSpeed test",
+  "ai-search": "AI Search run",
+};
+
+/** One line saying what the latest evidence shows, or null when nothing to add. */
+function StateNote({
+  state,
+  source,
+  completed,
+}: {
+  state: RecommendationState;
+  source: string;
+  completed: boolean;
+}) {
+  const note = (
+    tone: "success" | "warning" | "info" | "neutral",
+    label: string,
+    text: string,
+  ) => (
+    <p className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-2">
+      <Badge value={label} tone={tone} label={label} />
+      {text}
+    </p>
+  );
+  switch (state.kind) {
+    case "still-detected":
+      return note(
+        "warning",
+        "Still detected",
+        `Marked done, but the ${source} on ${formatDateTime(state.checkedAt)} still found this problem. Reopen it, or check the fix.`,
+      );
+    case "awaiting-recheck":
+      return completed
+        ? note(
+            "info",
+            "Waiting for recheck",
+            `Marked done. The next ${source} will confirm whether the problem is gone.`,
+          )
+        : note(
+            "info",
+            "Waiting for recheck",
+            `The related issue was marked resolved by hand. The next ${source} will confirm it.`,
+          );
+    case "verified":
+      return completed
+        ? note(
+            "success",
+            "Verified fixed",
+            `The latest ${source} no longer finds this problem.`,
+          )
+        : note(
+            "success",
+            "Looks fixed",
+            `The latest ${source} no longer finds this problem. It will be marked done at the next refresh.`,
+          );
+    case "ignored":
+      return note(
+        "neutral",
+        "Related findings ignored",
+        "Everything behind this recommendation is ignored, so it is not counted as fixed. Dismiss it if it no longer applies.",
+      );
+    default:
+      return null;
+  }
+}
+
 export default async function RecommendationsPage({
   params,
   searchParams,
@@ -68,21 +145,28 @@ export default async function RecommendationsPage({
   });
   if (!website) notFound();
 
-  const [recommendations, counts] = await Promise.all([
+  const [all, rctx] = await Promise.all([
     ctx.db.recommendation.findMany({
-      where: { websiteId, status: { in: view === "open" ? OPEN : CLOSED } },
+      where: { websiteId },
       orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
     }),
-    ctx.db.recommendation.groupBy({
-      by: ["status"],
-      where: { websiteId },
-      _count: true,
+    // Root client with an explicit scope; the website was verified above.
+    loadRecommendationContext(db(), {
+      websiteId,
+      organizationId: ctx.organization.id,
     }),
   ]);
-  const count = (statuses: RecommendationStatus[]) =>
-    counts
-      .filter((c) => statuses.includes(c.status))
-      .reduce((s, c) => s + c._count, 0);
+  const drafts = buildRecommendations(rctx.inputs);
+  const withState = all.map((r) => ({
+    ...r,
+    state: recommendationState(r, drafts, rctx),
+  }));
+  // Done items that a recheck still detects belong back on the to-do list.
+  const isOpen = (r: (typeof withState)[number]) =>
+    OPEN.includes(r.status) || r.state.kind === "still-detected";
+  const openItems = withState.filter(isOpen);
+  const closedItems = withState.filter((r) => !isOpen(r));
+  const recommendations = view === "open" ? openItems : closedItems;
   const editor = can.editWebsites(ctx.role);
   const base = `/o/${orgSlug}/websites/${websiteId}`;
 
@@ -121,13 +205,13 @@ export default async function RecommendationsPage({
             href: `${base}/recommendations`,
             label: "To do",
             active: view === "open",
-            count: count(OPEN),
+            count: openItems.length,
           },
           {
             href: `${base}/recommendations?status=closed`,
             label: "Done or dismissed",
             active: view === "closed",
-            count: count(CLOSED),
+            count: closedItems.length,
           },
         ]}
       />
@@ -178,9 +262,17 @@ export default async function RecommendationsPage({
                         {r.status === "IN_PROGRESS" && (
                           <Badge value="IN_PROGRESS" />
                         )}
-                        {view === "closed" && <Badge value={r.status} />}
+                        {(view === "closed" ||
+                          r.state.kind === "still-detected") && (
+                          <Badge value={r.status} />
+                        )}
                       </div>
                       <p className="mt-1 text-sm text-ink-2">{r.explanation}</p>
+                      <StateNote
+                        state={r.state}
+                        source={SOURCE[recommendationBasis(r).kind]}
+                        completed={r.status === "COMPLETED"}
+                      />
                       <div className="mt-3 rounded-lg bg-brand-50 px-3 py-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-brand-800">
                           What to do

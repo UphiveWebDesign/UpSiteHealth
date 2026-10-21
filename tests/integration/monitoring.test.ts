@@ -9,6 +9,7 @@ import {
   recoverStaleJobs,
   scheduleDueChecks,
 } from "@/lib/monitoring/worker";
+import { issueResolution } from "@/lib/monitoring/rules";
 import { createWebsite } from "@/lib/websites/service";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
@@ -144,6 +145,75 @@ describe.skipIf(!TEST_DATABASE_URL)("monitoring queue (local database)", () => {
     expect(checks.every((c) => c.organizationId === site.organizationId)).toBe(
       true,
     );
+  });
+
+  test("an issue resolved by hand is unconfirmed, reopens if the check still fails, and is confirmed by a pass", async () => {
+    const { site } = await newWebsite("manual");
+    const runOnce = async (outcome: CheckOutcome) => {
+      const job = await db.monitoringJob.create({
+        data: {
+          organizationId: site.organizationId,
+          websiteId: site.id,
+          type: "UPTIME",
+          scheduledFor: new Date(),
+        },
+      });
+      await executeJob(db, job, fakeRunner({ UPTIME: outcome }));
+    };
+    const lastPass = async () =>
+      (
+        await db.websiteCheck.findFirst({
+          where: { websiteId: site.id, type: "UPTIME", outcome: "SUCCESS" },
+          orderBy: { completedAt: "desc" },
+        })
+      )?.completedAt ?? null;
+    const markResolved = (id: string) =>
+      db.issue.update({
+        where: { id },
+        data: { status: "RESOLVED", resolvedAt: new Date() },
+      });
+
+    await runOnce("TIMEOUT");
+    const issue = await db.issue.findFirstOrThrow({
+      where: { websiteId: site.id },
+    });
+    await markResolved(issue.id);
+    expect(
+      issueResolution(
+        await db.issue.findUniqueOrThrow({ where: { id: issue.id } }),
+        await lastPass(),
+      ),
+    ).toBe("unverified");
+
+    // Still failing: the same issue reopens; no duplicate, no second alert.
+    const alertsBefore = await db.alertEvent.count({
+      where: { websiteId: site.id },
+    });
+    await runOnce("TIMEOUT");
+    const issues = await db.issue.findMany({ where: { websiteId: site.id } });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      id: issue.id,
+      status: "OPEN",
+      resolvedAt: null,
+    });
+    expect(issues[0].firstSeenAt).toEqual(issue.firstSeenAt);
+    expect(await db.alertEvent.count({ where: { websiteId: site.id } })).toBe(
+      alertsBefore,
+    );
+
+    // Marked resolved again, then a check passes: confirmed.
+    await markResolved(issue.id);
+    await runOnce("SUCCESS");
+    const confirmed = await db.issue.findUniqueOrThrow({
+      where: { id: issue.id },
+    });
+    expect(confirmed.status).toBe("RESOLVED");
+    expect(issueResolution(confirmed, await lastPass())).toBe("verified");
+
+    // A later failure after a confirmed fix is a new occurrence.
+    await runOnce("TIMEOUT");
+    expect(await db.issue.count({ where: { websiteId: site.id } })).toBe(2);
   });
 
   test("processMonitoringJobs drains the queue within its deadline", async () => {

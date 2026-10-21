@@ -14,6 +14,7 @@ import {
   findingTarget,
   groupFindings,
 } from "@/lib/insights/seo";
+import { describeGap, pageRecheckGap, siteRecheckGap } from "@/lib/seo/recheck";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { setFindingStatusAction, startCrawlAction } from "../../../actions";
@@ -83,9 +84,61 @@ export default async function SeoFindingsPage({
     ctx.db.crawlRun.findFirst({
       where: { websiteId, seoAnalyzedAt: { not: null } },
       orderBy: { seoAnalyzedAt: "desc" },
-      select: { seoAnalyzedAt: true, pagesCrawled: true },
+      select: {
+        id: true,
+        status: true,
+        robotsTxtStatus: true,
+        sitemapUrlsDiscovered: true,
+        seoAnalyzedAt: true,
+        pagesCrawled: true,
+      },
     }),
   ]);
+
+  // Open findings the latest crawl did not confirm were kept open because it
+  // could not recheck them; say why instead of counting them as fixed.
+  const unconfirmed =
+    status === "OPEN" && lastCrawl?.seoAnalyzedAt
+      ? rows.filter((f) => f.lastSeenAt < lastCrawl.seoAnalyzedAt!)
+      : [];
+  const urlOf = (f: (typeof rows)[number]) =>
+    (f.evidence as { url?: unknown } | null)?.url;
+  const recheckPages =
+    lastCrawl && unconfirmed.some((f) => f.scope === "PAGE")
+      ? await ctx.db.crawlPage.findMany({
+          where: {
+            crawlRunId: lastCrawl.id,
+            url: {
+              in: unconfirmed
+                .map(urlOf)
+                .filter((u): u is string => typeof u === "string"),
+            },
+          },
+          select: {
+            url: true,
+            status: true,
+            httpStatus: true,
+            skipReason: true,
+            resourceType: true,
+            h1Count: true,
+            wordCount: true,
+            result: true,
+          },
+        })
+      : [];
+  const pageByUrl = new Map(recheckPages.map((p) => [p.url, p]));
+  const gapFor = new Map<string, string>();
+  for (const f of unconfirmed) {
+    const url = urlOf(f);
+    const gap =
+      f.scope === "SITE"
+        ? siteRecheckGap(f.ruleId, lastCrawl!)
+        : pageRecheckGap(
+            f.ruleId,
+            typeof url === "string" ? pageByUrl.get(url) : undefined,
+          );
+    if (gap) gapFor.set(f.id, describeGap(gap));
+  }
   const groups = groupFindings(rows);
   const editor = can.editWebsites(ctx.role);
   const base = `/o/${orgSlug}/websites/${websiteId}`;
@@ -176,6 +229,20 @@ export default async function SeoFindingsPage({
             </Card>
           ) : (
             <div className="flex flex-col gap-3">
+              {gapFor.size > 0 && (
+                <Callout
+                  tone="info"
+                  title={`${gapFor.size} finding${gapFor.size === 1 ? " was" : "s were"} kept open without a recheck`}
+                >
+                  The latest crawl could not recheck{" "}
+                  {gapFor.size === 1 ? "this finding" : "these findings"} (for
+                  example, the page returned an error, was skipped, or could not
+                  be analysed), so they stay open instead of being counted as
+                  fixed. Open counts can therefore be higher than before. A
+                  finding is marked fixed only when a crawl loads the page and
+                  confirms the problem is gone.
+                </Callout>
+              )}
               {rows.length === MAX_ROWS && (
                 <Callout tone="info">
                   Showing the {MAX_ROWS} most recently seen findings.
@@ -252,9 +319,17 @@ export default async function SeoFindingsPage({
                                 </span>
                               )}
                               <p className="text-xs text-muted">
-                                {evidence && `${evidence} · `}seen{" "}
+                                {evidence && `${evidence} · `}
+                                {f.status === "OPEN"
+                                  ? "last confirmed"
+                                  : "last seen"}{" "}
                                 {formatRelative(f.lastSeenAt)}
                               </p>
+                              {gapFor.has(f.id) && (
+                                <p className="mt-0.5 text-xs text-warning-700">
+                                  {gapFor.get(f.id)}
+                                </p>
+                              )}
                             </div>
                             {editor && f.status !== "RESOLVED" && (
                               <form
