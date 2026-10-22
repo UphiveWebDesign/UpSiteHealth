@@ -4,6 +4,7 @@ import { formatDateTime } from "@/lib/format";
 import type { CrawlComparison } from "@/lib/seo/compare";
 import { BASELINE_NOT_MEASURED, type Baseline } from "@/lib/workflow/baseline";
 import type { PlanItem } from "@/lib/workflow/plan";
+import { ACTIVITY } from "@/lib/workflow/labels";
 import type { TaskActivity, TechnicalProgress } from "@/lib/workflow/progress";
 import { Badge, type Tone } from "./ui/badge";
 
@@ -180,8 +181,17 @@ export function PeriodTechnical({
   progress: TechnicalProgress;
 }) {
   return (
-    <div className="rounded-lg border border-line p-4">
-      <p className="text-sm font-semibold text-ink">{label}</p>
+    <div className="rounded-xl border border-line bg-surface p-4 shadow-card print:break-inside-avoid print:shadow-none">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-ink">{label}</p>
+        <Badge
+          value={progress.state}
+          tone={progress.state === "compared" ? "brand" : "neutral"}
+          label={
+            progress.state === "compared" ? "Comparable" : "Not comparable"
+          }
+        />
+      </div>
       {progress.state === "not-comparable" ? (
         <p className="mt-2 text-sm text-muted">
           Not comparable:{" "}
@@ -237,18 +247,15 @@ export function TaskActivitySummary({ activity }: { activity: TaskActivity }) {
     <div className="text-sm">
       <Dl
         rows={[
-          ["Marked done in this period", activity.reportedDone],
-          ["… confirmed fixed by the latest evidence", activity.verifiedNow],
-          ["… waiting for a recheck", activity.awaitingRecheck],
-          ["… still detected", activity.stillDetected],
-          ["Open now", activity.openNow],
+          [ACTIVITY.completed, activity.reportedDone],
+          [ACTIVITY.confirmed, activity.verifiedNow],
+          [ACTIVITY.awaitingRecheck, activity.awaitingRecheck],
+          [ACTIVITY.stillDetected, activity.stillDetected],
+          [ACTIVITY.openNow, activity.openNow],
         ]}
       />
       <p className="mt-2 text-xs text-muted">
-        Dates are approximate (when each item was last updated). Exact
-        completion and verification dates arrive with task history.
-        &ldquo;Marked done&rdquo; is reported by your team; &ldquo;confirmed
-        fixed&rdquo; is checked by UpSiteHealth.
+        {ACTIVITY.completedHint}. {ACTIVITY.note}
       </p>
     </div>
   );
@@ -273,6 +280,7 @@ const STATUS_TONE: Record<string, Tone> = {
   "In progress": "info",
   "Ready to verify": "accent",
   Verified: "success",
+  "Looks fixed": "success",
   "Reported done · still detected": "warning",
   "Waiting for evidence": "neutral",
   "Related findings ignored": "neutral",
@@ -280,84 +288,107 @@ const STATUS_TONE: Record<string, Tone> = {
 
 /** One plan item: what to do, why, evidence, and how it will be verified. */
 export function PlanItemCard({ item }: { item: PlanItem }) {
+  const facts = [
+    item.affectedPages !== null
+      ? `${item.affectedPages}${item.urls.length >= 50 && item.affectedPages <= item.urls.length ? "+" : ""} affected page${item.affectedPages === 1 ? "" : "s"}`
+      : null,
+    item.effort
+      ? `Effort: ${EFFORT[item.effort]} (size only)`
+      : "Effort: not estimated",
+  ].filter(Boolean);
+  const hasDetails =
+    !!item.rationale || item.evidence.length > 0 || item.urls.length > 0;
   return (
-    <li className="rounded-xl border border-line bg-surface p-5 shadow-card print:break-inside-avoid print:shadow-none">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-ink">{item.title}</h3>
-        <div className="flex flex-wrap gap-2">
+    <li className="rounded-xl border border-line bg-surface shadow-card print:break-inside-avoid print:shadow-none">
+      <div className="flex flex-col gap-3 p-5">
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
           <Badge value={item.priority} />
+          <div className="min-w-0 flex-1">
+            <h3 className="text-base font-semibold text-ink">
+              {item.displayTitle}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted">
+              {facts.join(" · ")}
+              {item.code && (
+                <span className="font-mono text-[11px]"> · {item.code}</span>
+              )}
+            </p>
+          </div>
           <Badge
             value={item.statusLabel}
             tone={STATUS_TONE[item.statusLabel] ?? "neutral"}
             label={item.statusLabel}
+            dot
           />
         </div>
+        <p className="text-sm text-ink-2">{item.why}</p>
+        {item.note && (
+          <p className="text-sm font-medium text-warning-700">{item.note}</p>
+        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg bg-brand-50 px-3 py-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-brand-800">
+              What to do
+            </p>
+            <p className="mt-1 text-sm text-ink">{item.guidance}</p>
+          </div>
+          <div className="rounded-lg border border-line bg-subtle px-3 py-2.5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+              How it&rsquo;s verified
+            </p>
+            <p className="mt-1 text-sm text-ink-2">
+              {item.verification ?? "Not available."}
+            </p>
+          </div>
+        </div>
+        {item.dependsOn.length > 0 && (
+          <p className="text-sm text-ink-2">
+            <span className="font-medium text-ink">Do first:</span>{" "}
+            {item.dependsOn.join("; ")}. Crawl-based checks are unreliable while
+            the site is unreachable or blocked.
+          </p>
+        )}
       </div>
-      <p className="mt-1 text-sm text-ink-2">{item.why}</p>
-      {item.note && (
-        <p className="mt-1 text-sm text-warning-700">{item.note}</p>
-      )}
-      <dl className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        <div>
-          <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
-            What to do
-          </dt>
-          <dd className="text-ink">{item.guidance}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
-            How it is verified
-          </dt>
-          <dd className="text-ink-2">
-            {item.verification ?? "Not available."}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
-            Why this priority
-          </dt>
-          <dd className="text-ink-2">{item.rationale ?? "Not available."}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
-            Effort
-          </dt>
-          <dd className="text-ink-2">
-            {item.effort
-              ? `${EFFORT[item.effort]} (size only, no time estimate)`
-              : "Not estimated"}
-          </dd>
-        </div>
-      </dl>
-      {item.dependsOn.length > 0 && (
-        <p className="mt-2 text-sm text-ink-2">
-          <span className="font-medium text-ink">Do first:</span>{" "}
-          {item.dependsOn.join("; ")}. Crawl-based checks are unreliable while
-          the site is unreachable or blocked.
-        </p>
-      )}
-      {item.evidence.length > 0 && (
-        <ul className="mt-2 list-disc pl-5 text-xs text-muted">
-          {item.evidence.slice(0, 3).map((e) => (
-            <li key={e} className="break-words">
-              {e}
-            </li>
-          ))}
-        </ul>
-      )}
-      {item.urls.length > 0 && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-medium text-brand-700">
-            Affected pages ({item.urls.length}
-            {item.urls.length >= 50 ? "+" : ""})
+      {hasDetails && (
+        <details className="group border-t border-line print:hidden">
+          <summary className="flex cursor-pointer items-center justify-between px-5 py-2.5 text-sm font-medium text-brand-700 [&::-webkit-details-marker]:hidden">
+            Evidence and affected pages
+            <span
+              aria-hidden
+              className="text-muted transition-transform group-open:rotate-90"
+            >
+              ›
+            </span>
           </summary>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {item.urls.map((u) => (
-              <li key={u} className="break-all text-xs text-ink-2">
-                {u}
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-3 px-5 pb-4 text-sm">
+            {item.rationale && (
+              <p className="text-ink-2">
+                <span className="font-medium text-ink">Why this priority:</span>{" "}
+                {item.rationale}
+              </p>
+            )}
+            {item.evidence.length > 0 && (
+              <ul className="list-disc pl-5 text-ink-2">
+                {item.evidence.map((e) => (
+                  <li key={e} className="break-words">
+                    {e}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {item.urls.length > 0 && (
+              <ul className="flex flex-col gap-0.5 rounded-lg border border-line bg-subtle p-3">
+                {item.urls.map((u) => (
+                  <li
+                    key={u}
+                    className="break-all font-mono text-xs text-ink-2"
+                  >
+                    {u}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </details>
       )}
     </li>

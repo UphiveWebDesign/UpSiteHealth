@@ -123,7 +123,9 @@ export async function technicalProgress(
 
 export type TaskActivity = {
   /**
-   * Recommendations marked done whose last update falls in the period.
+   * Recommendations completed (by a person, or automatically by the sync
+   * after a confirmed recheck; the data cannot tell which) whose last
+   * update falls in the period.
    * Approximate: exact completion dates need the planned task history.
    */
   reportedDone: number;
@@ -185,4 +187,33 @@ export async function taskActivity(
       state: states[i],
     })),
   };
+}
+
+/**
+ * COMPLETED recommendations that the latest evidence confirms (all time):
+ * both those a person marked done and those the sync completed
+ * automatically after a confirmed recheck. Never counts a completion the
+ * latest evidence does not confirm (still detected, or not rechecked).
+ */
+export async function countConfirmedFixes(
+  db: PrismaClient,
+  scope: { websiteId: string; organizationId: string },
+): Promise<number> {
+  const [done, ctx] = await Promise.all([
+    db.recommendation.findMany({
+      where: { ...scope, status: "COMPLETED" },
+      select: {
+        id: true,
+        title: true,
+        issueId: true,
+        status: true,
+        updatedAt: true,
+      },
+    }),
+    loadRecommendationContext(db, scope),
+  ]);
+  const drafts = buildRecommendations(ctx.inputs);
+  return done.filter(
+    (r) => recommendationState(r, drafts, ctx).kind === "verified",
+  ).length;
 }

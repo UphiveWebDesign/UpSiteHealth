@@ -12,13 +12,16 @@ import {
 } from "@/components/workflow";
 import { Badge } from "@/components/ui/badge";
 import { FilterTabs, PageHeader } from "@/components/ui/layout";
+import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
 import { db } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import type { ChangeItem } from "@/lib/seo/compare";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import type { PeriodKind } from "@/lib/workflow/progress";
-import { loadReport } from "@/lib/workflow/report";
+import { splitTitle } from "@/lib/workflow/plan";
+import { ACTIVITY, CURRENT_WORK, FINDINGS } from "@/lib/workflow/labels";
+import { executiveSummary, loadReport } from "@/lib/workflow/report";
 
 export const metadata: Metadata = { title: "SEO report · UpSiteHealth" };
 
@@ -94,16 +97,18 @@ export default async function SeoReportPage({
 
   return (
     <>
-      <PageHeader
-        breadcrumbs={[
-          { label: "Websites", href: `/o/${orgSlug}/websites` },
-          { label: report.website.name, href: base },
-          { label: "Report" },
-        ]}
-        title="SEO report"
-        subtitle="A preview built only from recorded data. Check it before sharing."
-        actions={<PrintButton />}
-      />
+      <div className="print:hidden">
+        <PageHeader
+          breadcrumbs={[
+            { label: "Websites", href: `/o/${orgSlug}/websites` },
+            { label: report.website.name, href: base },
+            { label: "Report" },
+          ]}
+          title="SEO report"
+          subtitle="A preview built only from recorded data. Check it before sharing."
+          actions={<PrintButton />}
+        />
+      </div>
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
       <div className="print:hidden">
         <FilterTabs
@@ -117,6 +122,94 @@ export default async function SeoReportPage({
       </div>
 
       <article className="flex flex-col gap-5 print:gap-6">
+        <header className="rounded-xl border border-line bg-surface p-6 shadow-card print:border-0 print:p-0 print:shadow-none">
+          <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+            SEO progress report
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">
+            {report.website.name}
+          </h1>
+          <p className="mt-0.5 break-all text-sm text-muted">
+            {new URL(report.website.url).host}
+            {report.client && ` · prepared for ${report.client.name}`}
+          </p>
+          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-muted">
+                Reporting period
+              </dt>
+              <dd className="font-medium text-ink">
+                {day(period.start)} to {day(new Date(period.end.getTime() - 1))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-muted">
+                Generated
+              </dt>
+              <dd className="font-medium text-ink">
+                {formatDateTime(report.generatedAt)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-muted">
+                Prepared by
+              </dt>
+              <dd className="font-medium text-ink">
+                {report.organization.name}
+              </dd>
+            </div>
+          </dl>
+          <div className="mt-5 rounded-lg border border-line bg-subtle p-4">
+            <p className="text-sm font-semibold text-ink">Summary</p>
+            <ul className="mt-1 list-disc pl-5 text-sm text-ink-2">
+              {executiveSummary(report).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+          <dl className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Stat
+              label={ACTIVITY.completed}
+              value={activity.reportedDone}
+              hint={`${ACTIVITY.completedHint} (approximate dates)`}
+            />
+            <Stat
+              label="Confirmed fixed"
+              value={activity.verifiedNow}
+              tone={activity.verifiedNow ? "success" : "default"}
+              hint="Of those completed, confirmed by UpSiteHealth"
+            />
+            <Stat
+              label={FINDINGS.openAtPeriodEnd}
+              value={report.openAtEnd}
+              notMeasured="Not comparable"
+              hint={FINDINGS.openAtPeriodEndHint}
+            />
+            <Stat
+              label="New or came back"
+              value={
+                technical.state === "compared"
+                  ? technical.comparison.counts.new +
+                    technical.comparison.counts["came-back"]
+                  : null
+              }
+              tone={
+                technical.state === "compared" &&
+                technical.comparison.counts.new +
+                  technical.comparison.counts["came-back"]
+                  ? "warning"
+                  : "default"
+              }
+              notMeasured="Not comparable"
+              hint="Between the period's completed crawls"
+            />
+          </dl>
+          <p className="mt-3 text-xs text-muted">
+            Completed work, fixes confirmed and findings resolved are different
+            measures and are not combined. None of them is a measure of search
+            performance.
+          </p>
+        </header>
         <Section n={1} title="Client and website">
           <dl className="grid gap-1 text-sm sm:grid-cols-2">
             <div>
@@ -131,18 +224,6 @@ export default async function SeoReportPage({
               <dt className="text-muted">Website</dt>
               <dd className="break-all font-medium text-ink">
                 {report.website.name} · {report.website.url}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted">Prepared by</dt>
-              <dd className="font-medium text-ink">
-                {report.organization.name}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted">Generated</dt>
-              <dd className="font-medium text-ink">
-                {formatDateTime(report.generatedAt)}
               </dd>
             </div>
           </dl>
@@ -198,12 +279,12 @@ export default async function SeoReportPage({
 
         <Section n={5} title="Verified fixes and evidence">
           <p className="mb-2 text-sm text-ink-2">
-            Tasks marked done in the period that the latest evidence confirms:
+            Completed in the period and confirmed by the latest evidence:
           </p>
           {verified.length ? (
             <ul className="mb-3 list-disc pl-5 text-sm text-ink">
               {verified.map((v) => (
-                <li key={v.id}>{v.title}</li>
+                <li key={v.id}>{splitTitle(v.title).displayTitle}</li>
               ))}
             </ul>
           ) : (
@@ -213,8 +294,11 @@ export default async function SeoReportPage({
           )}
           {unverified.length > 0 && (
             <p className="mb-3 text-sm text-ink-2">
-              Marked done but not confirmed yet:{" "}
-              {unverified.map((u) => u.title).join("; ")}.
+              Completed in the period but not confirmed yet:{" "}
+              {unverified
+                .map((u) => splitTitle(u.title).displayTitle)
+                .join("; ")}
+              .
             </p>
           )}
           <p className="mb-2 text-sm text-ink-2">
@@ -244,33 +328,40 @@ export default async function SeoReportPage({
           n={8}
           title="Outstanding tasks, blockers and client dependencies"
         >
-          <dl className="grid gap-1 text-sm sm:grid-cols-2">
-            <div>
-              <dt className="text-muted">Fix first (blocking other checks)</dt>
-              <dd className="font-medium text-ink">
-                {plan["fix-first"].length}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted">In progress</dt>
-              <dd className="font-medium text-ink">{plan.continue.length}</dd>
-            </div>
-            <div>
-              <dt className="text-muted">Planned</dt>
-              <dd className="font-medium text-ink">
-                {plan.next.length + plan.later}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted">
-                Waiting for verification or evidence
-              </dt>
-              <dd className="font-medium text-ink">
-                {plan.verify.length + plan.waiting.length}
-              </dd>
-            </div>
+          <p className="mb-2 text-xs text-muted">
+            Current state today, not limited to the reporting period.
+          </p>
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            {(
+              [
+                ["Open work items", plan.summary.open],
+                ["High priority", plan.summary.highPriority],
+                ["In progress", plan.summary.inProgress],
+                [
+                  CURRENT_WORK.awaitingVerification,
+                  plan.summary.awaitingVerification,
+                ],
+              ] as const
+            ).map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-lg border border-line px-3 py-2"
+              >
+                <dt className="text-xs text-muted">{label}</dt>
+                <dd className="text-lg font-semibold tabular-nums text-ink">
+                  {value}
+                </dd>
+              </div>
+            ))}
           </dl>
-          <p className="mt-2 text-xs text-muted">
+          <p className="mt-2 text-sm text-ink-2">
+            {plan["fix-first"].length
+              ? `Blocking other checks: ${plan["fix-first"].map((i) => i.displayTitle).join("; ")}.`
+              : "Nothing is currently blocking other checks."}{" "}
+            {plan.waiting.length > 0 &&
+              `${plan.waiting.length} item${plan.waiting.length === 1 ? " is" : "s are"} waiting for evidence.`}
+          </p>
+          <p className="mt-1 text-xs text-muted">
             Client approvals and blockers are not tracked yet, so none are
             listed.
           </p>
@@ -289,7 +380,7 @@ export default async function SeoReportPage({
             <ol className="list-decimal pl-5 text-sm text-ink">
               {nextUp.map((i) => (
                 <li key={i.id} className="py-0.5">
-                  {i.title}{" "}
+                  {i.displayTitle}{" "}
                   <span className="text-muted">
                     · {i.verification ?? "verification not available"}
                   </span>

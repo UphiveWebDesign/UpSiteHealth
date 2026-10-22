@@ -17,7 +17,7 @@ import {
 
 /**
  * A client report assembled only from stored data. Four different things
- * are kept apart and never combined into a score: tasks marked done, fixes
+ * are kept apart and never combined into a score: completed tasks, fixes
  * confirmed by a recheck, technical findings resolved between crawls, and
  * search performance (not connected yet).
  */
@@ -196,4 +196,48 @@ export async function loadReport(
     sources,
     gaps,
   };
+}
+
+const n = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * A short plain-English summary built only from the report's recorded
+ * numbers. It never states causes, and says plainly when data is missing.
+ */
+export function executiveSummary(r: ReportModel): string[] {
+  const out: string[] = [];
+  const t = r.technical;
+  if (t.state === "compared") {
+    const c = t.comparison.counts;
+    out.push(
+      `Between the completed crawls of ${iso(t.comparison.previous!.analyzedAt)} and ${iso(t.comparison.current.analyzedAt)}, ${n(c.fixed, "technical finding")} ${c.fixed === 1 ? "was" : "were"} confirmed fixed by a recrawl, ${n(c.new, "new finding")} appeared and ${c["came-back"]} came back. ${n(r.openAtEnd ?? 0, "finding")} remain${(r.openAtEnd ?? 0) === 1 ? "s" : ""} open.`,
+    );
+    if (t.unknown > 0)
+      out.push(
+        `${n(t.unknown, "earlier finding")} could not be rechecked, so ${t.unknown === 1 ? "it is" : "they are"} counted as neither fixed nor open.`,
+      );
+  } else {
+    out.push(
+      t.reason === "no-start"
+        ? "Technical change for this period cannot be shown yet: there is no completed crawl from before the period."
+        : "Technical change for this period cannot be shown: no crawl completed during the period.",
+    );
+  }
+  const a = r.activity;
+  out.push(
+    a.reportedDone === 0
+      ? "No recommendations were completed in this period."
+      : `${n(a.reportedDone, "recommendation")} ${a.reportedDone === 1 ? "was" : "were"} completed in this period, by the team or automatically after a confirmed recheck (dates approximate); ${a.verifiedNow} ${a.verifiedNow === 1 ? "is" : "are"} confirmed by the latest evidence.`,
+  );
+  const next = [...r.plan["fix-first"], ...r.plan.continue, ...r.plan.next];
+  if (next.length)
+    out.push(
+      `${n(r.plan.summary.open, "open work item")} remain${r.plan.summary.open === 1 ? "s" : ""}; the first priority is “${next[0].displayTitle}”.`,
+    );
+  out.push(
+    "Search performance is not connected, so no traffic or ranking changes are reported.",
+  );
+  return out;
 }

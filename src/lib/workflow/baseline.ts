@@ -76,7 +76,7 @@ export const BASELINE_NOT_MEASURED = [
   {
     label: "Redirect chains",
     reason:
-      "The crawl records redirects (counted below), but there is no redirect-chain check yet.",
+      "The crawl records redirects (see crawl coverage), but there is no redirect-chain check yet.",
   },
   {
     label: "Search performance",
@@ -147,6 +147,7 @@ export type BaselineRun = {
   pagesFailed: number;
   pagesSkipped: number;
   maxPages: number;
+  maxDepth: number;
   robotsTxtStatus: string | null;
   sitemapUrlsDiscovered: number | null;
 };
@@ -280,6 +281,7 @@ export async function loadBaseline(
       pagesFailed: run.pagesFailed,
       pagesSkipped: run.pagesSkipped,
       maxPages: run.maxPages,
+      maxDepth: run.maxDepth,
       robotsTxtStatus: run.robotsTxtStatus,
       sitemapUrlsDiscovered: run.sitemapUrlsDiscovered,
     },

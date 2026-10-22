@@ -7,8 +7,13 @@ import type { NetPolicy } from "@/lib/net/ssrf";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
 import { loadBaseline } from "@/lib/workflow/baseline";
+import { buildTrend, loadCrawlHistory } from "@/lib/workflow/history";
 import { loadPlan } from "@/lib/workflow/plan";
-import { taskActivity, technicalProgress } from "@/lib/workflow/progress";
+import {
+  countConfirmedFixes,
+  taskActivity,
+  technicalProgress,
+} from "@/lib/workflow/progress";
 import { loadReport } from "@/lib/workflow/report";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
 
@@ -264,6 +269,39 @@ describe.skipIf(!TEST_DATABASE_URL)("SEO workflow (local database)", () => {
     expect(r!.openAtStart! - r!.openAtEnd!).toBeGreaterThanOrEqual(1);
     // No task was marked done: resolved findings are not reported as work.
     expect(r!.activity.reportedDone).toBe(0);
+  });
+
+  test("crawl history: partial crawls are listed but never plotted", async () => {
+    const { tdb, site, crawl } = await setup("history");
+    const partial = await crawl({ maxPages: 1 });
+    const first = await crawl();
+    const second = await crawl();
+    const rows = (await loadCrawlHistory(tdb, site.id))!;
+    expect(rows.map((r) => r.id)).toEqual([second.id, first.id, partial.id]);
+    expect(rows.find((r) => r.id === partial.id)).toMatchObject({
+      status: "PARTIAL",
+      findings: expect.any(Number),
+    });
+    const trend = buildTrend(rows, {
+      at: first.seoAnalyzedAt!,
+      maxPages: first.maxPages,
+      maxDepth: first.maxDepth,
+    });
+    expect(trend.map((p) => p.id)).toEqual([first.id, second.id]);
+    expect(trend[0].total).toBe(trend[1].total); // same site, same rules
+  });
+
+  test("confirmed fixes never include work that is only marked done", async () => {
+    const { site, scope, crawl } = await setup("confirmed");
+    await crawl();
+    const { syncRecommendations } =
+      await import("@/lib/recommendations/generate");
+    await syncRecommendations(db, site);
+    await db.recommendation.updateMany({
+      where: { websiteId: site.id },
+      data: { status: "COMPLETED" },
+    });
+    expect(await countConfirmedFixes(db, scope)).toBe(0); // still detected / not rechecked
   });
 
   test("everything is scoped to the organization", async () => {

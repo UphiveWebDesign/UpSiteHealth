@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { CheckType, IssueSeverity } from "@/generated/prisma/enums";
+import type { CheckType } from "@/generated/prisma/enums";
+import { SeverityBar } from "@/components/charts";
 import { ChangeSummary } from "@/components/crawl-changes";
 import { NextStepList } from "@/components/next-steps";
 import { DimensionList, scoreTone, Sparkline } from "@/components/score";
+import { FINDINGS, progressHint } from "@/lib/workflow/labels";
 import { ActionForm } from "@/components/ui/action-form";
 import { Badge } from "@/components/ui/badge";
 import { Callout, EmptyState } from "@/components/ui/feedback";
@@ -41,13 +43,6 @@ import { StartCrawlButton } from "./start-crawl";
 export const metadata: Metadata = { title: "Website · UpSiteHealth" };
 
 const TYPES: CheckType[] = ["UPTIME", "SSL", "DNS"];
-const SEVERITIES: IssueSeverity[] = [
-  "CRITICAL",
-  "HIGH",
-  "MEDIUM",
-  "LOW",
-  "INFO",
-];
 const HEADLINE_TONE: Record<Headline["tone"], string> = {
   success: "text-success-700",
   warning: "text-warning-700",
@@ -87,7 +82,7 @@ export default async function WebsitePage({
       ctx.db.crawlRun.findMany({
         where: { websiteId },
         orderBy: { createdAt: "desc" },
-        take: 1,
+        take: 3,
       }),
       ctx.db.seoFinding.groupBy({
         by: ["severity"],
@@ -131,6 +126,27 @@ export default async function WebsitePage({
   const comparison = lastCrawl
     ? await loadCrawlComparison(ctx.db, websiteId)
     : null;
+  // Baseline, trend and periods need a completed, analysed crawl; a partial
+  // or running crawl alone does not provide one.
+  const hasBaseline = !!(await ctx.db.crawlRun.findFirst({
+    where: { websiteId, status: "COMPLETED", seoAnalyzedAt: { not: null } },
+    select: { id: true },
+  }));
+  const openWork = await ctx.db.recommendation.groupBy({
+    by: ["priority"],
+    where: { websiteId, status: { in: ["PROPOSED", "IN_PROGRESS"] } },
+    _count: true,
+  });
+  const openTotal = openWork.reduce((n, w) => n + w._count, 0);
+  const openHigh = openWork
+    .filter((w) => w.priority === "CRITICAL" || w.priority === "HIGH")
+    .reduce((n, w) => n + w._count, 0);
+  const severityTotals = Object.fromEntries(
+    findingCounts.map((f) => [f.severity, f._count]),
+  );
+  const confirmedFixes = (comparison?.items ?? [])
+    .filter((i) => i.kind === "fixed")
+    .slice(0, 3);
   const [uptimeCheck, sslCheck, dnsCheck] = latest;
   const headlines: Record<CheckType, Headline> = {
     UPTIME: uptimeHeadline(uptimeCheck),
@@ -214,6 +230,51 @@ export default async function WebsitePage({
         }
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
+
+      <nav
+        aria-label="SEO workflow"
+        className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4"
+      >
+        {(
+          [
+            [
+              "SEO plan",
+              `${site}/plan`,
+              openTotal
+                ? `${openTotal} open · ${openHigh} high priority`
+                : "No open work",
+            ],
+            [
+              "Progress",
+              `${site}/progress`,
+              progressHint(hasBaseline, !!lastCrawl),
+            ],
+            ["Report", `${site}/report`, "Client-ready, printable"],
+            [
+              "Integrations",
+              `${site}/integrations`,
+              "Search, analytics, sitemap",
+            ],
+          ] as const
+        ).map(([label, href, hint]) => (
+          <Link
+            key={label}
+            href={href}
+            className="group rounded-xl border border-line bg-surface px-4 py-3 shadow-card transition-colors hover:border-brand-200 hover:bg-brand-50/40"
+          >
+            <span className="flex items-center justify-between text-sm font-semibold text-ink">
+              {label}
+              <span
+                aria-hidden
+                className="text-muted transition-transform group-hover:translate-x-0.5"
+              >
+                →
+              </span>
+            </span>
+            <span className="mt-0.5 block text-xs text-muted">{hint}</span>
+          </Link>
+        ))}
+      </nav>
 
       {!website.monitoringEnabled && (
         <div className="mb-6">
@@ -430,7 +491,7 @@ export default async function WebsitePage({
         </div>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid items-start gap-6 lg:grid-cols-2">
         <Card
           title="Open issues"
           description="Problems found by monitoring, most severe first"
@@ -499,34 +560,67 @@ export default async function WebsitePage({
                   </Callout>
                 </div>
               )}
-              {findingTotal === 0 ? (
-                <p className="flex items-center gap-2 text-sm text-success-700">
-                  <CheckIcon className="h-4 w-4" /> No open SEO findings
-                </p>
-              ) : (
-                <ul className="grid grid-cols-5 gap-2 text-center">
-                  {SEVERITIES.map((sev) => {
-                    const n =
-                      findingCounts.find((f) => f.severity === sev)?._count ??
-                      0;
-                    return (
+              <p className="mb-2 text-sm text-ink-2">
+                <span className="font-semibold tabular-nums text-ink">
+                  {findingTotal}
+                </span>{" "}
+                {FINDINGS.trackedOpen(findingTotal)}
+              </p>
+              <p className="-mt-1 mb-2 text-xs text-muted">
+                {FINDINGS.trackedOpenHint}
+              </p>
+              <SeverityBar
+                totals={severityTotals}
+                label="Open SEO findings by severity"
+              />
+              {confirmedFixes.length > 0 && (
+                <div className="mt-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                    Confirmed fixed by the latest recrawl
+                  </p>
+                  <ul className="mt-1 flex flex-col gap-0.5 text-sm text-ink-2">
+                    {confirmedFixes.map((f) => (
                       <li
-                        key={sev}
-                        className="rounded-lg border border-line bg-subtle px-2 py-2"
+                        key={f.fingerprint}
+                        className="flex items-baseline gap-2"
                       >
-                        <p
-                          className={`text-lg font-semibold tabular-nums ${n && (sev === "CRITICAL" || sev === "HIGH") ? "text-danger-700" : "text-ink"}`}
-                        >
-                          {n}
-                        </p>
-                        <p className="text-xs text-muted">
-                          {sev.charAt(0) + sev.slice(1).toLowerCase()}
-                        </p>
+                        <CheckIcon className="h-3.5 w-3.5 shrink-0 text-success-700" />
+                        <span>
+                          {f.title}
+                          <span className="break-all text-xs text-muted">
+                            {" "}
+                            · {f.url ?? "whole site"}
+                          </span>
+                        </span>
                       </li>
-                    );
-                  })}
-                </ul>
+                    ))}
+                  </ul>
+                </div>
               )}
+              <div className="mt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                  Recent crawls
+                </p>
+                <ul className="mt-1 divide-y divide-line text-sm">
+                  {crawlRuns.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex items-center justify-between gap-3 py-1.5"
+                    >
+                      <Link
+                        href={`${site}/crawls/${r.id}`}
+                        className="text-ink hover:text-brand-700"
+                      >
+                        {formatRelative(r.completedAt ?? r.createdAt)}
+                      </Link>
+                      <span className="flex items-center gap-2 text-xs text-muted">
+                        {r.pagesCrawled} pages
+                        <Badge value={r.status} />
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
               {comparison && (
                 <div className="mt-4 border-t border-line pt-4">
                   <ChangeSummary

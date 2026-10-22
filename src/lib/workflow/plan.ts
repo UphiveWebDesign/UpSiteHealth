@@ -31,6 +31,12 @@ export type PlanGroup =
 export type PlanItem = {
   id: string;
   title: string;
+  /** Title without the internal rule code, e.g. "Thin content". */
+  displayTitle: string;
+  /** Internal rule or check code, shown small (e.g. TECH_THIN_CONTENT). */
+  code: string | null;
+  /** Pages affected, when known (null for site-wide or unknown). */
+  affectedPages: number | null;
   group: PlanGroup;
   status: RecommendationStatus;
   /** Lifecycle label, aligned with the planned task statuses. */
@@ -49,10 +55,32 @@ export type PlanItem = {
   note: string | null;
 };
 
+export type PlanSummary = {
+  /** Planned or in-progress items (all, including beyond the preview). */
+  open: number;
+  /** Of those, critical or high priority. */
+  highPriority: number;
+  inProgress: number;
+  /** Marked done, waiting for or failing a recheck. */
+  awaitingVerification: number;
+};
+
 export type Plan = Record<PlanGroup, PlanItem[]> & {
   /** Open items beyond the preview limit, not shown in "next". */
   later: number;
+  summary: PlanSummary;
 };
+
+/** Splits "Thin content (TECH_THIN_CONTENT)" into a readable title and code. */
+export function splitTitle(title: string): {
+  displayTitle: string;
+  code: string | null;
+} {
+  const m = /^(.*\S)\s+\(([A-Z0-9_]+)\)$/.exec(title);
+  return m
+    ? { displayTitle: m[1], code: m[2] }
+    : { displayTitle: title, code: null };
+}
 
 export type PlanInput = {
   id: string;
@@ -88,6 +116,7 @@ export function taskStatusLabel(
     return "Ready to verify";
   }
   if (state === "awaiting-recheck") return "Waiting for evidence";
+  if (state === "verified") return "Looks fixed";
   return status === "IN_PROGRESS" ? "In progress" : "Planned";
 }
 
@@ -113,6 +142,12 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     verify: [],
     waiting: [],
     later: 0,
+    summary: {
+      open: 0,
+      highPriority: 0,
+      inProgress: 0,
+      awaitingVerification: 0,
+    },
   };
   const live = inputs.filter((i) => i.status !== "DISMISSED");
   const open = (i: PlanInput) =>
@@ -126,6 +161,8 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
   ): PlanItem => ({
     id: i.id,
     title: i.title,
+    ...splitTitle(i.title),
+    affectedPages: i.meta?.coverage?.affected ?? (i.meta?.urls.length || null),
     group,
     status: i.status,
     statusLabel: taskStatusLabel(i.status, i.state.kind),
@@ -168,6 +205,17 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
       plan.verify.push(item(i, "verify", "Marked done; not rechecked yet."));
     } else if (
       (i.status === "PROPOSED" || i.status === "IN_PROGRESS") &&
+      i.state.kind === "verified"
+    ) {
+      plan.verify.push(
+        item(
+          i,
+          "verify",
+          "No longer detected by the latest evidence; it is marked done at the next refresh.",
+        ),
+      );
+    } else if (
+      (i.status === "PROPOSED" || i.status === "IN_PROGRESS") &&
       (i.state.kind === "awaiting-recheck" || i.state.kind === "ignored")
     ) {
       plan.waiting.push(
@@ -181,6 +229,17 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
       );
     }
   }
+  const openItems = live.filter(
+    (i) => i.status === "PROPOSED" || i.status === "IN_PROGRESS",
+  );
+  plan.summary = {
+    open: openItems.length,
+    highPriority: openItems.filter(
+      (i) => i.priority === "CRITICAL" || i.priority === "HIGH",
+    ).length,
+    inProgress: openItems.filter((i) => i.status === "IN_PROGRESS").length,
+    awaitingVerification: plan.verify.length,
+  };
   // Reported done but still detected is the more urgent verification.
   plan.verify.sort(
     (a, b) =>

@@ -77,3 +77,35 @@ body {
 summary {
   cursor: pointer;
 }
+
+/* Printed reports: white page, real colours for badges and bars, no
+   shadows, and headings kept with the content that follows them. */
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+  html,
+  body {
+    background: #ffffff;
+  }
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .shadow-card {
+    box-shadow: none;
+  }
+  h1,
+  h2,
+  h3,
+  figcaption {
+    break-after: avoid;
+  }
+  li,
+  tr,
+  figure,
+  dl,
+  header {
+    break-inside: avoid;
+  }
+}

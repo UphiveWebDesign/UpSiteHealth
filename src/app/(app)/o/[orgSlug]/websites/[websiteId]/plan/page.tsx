@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PlanItemCard } from "@/components/workflow";
-import { Callout, EmptyState } from "@/components/ui/feedback";
+import { EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
 import { Card, PageHeader } from "@/components/ui/layout";
+import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
 import { db } from "@/lib/db";
+import { CURRENT_WORK } from "@/lib/workflow/labels";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { loadPlan, type PlanGroup } from "@/lib/workflow/plan";
@@ -24,7 +26,7 @@ const GROUPS: Array<{ key: PlanGroup; title: string; description: string }> = [
   },
   {
     key: "continue",
-    title: "Continue",
+    title: "Continue working",
     description: "Work already in progress.",
   },
   {
@@ -36,7 +38,7 @@ const GROUPS: Array<{ key: PlanGroup; title: string; description: string }> = [
     key: "verify",
     title: "Verify",
     description:
-      "Marked done by your team. Run the recheck shown on each item to confirm.",
+      "Marked done, or no longer detected. Run the recheck shown on each item to confirm.",
   },
   {
     key: "waiting",
@@ -81,35 +83,54 @@ export default async function SeoPlanPage({
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
 
-      <div className="mb-6 grid gap-4 lg:grid-cols-2">
-        <Callout tone="info" title="No time estimates yet">
-          This preview orders work by priority and evidence. It does not fit
-          work to your available hours: effort is shown as a size only, and no
-          hours are invented. Saved weekly plans and time estimates come with
-          SEO engagements.
-        </Callout>
-        <Card title="Engagement">
-          <dl className="flex flex-col gap-1 text-sm">
-            <div className="flex justify-between gap-3">
-              <dt className="text-muted">Client</dt>
-              <dd className="font-medium text-ink-2">
-                {website.client?.name ?? "Not assigned"}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-3">
-              <dt className="text-muted">Objectives, scope, weekly hours</dt>
-              <dd className="font-medium text-ink-2">Not set up yet</dd>
-            </div>
-          </dl>
-          <p className="mt-3 text-sm">
-            <Link
-              href={`${base}/progress`}
-              className="text-brand-700 hover:underline"
-            >
-              View the baseline and progress
-            </Link>
-          </p>
-        </Card>
+      <dl className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat
+          label="Open work items"
+          value={plan.summary.open}
+          hint="Planned or in progress"
+        />
+        <Stat
+          label="High priority"
+          value={plan.summary.highPriority}
+          tone={plan.summary.highPriority ? "danger" : "default"}
+          hint="Critical or high, still open"
+        />
+        <Stat
+          label="In progress"
+          value={plan.summary.inProgress}
+          hint="Being worked on"
+        />
+        <Stat
+          label="Awaiting verification"
+          value={plan.summary.awaitingVerification}
+          tone={plan.summary.awaitingVerification ? "warning" : "default"}
+          hint={CURRENT_WORK.awaitingVerificationHint}
+        />
+      </dl>
+      <div className="mb-8 flex flex-col gap-3 rounded-xl border border-line bg-surface px-5 py-4 text-sm shadow-card lg:flex-row lg:items-center lg:gap-8">
+        <p>
+          <span className="text-muted">Client:</span>{" "}
+          <span className="font-medium text-ink">
+            {website.client?.name ?? "Not assigned"}
+          </span>
+        </p>
+        <p>
+          <span className="text-muted">Objectives and scope:</span>{" "}
+          <span className="font-medium text-ink">Not set up yet</span>
+        </p>
+        <p className="flex-1">
+          <span className="text-muted">Weekly workload:</span>{" "}
+          <span className="text-ink-2">
+            not shown: no time estimates or weekly capacity are recorded, and
+            none are invented. Effort is a size only.
+          </span>
+        </p>
+        <Link
+          href={`${base}/progress`}
+          className="shrink-0 font-medium text-brand-700 hover:underline"
+        >
+          Baseline and progress →
+        </Link>
       </div>
 
       {total === 0 ? (
