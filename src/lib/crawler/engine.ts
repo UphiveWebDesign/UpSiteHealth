@@ -121,6 +121,21 @@ export type CrawlWorkerOptions = {
 
 const robotsCache = new Map<string, Robots>();
 
+/**
+ * Whether sitemap discovery really dropped anything (a configured limit
+ * that dropped nothing is not recorded as truncation). Stored on the seed
+ * page's parsed result as `result.discovery`, so coverage can tell a
+ * complete inventory from a cut-short one; crawls before this have none.
+ */
+export type DiscoveryEvidence = {
+  v: 1;
+  /** Sitemap files listed (robots.txt or a sitemap index) but never read. */
+  sitemapFilesOmitted: number;
+  /** A sitemap listed more URLs than the crawl records. */
+  sitemapUrlsCapped: boolean;
+};
+const discoveryCache = new Map<string, DiscoveryEvidence>();
+
 const FAILURE_OUTCOME: Record<FetchFailureCode, CheckOutcome> = {
   INVALID_URL: "INVALID_URL",
   BLOCKED: "BLOCKED",
@@ -218,6 +233,65 @@ async function loadRobots(run: Run, policy: NetPolicy): Promise<Robots> {
   return robots;
 }
 
+/**
+ * Reads the site's sitemaps (at most MAX_SITEMAP_FILES files) and reports
+ * what was really dropped: sitemap files listed but not read, and sitemaps
+ * longer than the URL cap. `fetchXml` returns a body for HTTP 200, else
+ * null; it is the crawler's safe fetch in production.
+ */
+export async function discoverSitemaps({
+  robotsSitemaps,
+  origin,
+  maxUrls,
+  fetchXml,
+}: {
+  robotsSitemaps: string[];
+  origin: string;
+  maxUrls: number;
+  fetchXml: (url: string) => Promise<string | null>;
+}): Promise<{ urls: string[]; discovery: DiscoveryEvidence }> {
+  const sitemapUrls: string[] = [];
+  const queue = robotsSitemaps.length
+    ? robotsSitemaps.slice(0, MAX_SITEMAP_FILES)
+    : [`${origin}/sitemap.xml`];
+  let fetched = 0;
+  let sitemapFilesOmitted = Math.max(
+    0,
+    robotsSitemaps.length - MAX_SITEMAP_FILES,
+  );
+  let sitemapUrlsCapped = false;
+  while (
+    queue.length &&
+    fetched < MAX_SITEMAP_FILES &&
+    sitemapUrls.length < maxUrls
+  ) {
+    const sitemapUrl = queue.shift()!;
+    fetched++;
+    try {
+      const xml = await fetchXml(sitemapUrl);
+      if (xml === null) continue;
+      const { urls, isIndex, truncated } = parseSitemap(xml, maxUrls);
+      if (isIndex) {
+        queue.push(...urls.slice(0, MAX_SITEMAP_FILES));
+        sitemapFilesOmitted += Math.max(0, urls.length - MAX_SITEMAP_FILES);
+        if (truncated) sitemapUrlsCapped = true; // an index longer than the cap
+      } else {
+        sitemapUrls.push(...urls);
+        if (truncated) sitemapUrlsCapped = true;
+      }
+    } catch {
+      // Ignore unreachable sitemaps.
+    }
+  }
+  // Files still queued were never read (the file limit or the URL cap).
+  sitemapFilesOmitted += queue.length;
+  if (queue.length && sitemapUrls.length >= maxUrls) sitemapUrlsCapped = true;
+  return {
+    urls: sitemapUrls,
+    discovery: { v: 1, sitemapFilesOmitted, sitemapUrlsCapped },
+  };
+}
+
 async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
   // Claim the QUEUED → RUNNING transition first, so overlapping workers do not
   // both fetch robots.txt and sitemaps for the same run.
@@ -248,42 +322,31 @@ async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
   }
   robotsCache.set(run.id, robots);
 
-  const sitemapUrls: string[] = [];
-  const queue = robots.sitemaps.length
-    ? robots.sitemaps.slice(0, MAX_SITEMAP_FILES)
-    : [`${origin}/sitemap.xml`];
-  let fetched = 0;
-  while (
-    queue.length &&
-    fetched < MAX_SITEMAP_FILES &&
-    sitemapUrls.length < run.maxDiscoveredUrls
-  ) {
-    const sitemapUrl = queue.shift()!;
-    fetched++;
-    try {
-      const res = await safeFetch(sitemapUrl, {
+  const { urls: sitemapUrls, discovery } = await discoverSitemaps({
+    robotsSitemaps: robots.sitemaps,
+    origin,
+    maxUrls: run.maxDiscoveredUrls,
+    fetchXml: async (url) => {
+      const res = await safeFetch(url, {
         policy,
         userAgent: run.userAgent,
         maxBodyBytes: 5 * 1024 * 1024,
         onBodyTooLarge: "truncate",
         timeoutMs: 15_000,
       });
-      if (res.status !== 200) continue;
-      const { urls, isIndex } = parseSitemap(
-        res.body.toString("utf8"),
-        run.maxDiscoveredUrls,
-      );
-      if (isIndex) queue.push(...urls.slice(0, MAX_SITEMAP_FILES));
-      else sitemapUrls.push(...urls);
-    } catch {
-      // Ignore unreachable sitemaps.
-    }
-  }
-
+      return res.status === 200 ? res.body.toString("utf8") : null;
+    },
+  });
+  discoveryCache.set(run.id, discovery);
   await db.crawlRun.update({
     where: { id: run.id },
     data: { robotsTxtStatus, sitemapUrlsDiscovered: sitemapUrls.length },
   });
+  // If another worker already parsed the start page, add the evidence to it.
+  await db.$executeRaw`
+    UPDATE crawl_pages SET result = result || ${JSON.stringify({ discovery })}::jsonb
+    WHERE "crawlRunId" = ${run.id} AND depth = 0
+      AND status = 'CRAWLED' AND result IS NOT NULL`;
   // The seed may itself be disallowed by robots.txt.
   if (!robots.isAllowed(run.website.url)) {
     await db.crawlPage.updateMany({
@@ -304,7 +367,13 @@ async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
   );
 }
 
-type ClaimedPage = { id: string; url: string; depth: number; attempt: number };
+type ClaimedPage = {
+  id: string;
+  url: string;
+  depth: number;
+  attempt: number;
+  discoverySource: string;
+};
 
 function claimPages(
   db: PrismaClient,
@@ -323,7 +392,7 @@ function claimPages(
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, url, depth, attempt`;
+    RETURNING id, url, depth, attempt, "discoverySource"`;
 }
 
 export async function recoverStalePages(db: PrismaClient, now = new Date()) {
@@ -334,6 +403,20 @@ export async function recoverStalePages(db: PrismaClient, now = new Date()) {
     UPDATE crawl_pages SET status = 'QUEUED', attempt = attempt + 1, "claimedAt" = NULL,
       "claimExpiresAt" = NULL, "updatedAt" = ${now}
     WHERE status = 'CRAWLING' AND "claimExpiresAt" < ${now}`;
+}
+
+/**
+ * The URL a page redirected to, when it is a different page on the same
+ * site (null otherwise). Its content is analysed there, not here.
+ */
+export function redirectTarget(
+  pageUrl: string,
+  finalUrl: string,
+  redirectCount: number,
+): string | null {
+  if (redirectCount <= 0) return null;
+  const target = normalizeCrawlUrl(finalUrl);
+  return target && target !== pageUrl ? target : null;
 }
 
 async function crawlPage(
@@ -390,6 +473,18 @@ async function crawlPage(
     await db.crawlPage.update({ where: { id: page.id }, data: base });
     return;
   }
+  // Reached through an internal redirect: this row only records the
+  // redirect (status, final URL, hop count). The content belongs to the
+  // final URL, which is crawled and analysed once as its own page, so the
+  // same page is never analysed under two URLs.
+  const target = redirectTarget(page.url, res.finalUrl, res.redirectCount);
+  if (target) {
+    await db.crawlPage.update({ where: { id: page.id }, data: base });
+    await discover(db, run, robots, [
+      { url: target, source: "REDIRECT", depth: page.depth, fromUrl: page.url },
+    ]);
+    return;
+  }
 
   const parsed = parsePage(res.body.toString("utf8"), res.finalUrl);
   const r = parsed.result;
@@ -410,24 +505,15 @@ async function crawlPage(
       externalLinkCount: r.links.filter((l) => l.type === "external").length,
       imageCount: r.images.length,
       structuredDataCount: r.structuredData.length,
-      result: r as unknown as Prisma.InputJsonValue,
+      // The start page (the seed, or the page it redirects to: both depth 0)
+      // carries the run's discovery evidence (see above).
+      result: (page.depth === 0 && discoveryCache.has(run.id)
+        ? { ...r, discovery: discoveryCache.get(run.id) }
+        : r) as unknown as Prisma.InputJsonValue,
     },
   });
 
   const candidates: Candidate[] = [];
-  const finalNormalized = normalizeCrawlUrl(res.finalUrl);
-  if (
-    res.redirectCount > 0 &&
-    finalNormalized &&
-    finalNormalized !== page.url
-  ) {
-    candidates.push({
-      url: finalNormalized,
-      source: "REDIRECT",
-      depth: page.depth,
-      fromUrl: page.url,
-    });
-  }
   if (!/\bnofollow\b/i.test(parsed.robotsMetaRaw ?? "")) {
     for (const link of r.links) {
       if (link.type === "internal" && !link.nofollow) {
@@ -483,6 +569,7 @@ async function cancelRun(db: PrismaClient, run: Run): Promise<boolean> {
   });
   await refreshCounters(db, run.id);
   robotsCache.delete(run.id);
+  discoveryCache.delete(run.id);
   return true;
 }
 
@@ -527,6 +614,7 @@ async function finalizeRun(db: PrismaClient, run: Run): Promise<boolean> {
     where: { id: run.id },
   });
   robotsCache.delete(run.id);
+  discoveryCache.delete(run.id);
   if (status !== "FAILED") {
     await syncSeoFindings(db, finished, new URL(run.website.url).hostname);
   }

@@ -14,6 +14,12 @@ const PAGE_SELECT = {
   robotsMetaRaw: true,
   depth: true,
   result: true,
+  // For page classification and business coverage (business/coverage.ts).
+  title: true,
+  metaDescription: true,
+  skipReason: true,
+  wordCount: true,
+  discoverySource: true,
 } as const;
 
 /**
@@ -34,7 +40,12 @@ export async function loadIntegrationEvidence(
     db.crawlRun.findFirst({
       where: { ...scope, seoAnalyzedAt: { not: null } },
       orderBy: { seoAnalyzedAt: "desc" },
-      select: { id: true, status: true, seoAnalyzedAt: true },
+      select: {
+        id: true,
+        status: true,
+        seoAnalyzedAt: true,
+        maxDiscoveredUrls: true,
+      },
     }),
     latestProbe(db, scope),
   ]);
@@ -47,7 +58,12 @@ export async function loadIntegrationEvidence(
   return {
     websiteUrl: website.url,
     crawl: run
-      ? { status: run.status, analyzedAt: run.seoAnalyzedAt!, pages }
+      ? {
+          status: run.status,
+          analyzedAt: run.seoAnalyzedAt!,
+          pages,
+          maxDiscoveredUrls: run.maxDiscoveredUrls,
+        }
       : null,
     probe,
   };

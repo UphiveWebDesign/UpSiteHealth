@@ -1,3 +1,4 @@
+import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import type {
   CrawlPageStatus,
   CrawlResourceType,
@@ -31,6 +32,9 @@ export type RecheckPage = {
   h1Count: number | null;
   wordCount: number | null;
   result: unknown;
+  /** Where the page ended up; with `url`, tells a redirect from a page. */
+  url?: string;
+  finalUrl?: string | null;
 };
 
 export type RecheckRun = {
@@ -60,6 +64,15 @@ export function pageRecheckGap(
       : { kind: "http-error", httpStatus: page.httpStatus };
   }
   if (ruleId === "TECH_HTTP_ERROR") return null; // loaded fine: error is gone
+  // It now redirects to another URL, where its content is analysed: the
+  // old URL no longer serves a page, so its own findings are gone.
+  if (
+    !page.result &&
+    page.url &&
+    page.finalUrl &&
+    normalizeCrawlUrl(page.finalUrl) !== page.url
+  )
+    return null;
   if (page.resourceType !== "HTML" || !page.result) {
     return { kind: "not-analysed" };
   }

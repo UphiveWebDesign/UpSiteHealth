@@ -15,6 +15,7 @@ export const CRAWL_PAGE_SELECT = {
   skipReason: true,
   resourceType: true,
   httpStatus: true,
+  finalUrl: true,
   title: true,
   metaDescription: true,
   canonicalUrl: true,

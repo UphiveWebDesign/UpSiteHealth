@@ -1,4 +1,5 @@
 import type {
+  CrawlSkipReason,
   CrawlPageStatus,
   CrawlResourceType,
   CrawlRunStatus,
@@ -75,6 +76,11 @@ export type EvidencePage = {
   robotsMetaRaw: string | null;
   depth: number;
   result: unknown;
+  title?: string | null;
+  metaDescription?: string | null;
+  skipReason?: CrawlSkipReason | null;
+  wordCount?: number | null;
+  discoverySource?: string | null;
 };
 
 export type IntegrationEvidence = {
@@ -83,6 +89,8 @@ export type IntegrationEvidence = {
     status: CrawlRunStatus;
     analyzedAt: Date;
     pages: EvidencePage[];
+    /** The run's URL discovery cap, when loaded (crawl completeness). */
+    maxDiscoveredUrls?: number;
   } | null;
   probe: { checkedAt: Date; result: ProbeResult } | null;
 };

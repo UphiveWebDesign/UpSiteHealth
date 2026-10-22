@@ -95,15 +95,19 @@ export function parseRobots(text: string, userAgent: string): Robots {
 
 export const allowAllRobots: Robots = { isAllowed: () => true, sitemaps: [] };
 
-/** Extracts <loc> URLs from a sitemap or sitemap index. */
+/**
+ * Extracts <loc> URLs from a sitemap or sitemap index. `truncated` is true
+ * only when more URLs were listed than `limit` (some were really dropped).
+ */
 export function parseSitemap(
   xml: string,
   limit = 5000,
-): { urls: string[]; isIndex: boolean } {
+): { urls: string[]; isIndex: boolean; truncated: boolean } {
   const isIndex = /<sitemapindex[\s>]/i.test(xml);
   const urls: string[] = [];
   const re = /<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/loc>/gi;
-  for (let m = re.exec(xml); m && urls.length < limit; m = re.exec(xml)) {
+  let m = re.exec(xml);
+  for (; m && urls.length < limit; m = re.exec(xml)) {
     urls.push(
       m[1]
         .replace(/&amp;/g, "&")
@@ -113,5 +117,5 @@ export function parseSitemap(
         .replace(/&apos;/g, "'"),
     );
   }
-  return { urls, isIndex };
+  return { urls, isIndex, truncated: !!m };
 }

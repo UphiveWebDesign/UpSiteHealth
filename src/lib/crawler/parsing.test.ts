@@ -84,6 +84,7 @@ test("parseSitemap reads urlsets and indexes", () => {
   ).toEqual({
     urls: ["https://a.com/a?x=1&y=2", "https://a.com/b"],
     isIndex: false,
+    truncated: false,
   });
   expect(
     parseSitemap(
@@ -124,13 +125,17 @@ describe("parsePage", () => {
     expect(page.wordCount).toBe(11);
   });
 
-  test("result JSON matches the production shape (plus the additive tags key)", () => {
-    // Production keys are unchanged; `tags` is new and absent on older rows.
+  test("result JSON matches the production shape (plus additive keys)", () => {
+    // Production keys are unchanged; `tags`, `content` and `contact` are new
+    // and absent on older rows, which readers handle as "not measured".
     expect(Object.keys(page.result).sort()).toEqual([
       "charset",
+      "contact",
+      "content",
       "headings",
       "images",
       "links",
+      "linksOmitted",
       "structuredData",
       "tags",
     ]);

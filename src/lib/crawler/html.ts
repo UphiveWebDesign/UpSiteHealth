@@ -45,6 +45,33 @@ export type PageTags = {
   bingSiteVerification: string[];
 };
 
+/**
+ * The page's main content with site chrome (header, navigation, footer,
+ * sidebars, forms, cookie and consent banners) removed. Short text blocks
+ * are kept so relevance and site-wide repeated text can be judged later.
+ * `v` identifies the extraction; crawls stored before it have none.
+ */
+export type PageContent = {
+  v: 1;
+  source: "main" | "article" | "body";
+  /** Words in the main content. */
+  words: number;
+  /** Main-content text blocks, clipped, with their word counts. */
+  blocks: Array<{ t: string; w: number }>;
+};
+
+/**
+ * Ways to get in touch found in the page source, as counts only (no phone
+ * numbers or addresses are stored). These links are never crawled.
+ */
+export type ContactSignals = {
+  tel: number;
+  mailto: number;
+  whatsapp: number;
+  /** Forms that ask for an email, phone or message (not search forms). */
+  forms: number;
+};
+
 export type ParsedPage = {
   title: string | null;
   metaDescription: string | null;
@@ -59,11 +86,87 @@ export type ParsedPage = {
     links: PageLink[];
     structuredData: StructuredDataBlock[];
     tags: PageTags;
+    content: PageContent;
+    contact: ContactSignals;
+    /**
+     * Distinct internal links beyond the MAX_ITEMS limit, which were not
+     * recorded or followed (0: the limit was not reached or dropped nothing).
+     */
+    linksOmitted: number;
   };
 };
 
 const MAX_ITEMS = 500;
 const MAX_TEXT = 300;
+const MAX_BLOCKS = 60;
+const MAX_BLOCK_TEXT = 200;
+
+/** Elements that are site chrome, not the page's own content. */
+const CHROME_SELECTOR = [
+  "header",
+  "nav",
+  "footer",
+  "aside",
+  "form",
+  "dialog",
+  '[role="navigation"]',
+  '[role="banner"]',
+  '[role="contentinfo"]',
+  '[role="complementary"]',
+  '[role="search"]',
+  '[aria-hidden="true"]',
+].join(", ");
+/** id/class words that mark chrome (a bare "menu" is not one: it may be a food menu). */
+const CHROME_NAME =
+  /(^|[\s_-])(nav|navbar|navigation|site-header|site-footer|header-top|top-bar|cookie|cookies|consent|gdpr|newsletter|popup|modal|breadcrumbs?|skip-link|sidebar|widget-area|main-menu|mobile-menu|menu-toggle|social-links|share-buttons)([\s_-]|$)/i;
+const WHATSAPP =
+  /^(?:whatsapp:|(?:https?:\/\/)?(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|web\.whatsapp\.com)(?:\/|$|\?))/i;
+
+function contactSignals(root: HTMLElement): ContactSignals {
+  const out: ContactSignals = { tel: 0, mailto: 0, whatsapp: 0, forms: 0 };
+  for (const a of root.querySelectorAll("a[href]")) {
+    const href = (a.getAttribute("href") ?? "").trim().toLowerCase();
+    if (href.startsWith("tel:")) out.tel++;
+    else if (href.startsWith("mailto:")) out.mailto++;
+    else if (WHATSAPP.test(href)) out.whatsapp++;
+  }
+  for (const form of root.querySelectorAll("form")) {
+    if (form.getAttribute("role") === "search") continue;
+    const asks = form.querySelector(
+      'input[type="email" i], input[type="tel" i], textarea, input[name*="email" i], input[name*="phone" i]',
+    );
+    if (asks) out.forms++;
+  }
+  return out;
+}
+
+function mainContent(body: HTMLElement): PageContent {
+  const articles = body.querySelectorAll("article");
+  const main =
+    body.querySelector("main") ?? body.querySelector('[role="main"]');
+  const region = main ?? (articles.length === 1 ? articles[0] : body);
+  const source: PageContent["source"] = main
+    ? "main"
+    : articles.length === 1
+      ? "article"
+      : "body";
+  for (const el of region.querySelectorAll(CHROME_SELECTOR)) el.remove();
+  for (const el of region.querySelectorAll("[id], [class]")) {
+    const name = `${el.getAttribute("id") ?? ""} ${el.getAttribute("class") ?? ""}`;
+    if (CHROME_NAME.test(name)) el.remove();
+  }
+  const blocks: PageContent["blocks"] = [];
+  let words = 0;
+  for (const line of region.structuredText.split("\n")) {
+    const t = clean(line);
+    if (!t) continue;
+    const w = t.split(" ").length;
+    words += w;
+    if (blocks.length < MAX_BLOCKS)
+      blocks.push({ t: t.slice(0, MAX_BLOCK_TEXT), w });
+  }
+  return { v: 1, source, words, blocks };
+}
 
 function clean(text: string | undefined | null): string {
   return (text ?? "").replace(/\s+/g, " ").trim();
@@ -203,10 +306,17 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
   }
 
   const links: PageLink[] = [];
+  const recorded = new Set<string>();
+  const omitted = new Set<string>();
   for (const a of root.querySelectorAll("a[href]")) {
-    if (links.length >= MAX_ITEMS) break;
     const url = normalizeCrawlUrl(a.getAttribute("href") ?? "", baseUrl);
     if (!url) continue;
+    if (links.length >= MAX_ITEMS) {
+      // Only distinct internal URLs not already recorded were really lost.
+      if (!recorded.has(url) && isInternalUrl(url, host)) omitted.add(url);
+      continue;
+    }
+    recorded.add(url);
     const rel = attr(a, "rel");
     const relTokens = new Set((rel ?? "").toLowerCase().split(/\s+/));
     links.push({
@@ -261,12 +371,15 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
     /charset=([^;\s]+)/i.exec(httpEquiv ?? "")?.[1] ??
     null;
 
+  const contact = contactSignals(root);
   const body = root.querySelector("body") ?? root;
   for (const el of body.querySelectorAll("script, style, noscript, template"))
     el.remove();
   // structuredText separates block elements; `.text` would glue "A</h1><p>B" into "AB".
   const text = clean(body.structuredText);
   const wordCount = text ? text.split(" ").length : 0;
+  // After the page-wide count above: this removes chrome from the tree.
+  const content = mainContent(body);
 
   return {
     title,
@@ -277,6 +390,16 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
     robotsMetaRaw: meta("robots"),
     language: attr(root.querySelector("html"), "lang"),
     wordCount,
-    result: { charset, headings, images, links, structuredData, tags },
+    result: {
+      charset,
+      headings,
+      images,
+      links,
+      structuredData,
+      tags,
+      content,
+      contact,
+      linksOmitted: omitted.size,
+    },
   };
 }
