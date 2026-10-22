@@ -93,6 +93,16 @@ export function Sparkline({
   );
 }
 
+/** Display names for score dimensions (acronyms kept upper case). */
+const DIMENSION_LABEL: Record<string, string> = {
+  AVAILABILITY: "Availability",
+  TECHNICAL_SEO: "Technical SEO",
+  PERFORMANCE: "Performance",
+  SSL: "SSL",
+  DNS: "DNS",
+};
+export const dimensionLabel = (d: string) => DIMENSION_LABEL[d] ?? humanize(d);
+
 type DimensionView = {
   dimension: string;
   score: number | null;
@@ -125,7 +135,7 @@ export function DimensionList({
           >
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-sm font-medium text-ink">
-                {humanize(d.dimension)}
+                {dimensionLabel(d.dimension)}
                 <span className="ml-2 text-xs font-normal text-muted">
                   {d.weight}% of score
                 </span>
@@ -146,7 +156,7 @@ export function DimensionList({
               <>
                 <Meter
                   value={d.score!}
-                  label={`${humanize(d.dimension)} score`}
+                  label={`${dimensionLabel(d.dimension)} score`}
                   tone={meterTone(d.score!)}
                 />
                 <p className="text-xs text-muted">
