@@ -215,6 +215,30 @@ enum AiSearchQueryIntent {
   TRANSACTIONAL
 }
 
+enum BusinessFactKind {
+  BUSINESS_TYPE
+  SERVICE
+  LOCATION
+  SERVICE_AREA
+  AUDIENCE
+  GOAL
+  CONSTRAINT
+  EXCLUDED
+}
+
+enum BusinessFactSource {
+  CLIENT
+  TEAM
+  IMPORT
+  INFERENCE
+}
+
+enum BusinessFactStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum AiSearchRunStatus {
   QUEUED
   RUNNING
@@ -298,6 +322,8 @@ model User {
   sessions       Session[]
   memberships    OrganizationMember[]
   assignedIssues Issue[]
+  factsCreated   BusinessFact[]       @relation("BusinessFactCreatedBy")
+  factsReviewed  BusinessFact[]       @relation("BusinessFactReviewedBy")
 
   @@map("users")
 }
@@ -365,6 +391,7 @@ model Organization {
   scoreSnapshots           WebsiteScoreSnapshot[]
   performanceObservations  PerformanceObservation[]
   aiSearchProfiles         AiSearchProfile[]
+  businessFacts            BusinessFact[]
   aiSearchCompetitors      AiSearchCompetitor[]
   aiSearchQueries          AiSearchQuery[]
   aiSearchRuns             AiSearchRun[]
@@ -444,6 +471,7 @@ model Website {
   scoreSnapshots          WebsiteScoreSnapshot[]
   performanceObservations PerformanceObservation[]
   aiSearchProfile         AiSearchProfile?
+  businessFacts           BusinessFact[]
   aiSearchCompetitors     AiSearchCompetitor[]
   aiSearchQueries         AiSearchQuery[]
   aiSearchRuns            AiSearchRun[]
@@ -451,6 +479,9 @@ model Website {
   alertEvents             AlertEvent[]
 
   @@unique([organizationId, domain])
+  // Lets child rows reference (id, organizationId) together, so they can
+  // never point at another organization's website.
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@index([clientId])
   @@index([monitoringEnabled, nextCheckAt])
@@ -765,6 +796,10 @@ model PerformanceObservation {
 
 // ─── AI Search ──────────────────────────────────────────────────────────────
 
+/// The website's business profile: name, other names and description. Used by
+/// AI Search and the business profile page. `primaryServices` and `locations`
+/// are legacy free text, superseded by business_facts; they are read only to
+/// offer a one-time import for review and are no longer written.
 model AiSearchProfile {
   id                  String   @id @default(cuid())
   organizationId      String
@@ -783,6 +818,38 @@ model AiSearchProfile {
 
   @@index([organizationId])
   @@map("ai_search_profiles")
+}
+
+/// One business fact (a service, location, goal, ...) with where it came from
+/// and whether a person approved it. Only APPROVED facts are used by coverage
+/// and recommendations; nothing approves a fact automatically.
+model BusinessFact {
+  id              String             @id @default(cuid())
+  organizationId  String
+  websiteId       String
+  kind            BusinessFactKind
+  value           String
+  /// Trimmed, single-spaced, lower-case value: one fact per kind and wording.
+  normalizedValue String
+  /// Other wording for the same thing, entered by a person (used for matching).
+  synonyms        String[]           @default([])
+  source          BusinessFactSource
+  status          BusinessFactStatus @default(PENDING)
+  createdById     String?
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  createdBy    User?        @relation("BusinessFactCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  reviewedBy   User?        @relation("BusinessFactReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@unique([websiteId, kind, normalizedValue])
+  @@index([organizationId])
+  @@index([websiteId, status])
+  @@map("business_facts")
 }
 
 model AiSearchCompetitor {

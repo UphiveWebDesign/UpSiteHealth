@@ -3,6 +3,15 @@
 Status: **proposed, not applied.** SQL:
 [`recovery/proposed/002_seo_engagement_workflow.sql`](../../recovery/proposed/002_seo_engagement_workflow.sql).
 
+> **Revised for business facts.** Business type, locations, services/topics
+> and audience are now business facts with source and approval
+> ([business-coverage.md](business-coverage.md),
+> `prisma/migrations/1_business_facts`). The engagement no longer has
+> `businessType`, `targetLocations`, `primaryTopics` or `targetAudience`, and
+> `Website @@unique([id, organizationId])` already exists. Apply
+> `1_business_facts` first. The Prisma diff below still shows the original
+> fields for the record; the SQL file is the revised version.
+
 ## Why a migration is needed
 
 The read-only baseline, progress, plan preview and report (already built)
@@ -160,6 +169,10 @@ model Website { /* … */ @@unique([id, organizationId]) }
     WHEN "issueId" IS NOT NULL THEN 'issue:' || "issueId"
     WHEN title = 'Improve page speed' THEN 'performance'
     WHEN title = 'Increase brand visibility in AI search answers' THEN 'ai-search'
+    -- Business coverage tasks: one per purpose, and the title names the
+    -- offering, so the whole title is the key (two service pages for
+    -- different services must not share "seo-rule:BIZ_SERVICE_PAGE").
+    WHEN title ~ '\(BIZ_[A-Z_]+\)$' THEN 'coverage:' || title
     WHEN title ~ '\(INT_[A-Z0-9]+_[A-Z0-9_]+\)$' THEN
       'integration:' || substring(title from '\(INT_([A-Z0-9]+)_') || ':' ||
       substring(title from '\(INT_[A-Z0-9]+_([A-Z0-9_]+)\)$')
@@ -179,6 +192,19 @@ model Website { /* … */ @@unique([id, organizationId]) }
   ```
   If it does, resolve them in a reviewed data step (keep the newest, mark
   others DISMISSED with an event), never inside the migration.
+- **Business coverage tasks (reviewed for remediation sprint 2).**
+  `basisKey` for them is `coverage:` plus the title. When the app re-keys a
+  task because its offering's title changed (`rekeyTasks` in
+  `src/lib/business/coverage.ts`), it must update `basisKey` in the same
+  statement as the title, or the index would block the move. Until the
+  index exists, duplicates are prevented in code: every creation goes
+  through `createRecommendationOnce`, which locks the website row
+  (`SELECT … FOR UPDATE`) and checks the title in one transaction. A
+  database test confirms the current schema accepts duplicate titles.
+- **Index semantics checked.** The partial unique index ignores rows with
+  a NULL `basisKey` (manual tasks) and closed statuses (COMPLETED,
+  DISMISSED keep their history), and its predicate names the two new enum
+  values, so Part 1 (the enum values) must be committed before Part 2.
 
 ## Rollback
 

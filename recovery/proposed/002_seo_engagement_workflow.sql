@@ -9,6 +9,10 @@
 -- Prerequisites (separate, already pending approval, NOT part of this file):
 --   1. A verified production backup.
 --   2. Production migration history baselined (0_baseline marked applied).
+--   3. prisma/migrations/1_business_facts applied first. It creates
+--      "websites_id_organizationId_key" (so this file no longer does) and
+--      holds business type, locations, services and audiences as reviewed
+--      business facts, so the engagement no longer duplicates them.
 -- Order: local PGlite → staging → production, each after review.
 --
 -- Conventions follow prisma/migrations/0_baseline (TEXT ids, TIMESTAMP(3),
@@ -42,7 +46,7 @@ CREATE TYPE "RecommendationEventType" AS ENUM (
 -- Tenant integrity: let child rows reference (id, organizationId) together,
 -- so a row can never point at another organization's website or task.
 -- Both columns are already unique via the primary key, so these are cheap.
-CREATE UNIQUE INDEX "websites_id_organizationId_key" ON "websites"("id", "organizationId");
+-- "websites_id_organizationId_key" is created by 1_business_facts.
 CREATE UNIQUE INDEX "recommendations_id_organizationId_key" ON "recommendations"("id", "organizationId");
 
 -- CreateTable: one engagement per website. Only objective, start date and
@@ -54,10 +58,8 @@ CREATE TABLE "seo_engagements" (
     "clientId" TEXT,
     "status" "SeoEngagementStatus" NOT NULL DEFAULT 'ACTIVE',
     "objective" TEXT NOT NULL,
-    "businessType" TEXT,
-    "targetLocations" TEXT[] DEFAULT ARRAY[]::TEXT[],
-    "primaryTopics" TEXT[] DEFAULT ARRAY[]::TEXT[],
-    "targetAudience" TEXT,
+    -- Business type, locations, services/topics and audience live in
+    -- business_facts (1_business_facts), with source and approval.
     "landingPages" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "platform" TEXT,
     "scope" TEXT,
@@ -153,6 +155,9 @@ CREATE INDEX "seo_engagements_organizationId_status_idx" ON "seo_engagements"("o
 CREATE INDEX "seo_engagements_clientId_idx" ON "seo_engagements"("clientId");
 -- One active task per basis per website (duplicate prevention). Run the
 -- duplicate check in the spec first; existing duplicates would fail this.
+-- Business coverage tasks use basisKey 'coverage:' || title (see the spec's
+-- backfill): a generic 'seo-rule:BIZ_…' key would make two different
+-- service pages collide. Re-keying must update title and basisKey together.
 CREATE UNIQUE INDEX "recommendations_websiteId_basisKey_active_key"
   ON "recommendations"("websiteId", "basisKey")
   WHERE "basisKey" IS NOT NULL
@@ -214,7 +219,7 @@ COMMIT;
 --   DROP COLUMN "startedAt", DROP COLUMN "reportedDoneAt",
 --   DROP COLUMN "verifiedAt", DROP COLUMN "createdById";
 -- DROP INDEX "recommendations_id_organizationId_key";
--- DROP INDEX "websites_id_organizationId_key";
+-- ("websites_id_organizationId_key" belongs to 1_business_facts; keep it.)
 -- DROP TYPE "RecommendationEventType";
 -- DROP TYPE "RecommendationSource";
 -- DROP TYPE "ReportingCadence";

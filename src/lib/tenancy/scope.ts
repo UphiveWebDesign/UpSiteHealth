@@ -22,6 +22,7 @@ export const TENANT_MODELS = new Set([
   "WebsiteScoreSnapshot",
   "PerformanceObservation",
   "AiSearchProfile",
+  "BusinessFact",
   "AiSearchCompetitor",
   "AiSearchQuery",
   "AiSearchRun",
