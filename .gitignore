@@ -28,8 +28,8 @@ next-env.d.ts
 src/generated/
 generated/
 
-# Testing
-coverage/
+# Testing (root-level coverage output only; not app routes named "coverage")
+/coverage/
 
 # Logs
 npm-debug.log*
