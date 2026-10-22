@@ -18,6 +18,9 @@ export default defineConfig({
     // Component tests opt in with a `// @vitest-environment jsdom` docblock.
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
+    // Guards the integration database before any test file runs
+    // (tests/integration/test-db-guard.ts, docs/operations/testing.md).
+    setupFiles: ["./tests/setup.ts"],
     // `prisma dev` (PGlite) serves one connection at a time, so integration
     // test files must not run in parallel against it.
     fileParallelism: !process.env.TEST_DATABASE_URL,
