@@ -6,6 +6,7 @@ import { SeverityBar } from "@/components/charts";
 import { ChangeSummary } from "@/components/crawl-changes";
 import { NextStepList } from "@/components/next-steps";
 import { DimensionList, scoreTone, Sparkline } from "@/components/score";
+import { recommendationVisibility } from "@/lib/business/visibility";
 import { FINDINGS, progressHint } from "@/lib/workflow/labels";
 import { ActionForm } from "@/components/ui/action-form";
 import { Badge } from "@/components/ui/badge";
@@ -134,7 +135,12 @@ export default async function WebsitePage({
   }));
   const openWork = await ctx.db.recommendation.groupBy({
     by: ["priority"],
-    where: { websiteId, status: { in: ["PROPOSED", "IN_PROGRESS"] } },
+    where: {
+      AND: [
+        { websiteId, status: { in: ["PROPOSED", "IN_PROGRESS"] } },
+        recommendationVisibility(ctx.role),
+      ],
+    },
     _count: true,
   });
   const openTotal = openWork.reduce((n, w) => n + w._count, 0);

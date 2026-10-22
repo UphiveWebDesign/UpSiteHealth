@@ -2,22 +2,22 @@ import { createHash } from "node:crypto";
 import type { IssueSeverity, SeoFindingScope } from "@/generated/prisma/enums";
 import type { PageImage, StructuredDataBlock } from "@/lib/crawler/html";
 import { isInternalUrl } from "@/lib/crawler/urls";
+import {
+  SEO_CATALOGUE,
+  SEO_LIMITS,
+  SEO_RULE_IDS,
+} from "@/lib/knowledge/catalogue";
 
 /**
  * Technical SEO rules. The six rules observed in production keep their exact
  * ids, severities, thresholds and evidence keys (recovery/DATA-SHAPES.md):
  * TECH_TITLE_TOO_SHORT/LONG, TECH_META_DESCRIPTION_TOO_SHORT/LONG,
  * TECH_CANONICAL_EXTERNAL, TECH_IMAGE_MISSING_DIMENSIONS.
- * All other rules are RECONSTRUCTED.
+ * All other rules are RECONSTRUCTED. Their definitions live in the
+ * knowledge catalogue (knowledge/catalogue.ts); this file only evaluates them.
  */
 
-export const SEO_LIMITS = {
-  titleMin: 15,
-  titleMax: 60,
-  descriptionMin: 50,
-  descriptionMax: 160,
-  thinContentWords: 200,
-} as const;
+export { SEO_LIMITS, SEO_RULE_IDS };
 
 export type SeoFindingDraft = {
   ruleId: string;
@@ -50,133 +50,15 @@ type RuleMeta = Pick<
   "severity" | "title" | "description" | "recommendation"
 >;
 
-const RULES: Record<string, RuleMeta> = {
-  TECH_HTTP_ERROR: {
-    severity: "HIGH",
-    title: "Page returns an error status",
-    description:
-      "Visitors and search engines receive an HTTP error for this page.",
-    recommendation:
-      "Fix the page or redirect it, and update internal links that point to it.",
-  },
-  TECH_TITLE_MISSING: {
-    severity: "MEDIUM",
-    title: "Missing page title",
-    description: "The page has no <title> element.",
-    recommendation: "Add a unique, descriptive title of 15–60 characters.",
-  },
-  TECH_TITLE_TOO_SHORT: {
-    severity: "LOW",
-    title: "Page title is too short",
-    description: "Short titles give search engines and users little context.",
-    recommendation: `Write a descriptive title of at least ${SEO_LIMITS.titleMin} characters.`,
-  },
-  TECH_TITLE_TOO_LONG: {
-    severity: "LOW",
-    title: "Page title is too long",
-    description: "Long titles are truncated in search results.",
-    recommendation: `Keep the title under ${SEO_LIMITS.titleMax} characters.`,
-  },
-  TECH_META_DESCRIPTION_MISSING: {
-    severity: "LOW",
-    title: "Missing meta description",
-    description: "Search engines will pick their own snippet for this page.",
-    recommendation: "Add a meta description of 50–160 characters.",
-  },
-  TECH_META_DESCRIPTION_TOO_SHORT: {
-    severity: "LOW",
-    title: "Meta description is too short",
-    description: "Short descriptions make weak search snippets.",
-    recommendation: `Write a meta description of at least ${SEO_LIMITS.descriptionMin} characters.`,
-  },
-  TECH_META_DESCRIPTION_TOO_LONG: {
-    severity: "LOW",
-    title: "Meta description is too long",
-    description: "Long descriptions are truncated in search results.",
-    recommendation: `Keep the meta description under ${SEO_LIMITS.descriptionMax} characters.`,
-  },
-  TECH_H1_MISSING: {
-    severity: "MEDIUM",
-    title: "Missing H1 heading",
-    description: "The page has no main heading.",
-    recommendation: "Add one H1 that describes the page content.",
-  },
-  TECH_H1_MULTIPLE: {
-    severity: "LOW",
-    title: "Multiple H1 headings",
-    description: "Several H1 headings make the main topic less clear.",
-    recommendation: "Use a single H1 and H2–H3 for subsections.",
-  },
-  TECH_CANONICAL_EXTERNAL: {
-    severity: "INFO",
-    title: "Canonical URL points to another domain",
-    description:
-      "Search engines are told the preferred version lives on a different host.",
-    recommendation:
-      "Confirm this is intentional; otherwise point the canonical at this site.",
-  },
-  TECH_NOINDEX: {
-    severity: "LOW",
-    title: "Page is excluded from search (noindex)",
-    description:
-      "A robots meta tag tells search engines not to index this page.",
-    recommendation:
-      "Remove noindex if this page should appear in search results.",
-  },
-  TECH_IMAGE_MISSING_ALT: {
-    severity: "LOW",
-    title: "Images without alt text",
-    description:
-      "Images lack alternative text for screen readers and image search.",
-    recommendation:
-      'Add descriptive alt text, or alt="" for decorative images.',
-  },
-  TECH_IMAGE_MISSING_DIMENSIONS: {
-    severity: "INFO",
-    title: "Images without width and height",
-    description: "Missing dimensions cause layout shift while the page loads.",
-    recommendation: "Set width and height attributes on images.",
-  },
-  TECH_STRUCTURED_DATA_INVALID: {
-    severity: "LOW",
-    title: "Invalid structured data",
-    description: "A JSON-LD block could not be parsed.",
-    recommendation:
-      "Fix the JSON syntax so search engines can read the markup.",
-  },
-  TECH_THIN_CONTENT: {
-    severity: "INFO",
-    title: "Thin content",
-    description: "The page has very little text.",
-    recommendation: `Consider adding substantive content (at least ${SEO_LIMITS.thinContentWords} words).`,
-  },
-  TECH_DUPLICATE_TITLE: {
-    severity: "MEDIUM",
-    title: "Duplicate page titles",
-    description: "Several pages share the same title.",
-    recommendation: "Give every page a unique title.",
-  },
-  TECH_DUPLICATE_META_DESCRIPTION: {
-    severity: "LOW",
-    title: "Duplicate meta descriptions",
-    description: "Several pages share the same meta description.",
-    recommendation: "Write a unique description for each page.",
-  },
-  TECH_ROBOTS_TXT_MISSING: {
-    severity: "INFO",
-    title: "robots.txt not found",
-    description: "The site has no robots.txt file.",
-    recommendation: "Add a robots.txt that references your sitemap.",
-  },
-  TECH_SITEMAP_MISSING: {
-    severity: "LOW",
-    title: "No XML sitemap found",
-    description: "No sitemap was found at /sitemap.xml or in robots.txt.",
-    recommendation: "Publish an XML sitemap and reference it in robots.txt.",
-  },
-};
-
-export const SEO_RULE_IDS = Object.keys(RULES);
+/** The finding text each rule emits (stored on every finding). */
+const RULES: Record<string, RuleMeta> = Object.fromEntries(
+  Object.entries(SEO_CATALOGUE).map(
+    ([id, { severity, title, description, recommendation }]) => [
+      id,
+      { severity, title, description, recommendation },
+    ],
+  ),
+);
 
 function pageFinding(
   ruleId: string,

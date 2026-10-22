@@ -12,7 +12,8 @@ export type BenefitCategory =
   | "user-experience"
   | "search-insight"
   | "measurement"
-  | "ai-visibility";
+  | "ai-visibility"
+  | "business-coverage";
 
 export const BENEFIT: Record<BenefitCategory, { label: string; text: string }> =
   {
@@ -51,5 +52,9 @@ export const BENEFIT: Record<BenefitCategory, { label: string; text: string }> =
     "ai-visibility": {
       label: "AI search visibility",
       text: "May help AI assistants mention and cite the site. Results vary between runs.",
+    },
+    "business-coverage": {
+      label: "Business coverage",
+      text: "Helps visitors and search engines find what the business offers and where. It does not promise rankings or traffic by itself.",
     },
   };

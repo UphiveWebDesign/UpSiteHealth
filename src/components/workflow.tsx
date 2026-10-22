@@ -6,6 +6,7 @@ import { BASELINE_NOT_MEASURED, type Baseline } from "@/lib/workflow/baseline";
 import type { PlanItem } from "@/lib/workflow/plan";
 import { ACTIVITY } from "@/lib/workflow/labels";
 import type { TaskActivity, TechnicalProgress } from "@/lib/workflow/progress";
+import { ProposalBlock, WorkTypeBadge } from "./page-proposal";
 import { Badge, type Tone } from "./ui/badge";
 
 /** Shared views for the SEO plan, progress and report pages. */
@@ -287,6 +288,7 @@ const STATUS_TONE: Record<string, Tone> = {
 };
 
 /** One plan item: what to do, why, evidence, and how it will be verified. */
+
 export function PlanItemCard({ item }: { item: PlanItem }) {
   const facts = [
     item.affectedPages !== null
@@ -296,8 +298,6 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
       ? `Effort: ${EFFORT[item.effort]} (size only)`
       : "Effort: not estimated",
   ].filter(Boolean);
-  const hasDetails =
-    !!item.rationale || item.evidence.length > 0 || item.urls.length > 0;
   return (
     <li className="rounded-xl border border-line bg-surface shadow-card print:break-inside-avoid print:shadow-none">
       <div className="flex flex-col gap-3 p-5">
@@ -307,6 +307,9 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
             <h3 className="text-base font-semibold text-ink">
               {item.displayTitle}
             </h3>
+            <p className="mt-1">
+              <WorkTypeBadge type={item.workType} />
+            </p>
             <p className="mt-0.5 text-xs text-muted">
               {facts.join(" · ")}
               {item.code && (
@@ -322,6 +325,7 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
           />
         </div>
         <p className="text-sm text-ink-2">{item.why}</p>
+        {item.proposal && <ProposalBlock proposal={item.proposal} />}
         {item.note && (
           <p className="text-sm font-medium text-warning-700">{item.note}</p>
         )}
@@ -349,48 +353,69 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
           </p>
         )}
       </div>
-      {hasDetails && (
-        <details className="group border-t border-line print:hidden">
-          <summary className="flex cursor-pointer items-center justify-between px-5 py-2.5 text-sm font-medium text-brand-700 [&::-webkit-details-marker]:hidden">
-            Evidence and affected pages
-            <span
-              aria-hidden
-              className="text-muted transition-transform group-open:rotate-90"
-            >
-              ›
-            </span>
-          </summary>
-          <div className="flex flex-col gap-3 px-5 pb-4 text-sm">
-            {item.rationale && (
-              <p className="text-ink-2">
-                <span className="font-medium text-ink">Why this priority:</span>{" "}
-                {item.rationale}
-              </p>
-            )}
-            {item.evidence.length > 0 && (
-              <ul className="list-disc pl-5 text-ink-2">
-                {item.evidence.map((e) => (
-                  <li key={e} className="break-words">
-                    {e}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {item.urls.length > 0 && (
-              <ul className="flex flex-col gap-0.5 rounded-lg border border-line bg-subtle p-3">
-                {item.urls.map((u) => (
-                  <li
-                    key={u}
-                    className="break-all font-mono text-xs text-ink-2"
-                  >
-                    {u}
-                  </li>
-                ))}
-              </ul>
-            )}
+      <details className="group border-t border-line print:hidden">
+        <summary className="flex cursor-pointer items-center justify-between px-5 py-2.5 text-sm font-medium text-brand-700 [&::-webkit-details-marker]:hidden">
+          Evidence, ranking and affected pages
+          <span
+            aria-hidden
+            className="text-muted transition-transform group-open:rotate-90"
+          >
+            ›
+          </span>
+        </summary>
+        <div className="flex flex-col gap-3 px-5 pb-4 text-sm">
+          {item.rationale && (
+            <p className="text-ink-2">
+              <span className="font-medium text-ink">Why this priority:</span>{" "}
+              {item.rationale}
+            </p>
+          )}
+          <div>
+            <p className="font-medium text-ink">Ranking factors</p>
+            <ul className="list-disc pl-5 text-ink-2">
+              {item.ranking.map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
           </div>
-        </details>
-      )}
+          {item.confidence && (
+            <p className="text-ink-2">
+              <span className="font-medium text-ink">
+                Confidence: {item.confidence.level}.
+              </span>{" "}
+              {item.confidence.reason}
+            </p>
+          )}
+          {item.limits.length > 0 && (
+            <div>
+              <p className="font-medium text-ink">What this does not show</p>
+              <ul className="list-disc pl-5 text-ink-2">
+                {item.limits.map((l) => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {item.evidence.length > 0 && (
+            <ul className="list-disc pl-5 text-ink-2">
+              {item.evidence.map((e) => (
+                <li key={e} className="break-words">
+                  {e}
+                </li>
+              ))}
+            </ul>
+          )}
+          {item.urls.length > 0 && (
+            <ul className="flex flex-col gap-0.5 rounded-lg border border-line bg-subtle p-3">
+              {item.urls.map((u) => (
+                <li key={u} className="break-all font-mono text-xs text-ink-2">
+                  {u}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </details>
     </li>
   );
 }

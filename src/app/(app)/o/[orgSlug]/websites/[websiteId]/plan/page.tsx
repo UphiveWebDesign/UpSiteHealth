@@ -7,6 +7,11 @@ import { CheckIcon } from "@/components/ui/icons";
 import { Card, PageHeader } from "@/components/ui/layout";
 import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
+import { FACTS_MIGRATION, readFacts } from "@/lib/business/load";
+import {
+  canSeeBusiness,
+  recommendationVisibility,
+} from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { CURRENT_WORK } from "@/lib/workflow/labels";
 import { requireOrgContext } from "@/lib/tenancy/context";
@@ -32,7 +37,8 @@ const GROUPS: Array<{ key: PlanGroup; title: string; description: string }> = [
   {
     key: "next",
     title: "Next up",
-    description: "Highest priority first, then the most affected pages.",
+    description:
+      "Highest priority first; within a priority, work on approved services and locations first, then the most affected pages.",
   },
   {
     key: "verify",
@@ -62,10 +68,30 @@ export default async function SeoPlanPage({
     select: { id: true },
   });
   // Root client with an explicit scope; the website was verified above.
-  const plan = await loadPlan(db(), {
-    websiteId,
-    organizationId: ctx.organization.id,
-  });
+  const plan = await loadPlan(
+    db(),
+    { websiteId, organizationId: ctx.organization.id },
+    recommendationVisibility(ctx.role),
+  );
+  const team = canSeeBusiness(ctx.role);
+  // null: business facts are not available on this database.
+  const facts = team
+    ? await readFacts(() =>
+        ctx.db.businessFact.findMany({
+          where: { websiteId },
+          select: { kind: true, value: true, status: true },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        }),
+      )
+    : [];
+  const factCount = (s: string) =>
+    (facts ?? []).filter((f) => f.status === s).length;
+  const approvedOf = (kind: string) =>
+    (facts ?? [])
+      .filter((f) => f.status === "APPROVED" && f.kind === kind)
+      .map((f) => f.value);
+  const audiences = approvedOf("AUDIENCE");
+  const constraints = approvedOf("CONSTRAINT");
   const base = `/o/${orgSlug}/websites/${websiteId}`;
   const total = GROUPS.reduce((n, g) => n + plan[g.key].length, 0);
   const editor = can.editWebsites(ctx.role);
@@ -114,10 +140,38 @@ export default async function SeoPlanPage({
             {website.client?.name ?? "Not assigned"}
           </span>
         </p>
-        <p>
-          <span className="text-muted">Objectives and scope:</span>{" "}
-          <span className="font-medium text-ink">Not set up yet</span>
-        </p>
+        {team && facts === null ? (
+          <p>
+            <span className="text-muted">Business profile:</span>{" "}
+            <span className="font-medium text-danger-700">
+              not available on this database (migration {FACTS_MIGRATION} not
+              applied)
+            </span>
+          </p>
+        ) : team ? (
+          <p>
+            <span className="text-muted">Business profile:</span>{" "}
+            <Link
+              href={`${base}/business`}
+              className="font-medium text-brand-700 hover:underline"
+            >
+              {factCount("APPROVED")
+                ? `${factCount("APPROVED")} approved fact${factCount("APPROVED") === 1 ? "" : "s"}`
+                : "No approved facts yet"}
+            </Link>
+            {factCount("PENDING") > 0 && (
+              <span className="text-ink-2">
+                {" "}
+                · {factCount("PENDING")} awaiting review (not used)
+              </span>
+            )}
+          </p>
+        ) : (
+          <p>
+            <span className="text-muted">Objectives and scope:</span>{" "}
+            <span className="font-medium text-ink">Not set up yet</span>
+          </p>
+        )}
         <p className="flex-1">
           <span className="text-muted">Weekly workload:</span>{" "}
           <span className="text-ink-2">
@@ -132,6 +186,24 @@ export default async function SeoPlanPage({
           Baseline and progress →
         </Link>
       </div>
+      {(audiences.length > 0 || constraints.length > 0) && (
+        <div className="-mt-5 mb-8 flex flex-col gap-1 rounded-xl border border-line bg-surface px-5 py-3 text-sm shadow-card">
+          {audiences.length > 0 && (
+            <p>
+              <span className="text-muted">Audiences:</span>{" "}
+              <span className="text-ink">{audiences.join("; ")}</span>
+            </p>
+          )}
+          {constraints.length > 0 && (
+            <p>
+              <span className="text-muted">Constraints to respect:</span>{" "}
+              <span className="font-medium text-ink">
+                {constraints.join("; ")}
+              </span>
+            </p>
+          )}
+        </div>
+      )}
 
       {total === 0 ? (
         <Card>

@@ -196,11 +196,11 @@ export async function saveAiProfileAction(
     });
     if (!parsed.success)
       return { fieldErrors: z.flattenError(parsed.error).fieldErrors };
+    // Services and locations are business facts now (business-actions.ts);
+    // the legacy lists on the profile are kept as they are, never cleared.
     const data = {
       ...parsed.data,
       aliases: lines(formData.get("aliases")),
-      primaryServices: lines(formData.get("primaryServices")),
-      locations: lines(formData.get("locations")),
     };
     await ctx.db.aiSearchProfile.upsert({
       where: { websiteId: website.id },

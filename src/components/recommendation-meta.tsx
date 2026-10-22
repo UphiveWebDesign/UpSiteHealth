@@ -98,7 +98,19 @@ export function RecommendationDetails({
           </ul>
         </div>
       )}
-      {meta.likelyTemplate && share !== null && (
+      {meta.limits.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+            What this does not show
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-sm text-ink-2">
+            {meta.limits.map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {meta.likelyTemplate && share !== null && !meta.proposal && (
         <p className="flex flex-wrap items-center gap-2 text-sm text-ink-2">
           <Badge
             value="template"
@@ -113,7 +125,9 @@ export function RecommendationDetails({
       {meta.urls.length > 0 && (
         <details className="group">
           <summary className="cursor-pointer text-sm font-medium text-brand-700">
-            Affected pages ({meta.coverage?.affected ?? meta.urls.length})
+            {meta.proposal
+              ? `Pages considered (${meta.urls.length})`
+              : `Affected pages (${meta.coverage?.affected ?? meta.urls.length})`}
           </summary>
           <ul className="mt-2 flex flex-col gap-1">
             {meta.urls.slice(0, URLS_SHOWN).map((u) => (

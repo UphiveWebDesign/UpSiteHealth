@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type {
   CheckType,
   IssueSeverity,
@@ -6,6 +6,15 @@ import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import {
+  analyzeCoverage,
+  coverageDrafts,
+  coverageMeta,
+  rekeyTasks,
+  type CoverageResult,
+  type RekeyPlan,
+} from "@/lib/business/coverage";
+import { readFacts } from "@/lib/business/load";
 import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { describeEvidence } from "@/lib/insights/seo";
 import {
@@ -21,6 +30,7 @@ import {
   confirmResolved,
   type ResolutionCheck,
 } from "@/lib/integrations/resolution";
+import { log } from "@/lib/log";
 import { issueResolution, type IssueResolution } from "@/lib/monitoring/rules";
 import { BENEFIT } from "./benefits";
 import {
@@ -29,7 +39,7 @@ import {
   ISSUE_BENEFIT,
   issueMeta,
   performanceMeta,
-  SEO_RULE_META,
+  seoRuleBenefit,
   seoRuleMeta,
   type RecommendationMeta,
 } from "./metadata";
@@ -74,6 +84,8 @@ export type RecommendationInputs = {
   aiSearch: { results: number; mentioned: number } | null;
   /** Integration health; problems marked `task` become setup tasks. */
   integrations?: IntegrationStatus[];
+  /** Business coverage from approved facts; supported gaps become tasks. */
+  coverage?: CoverageResult | null;
 };
 
 /** Title suffix that identifies an integration setup task. */
@@ -111,8 +123,7 @@ export function buildRecommendations(
       title: `${g.title} (${g.ruleId})`,
       explanation: `${g.count} open finding${g.count === 1 ? "" : "s"} for this rule.`,
       priority: PRIORITY[g.severity],
-      expectedImpact:
-        BENEFIT[SEO_RULE_META[g.ruleId]?.benefit ?? "crawling-indexing"].text,
+      expectedImpact: BENEFIT[seoRuleBenefit(g.ruleId)].text,
       recommendedAction: g.recommendation,
       issueId: null,
     });
@@ -163,6 +174,8 @@ export function buildRecommendations(
       });
     }
   }
+
+  out.push(...coverageDrafts(input.coverage ?? null));
   return out;
 }
 
@@ -208,6 +221,12 @@ export type RecommendationContext = {
   analysedPages: number | null;
   /** SEO rules that still have findings, by state. */
   remainingRules: Map<string, { open: number; ignored: number }>;
+  /**
+   * Business coverage: null when the website has no business facts,
+   * undefined when business facts are unavailable on this database (the
+   * migration is not applied), so coverage tasks are "not checked".
+   */
+  coverage?: CoverageResult | null;
   /** When each source was last measured, to tell "not rechecked" from "still there". */
   evidenceAt: {
     crawl: Date | null;
@@ -347,6 +366,52 @@ export async function loadRecommendationContext(
   }
   const analysedPages = evidence?.crawl ? analysed.size : null;
 
+  const facts = await readFacts(() =>
+    db.businessFact.findMany({
+      where: scope,
+      select: {
+        id: true,
+        kind: true,
+        value: true,
+        synonyms: true,
+        source: true,
+        status: true,
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+  );
+  // What people already accepted or dismissed, so opportunities keep it.
+  const businessTasks =
+    facts?.length && evidence
+      ? await db.recommendation.findMany({
+          where: { ...scope, title: { contains: "(BIZ_" } },
+          select: { title: true, status: true },
+        })
+      : [];
+  // The business's own names, stripped from titles as the site name.
+  const profile =
+    facts?.length && evidence
+      ? await db.aiSearchProfile.findFirst({
+          where: scope,
+          select: { brandName: true, legalName: true, aliases: true },
+        })
+      : null;
+  const brandNames = profile
+    ? [profile.brandName, profile.legalName ?? "", ...profile.aliases]
+    : [];
+  const coverage =
+    facts === null
+      ? undefined
+      : evidence && facts.length
+        ? analyzeCoverage({
+            websiteUrl: evidence.websiteUrl,
+            crawl: evidence.crawl,
+            facts,
+            existing: new Map(businessTasks.map((t) => [t.title, t.status])),
+            brandNames,
+          })
+        : null;
+
   const resolvedTypes = [
     ...new Set(
       issues.filter((i) => i.status === "RESOLVED").map((i) => i.category),
@@ -420,9 +485,11 @@ export async function loadRecommendationContext(
           }
         : null,
       integrations,
+      coverage,
     },
     integrations,
     integrationResolution,
+    coverage,
     ruleDetails,
     analysedPages,
     issues: new Map(
@@ -459,6 +526,7 @@ export type RecommendationBasis =
   | { kind: "issue"; issueId: string | null }
   | { kind: "integration"; key: IntegrationKey; code: string }
   | { kind: "seo-rule"; ruleId: string }
+  | { kind: "coverage"; code: string }
   | { kind: "performance" }
   | { kind: "ai-search" };
 
@@ -478,6 +546,8 @@ export function recommendationBasis(r: {
       code: integration[2],
     };
   }
+  if (rule && !r.issueId && rule[1].startsWith("BIZ_"))
+    return { kind: "coverage", code: rule[1] };
   if (rule && !r.issueId) return { kind: "seo-rule", ruleId: rule[1] };
   return { kind: "issue", issueId: r.issueId };
 }
@@ -513,10 +583,33 @@ export function heldReason(
   r: Pick<Existing, "title" | "issueId">,
   ctx: Pick<RecommendationContext, "issues" | "remainingRules"> &
     Partial<
-      Pick<RecommendationContext, "integrations" | "integrationResolution">
+      Pick<
+        RecommendationContext,
+        "integrations" | "integrationResolution" | "coverage"
+      >
     >,
 ): "ignored" | "unverified" | null {
   const basis = recommendationBasis(r);
+  if (basis.kind === "coverage") {
+    // A page opportunity is done only when a later crawl finds a page that
+    // fulfils its purpose; an incomplete crawl never closes or drops it.
+    const opportunity = ctx.coverage?.opportunities.find(
+      (o) => o.key === r.title,
+    );
+    if (opportunity)
+      return opportunity.state === "fulfilled"
+        ? null
+        : opportunity.state === "unsupported"
+          ? "ignored"
+          : "unverified";
+    // Other needs: fixed only when a crawl shows the need met. If its
+    // approved facts were removed or unapproved, it no longer applies.
+    const need = ctx.coverage?.needs.find((n) => n.key === r.title);
+    if (!need) return ctx.coverage === undefined ? "unverified" : "ignored";
+    return need.status === "covered" || need.status === "ambiguous"
+      ? null
+      : "unverified";
+  }
   if (basis.kind === "integration") {
     // Gone counts as fixed only if its evidence source was rechecked
     // conclusively (see integrations/resolution.ts).
@@ -564,6 +657,13 @@ export async function syncRecommendations(
       updatedAt: true,
     },
   });
+  // Same purpose, new title (business type or offering wording changed):
+  // move the existing task to the new title instead of creating another.
+  const plan = rekeyTasks(existing, ctx.coverage);
+  for (const move of await applyRekeys(db, scope, plan)) {
+    const row = existing.find((r) => r.id === move.id);
+    if (row) row.title = move.to;
+  }
   const claimed = new Set<RecommendationDraft>();
   let created = 0;
   let completed = 0;
@@ -608,10 +708,107 @@ export async function syncRecommendations(
   }
   for (const d of drafts) {
     if (claimed.has(d)) continue;
-    await db.recommendation.create({ data: { ...scope, ...d } });
-    created++;
+    if ((await createRecommendationOnce(db, scope, d)).created) created++;
   }
   return { created, completed };
+}
+
+/**
+ * Runs `fn` in a transaction holding the website's row lock. Every write
+ * that can create or rename a task title (creation, re-keying) takes this
+ * one lock, so a sync and a person accepting an opportunity at the same
+ * moment are serialised. One lock type only: no lock-ordering issues, and
+ * no nesting (callers never call this from inside `fn`).
+ */
+async function withWebsiteLock<T>(
+  db: PrismaClient,
+  scope: Scope,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM websites WHERE id = ${scope.websiteId} AND "organizationId" = ${scope.organizationId} FOR UPDATE`;
+    return fn(tx);
+  });
+}
+
+/**
+ * Applies planned re-keys under the website lock, re-checking each one
+ * there: the task must still have its old title and an open or dismissed
+ * status, and no task may hold the new title yet (one may have been
+ * created since the plan was made). Moves are logged, as there is no task
+ * history table yet; ambiguous tasks are logged and left alone.
+ */
+export async function applyRekeys(
+  db: PrismaClient,
+  scope: Scope,
+  plan: RekeyPlan,
+): Promise<RekeyPlan["moves"]> {
+  for (const a of plan.ambiguous)
+    log.warn("recommendation_rekey_ambiguous", {
+      websiteId: scope.websiteId,
+      recommendationId: a.id,
+      candidates: a.candidates.length,
+    });
+  if (!plan.moves.length) return [];
+  const applied = await withWebsiteLock(db, scope, async (tx) => {
+    const done: RekeyPlan["moves"] = [];
+    for (const move of plan.moves) {
+      const clash = await tx.recommendation.findFirst({
+        where: { ...scope, title: move.to },
+        select: { id: true },
+      });
+      if (clash) continue;
+      const { count } = await tx.recommendation.updateMany({
+        where: {
+          ...scope,
+          id: move.id,
+          title: move.from,
+          status: { in: ["PROPOSED", "IN_PROGRESS", "DISMISSED"] },
+        },
+        data: { title: move.to },
+      });
+      if (count) done.push(move);
+    }
+    return done;
+  });
+  for (const m of applied)
+    log.info("recommendation_rekeyed", {
+      websiteId: scope.websiteId,
+      recommendationId: m.id,
+      from: m.from,
+      to: m.to,
+    });
+  return applied;
+}
+
+/**
+ * Creates a recommendation unless one with the same title already exists
+ * for the website. The website row is locked for the transaction, so a sync
+ * and a person accepting an opportunity at the same moment cannot both
+ * insert it (there is no unique index on titles; see the engagement
+ * workflow proposal for the planned basisKey index).
+ */
+export async function createRecommendationOnce(
+  db: PrismaClient,
+  scope: Scope,
+  data: Omit<RecommendationDraft, "issueId"> & {
+    issueId: string | null;
+    status?: RecommendationStatus;
+  },
+): Promise<{ created: boolean; id: string; status: RecommendationStatus }> {
+  return withWebsiteLock(db, scope, async (tx) => {
+    const found = await tx.recommendation.findFirst({
+      where: { ...scope, title: data.title },
+      select: { id: true, status: true },
+      orderBy: { createdAt: "asc" },
+    });
+    if (found) return { created: false, ...found };
+    const row = await tx.recommendation.create({
+      data: { ...scope, ...data },
+      select: { id: true, status: true },
+    });
+    return { created: true, ...row };
+  });
 }
 
 export type RecommendationState =
@@ -628,6 +825,7 @@ function evidenceTime(
 ): Date | null {
   switch (basis.kind) {
     case "seo-rule":
+    case "coverage":
       return ctx.evidenceAt.crawl;
     case "performance":
       return ctx.evidenceAt.performance;
@@ -705,6 +903,8 @@ export function recommendationMeta(
       const issue = basis.issueId ? ctx.issues.get(basis.issueId) : undefined;
       return issue ? issueMeta(issue) : null;
     }
+    case "coverage":
+      return coverageMeta(r.title, ctx.coverage ?? null);
     case "performance":
       return ctx.inputs.performance
         ? performanceMeta(ctx.inputs.performance)

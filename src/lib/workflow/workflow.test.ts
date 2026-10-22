@@ -89,6 +89,7 @@ describe("baseline categories", () => {
 
 describe("plan preview", () => {
   const meta = (affected: number): RecommendationMeta => ({
+    detected: "d",
     benefit: "search-appearance",
     confidence: "high",
     confidenceReason: "r",
@@ -100,6 +101,8 @@ describe("plan preview", () => {
     coverage: { affected, analysed: 10 },
     likelyTemplate: false,
     verification: "Next crawl",
+    limits: [],
+    knowledgeVersion: "k1",
   });
   let n = 0;
   const input = (o: Partial<PlanInput>): PlanInput => ({

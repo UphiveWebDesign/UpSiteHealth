@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { RecommendationPriority } from "@/generated/prisma/enums";
 import {
   loadRecommendationContext,
@@ -149,13 +149,19 @@ export async function taskActivity(
   db: PrismaClient,
   scope: { websiteId: string; organizationId: string },
   period: Period,
+  visible: Prisma.RecommendationWhereInput = {},
 ): Promise<TaskActivity> {
   const [done, openNow, ctx] = await Promise.all([
     db.recommendation.findMany({
       where: {
-        ...scope,
-        status: "COMPLETED",
-        updatedAt: { gte: period.start, lt: period.end },
+        AND: [
+          {
+            ...scope,
+            status: "COMPLETED",
+            updatedAt: { gte: period.start, lt: period.end },
+          },
+          visible,
+        ],
       },
       select: {
         id: true,
@@ -167,7 +173,12 @@ export async function taskActivity(
       },
     }),
     db.recommendation.count({
-      where: { ...scope, status: { in: ["PROPOSED", "IN_PROGRESS"] } },
+      where: {
+        AND: [
+          { ...scope, status: { in: ["PROPOSED", "IN_PROGRESS"] } },
+          visible,
+        ],
+      },
     }),
     loadRecommendationContext(db, scope),
   ]);
@@ -198,10 +209,11 @@ export async function taskActivity(
 export async function countConfirmedFixes(
   db: PrismaClient,
   scope: { websiteId: string; organizationId: string },
+  visible: Prisma.RecommendationWhereInput = {},
 ): Promise<number> {
   const [done, ctx] = await Promise.all([
     db.recommendation.findMany({
-      where: { ...scope, status: "COMPLETED" },
+      where: { AND: [{ ...scope, status: "COMPLETED" }, visible] },
       select: {
         id: true,
         title: true,

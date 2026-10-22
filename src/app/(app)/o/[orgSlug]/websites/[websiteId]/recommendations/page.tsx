@@ -5,6 +5,7 @@ import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import { ProposalBlock, WorkTypeBadge } from "@/components/page-proposal";
 import { RecommendationDetails } from "@/components/recommendation-meta";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/feedback";
@@ -12,6 +13,8 @@ import { CheckIcon } from "@/components/ui/icons";
 import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { WebsiteNav } from "@/components/website-nav";
+import { splitTitle, workType } from "@/lib/workflow/plan";
+import { recommendationVisibility } from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import {
@@ -67,6 +70,7 @@ const TRANSITIONS: Record<
 const SOURCE: Record<RecommendationBasis["kind"], string> = {
   issue: "monitoring check",
   "seo-rule": "crawl",
+  coverage: "crawl",
   performance: "PageSpeed test",
   "ai-search": "AI Search run",
   integration: "crawl or integration check",
@@ -150,7 +154,7 @@ export default async function RecommendationsPage({
 
   const [all, rctx] = await Promise.all([
     ctx.db.recommendation.findMany({
-      where: { websiteId },
+      where: { AND: [{ websiteId }, recommendationVisibility(ctx.role)] },
       orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
     }),
     // Root client with an explicit scope; the website was verified above.
@@ -260,9 +264,21 @@ export default async function RecommendationsPage({
                       className="rounded-xl border border-line bg-surface p-5 shadow-card"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
-                        <h3 className="text-sm font-semibold text-ink">
-                          {r.title}
-                        </h3>
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-semibold text-ink">
+                            {splitTitle(r.title).displayTitle}
+                          </h3>
+                          <p className="mt-1 flex flex-wrap items-center gap-2">
+                            <WorkTypeBadge
+                              type={workType(recommendationBasis(r))}
+                            />
+                            {splitTitle(r.title).code && (
+                              <span className="font-mono text-[11px] text-muted">
+                                {splitTitle(r.title).code}
+                              </span>
+                            )}
+                          </p>
+                        </div>
                         {r.status === "IN_PROGRESS" && (
                           <Badge value="IN_PROGRESS" />
                         )}
@@ -272,6 +288,11 @@ export default async function RecommendationsPage({
                         )}
                       </div>
                       <p className="mt-1 text-sm text-ink-2">{r.explanation}</p>
+                      {r.meta?.proposal && (
+                        <div className="mt-3">
+                          <ProposalBlock proposal={r.meta.proposal} />
+                        </div>
+                      )}
                       <StateNote
                         state={r.state}
                         source={SOURCE[recommendationBasis(r).kind]}

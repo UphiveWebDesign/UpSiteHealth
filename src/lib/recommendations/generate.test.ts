@@ -118,6 +118,7 @@ function ctx(o: Partial<RecommendationContext> = {}): RecommendationContext {
     ruleDetails: new Map(),
     analysedPages: null,
     remainingRules: new Map(),
+    coverage: null,
     evidenceAt: { crawl: null, checks: {}, performance: null, aiSearch: null },
     ...o,
   };

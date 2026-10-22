@@ -1,8 +1,18 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import { relevantFacts } from "@/lib/business/coverage";
+import type { Confidence } from "@/lib/integrations/evaluate";
+import {
+  businessRelevance,
+  comparePriority,
+  describeFactors,
+  PRIORITY_MODEL_VERSION,
+  type BusinessFact,
+  type PriorityFactors,
+} from "@/lib/knowledge/priority";
 import { BENEFIT } from "@/lib/recommendations/benefits";
 import {
   buildRecommendations,
@@ -42,6 +52,8 @@ export type PlanItem = {
   /** Lifecycle label, aligned with the planned task statuses. */
   statusLabel: string;
   priority: RecommendationPriority;
+  /** What was detected (null when the evidence is no longer current). */
+  detected: string | null;
   why: string;
   guidance: string;
   benefit: string | null;
@@ -49,9 +61,19 @@ export type PlanItem = {
   urls: string[];
   rationale: string | null;
   effort: Effort | null;
+  confidence: { level: Confidence; reason: string } | null;
+  /** What the evidence does not show. */
+  limits: string[];
   verification: string | null;
   /** Titles of open items that should be done first. */
   dependsOn: string[];
+  /** Technical fix, new page, or other business coverage work. */
+  workType: WorkType;
+  /** For a new page: what it is for (a proposal, not a decision). */
+  proposal: RecommendationMeta["proposal"] | null;
+  /** The ranking factors (knowledge/priority.ts) and their plain wording. */
+  factors: PriorityFactors;
+  ranking: string[];
   note: string | null;
 };
 
@@ -69,6 +91,8 @@ export type Plan = Record<PlanGroup, PlanItem[]> & {
   /** Open items beyond the preview limit, not shown in "next". */
   later: number;
   summary: PlanSummary;
+  /** Version of the ranking model that ordered the items. */
+  priorityModel: string;
 };
 
 /** Splits "Thin content (TECH_THIN_CONTENT)" into a readable title and code. */
@@ -93,14 +117,41 @@ export type PlanInput = {
   basis: RecommendationBasis;
   state: RecommendationState;
   meta: RecommendationMeta | null;
+  /**
+   * Approved business facts this item affects (from business coverage);
+   * only approved ones count (see businessRelevance).
+   */
+  facts?: BusinessFact[];
 };
 
-const PRIORITY_ORDER: RecommendationPriority[] = [
-  "CRITICAL",
-  "HIGH",
-  "MEDIUM",
-  "LOW",
-];
+export type WorkType = "technical" | "new-page" | "business";
+
+/** Codes of tasks that ask for a page to be created (page opportunities). */
+const PAGE_CODES = new Set([
+  "BIZ_SERVICE_PAGE",
+  "BIZ_ACCOMMODATION_PAGE",
+  "BIZ_FOOD_PAGE",
+  "BIZ_FACILITIES_PAGE",
+  "BIZ_LOCATION_PAGE",
+  "BIZ_CONTACT_PATH",
+]);
+
+export function workType(basis: RecommendationBasis): WorkType {
+  if (basis.kind !== "coverage") return "technical";
+  return PAGE_CODES.has(basis.code) ? "new-page" : "business";
+}
+
+/** The ranking factors of one item, from its stored evidence only. */
+export function planFactors(i: PlanInput): PriorityFactors {
+  return {
+    priority: i.priority,
+    relevance: businessRelevance(i.facts),
+    reach: i.meta?.coverage?.affected ?? null,
+    sharedTemplate: i.meta?.likelyTemplate ?? false,
+    confidence: i.meta?.confidence ?? null,
+    effort: i.meta?.effort ?? null,
+  };
+}
 export const NEXT_LIMIT = 10;
 
 /** Today's statuses mapped onto the planned lifecycle names. */
@@ -132,6 +183,7 @@ function blocksOtherWork(i: PlanInput): boolean {
 }
 const crawlBased = (i: PlanInput) =>
   i.basis.kind === "seo-rule" ||
+  i.basis.kind === "coverage" ||
   (i.basis.kind === "integration" && i.basis.key !== "GSC");
 
 export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
@@ -142,6 +194,7 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     verify: [],
     waiting: [],
     later: 0,
+    priorityModel: PRIORITY_MODEL_VERSION,
     summary: {
       open: 0,
       highPriority: 0,
@@ -154,6 +207,7 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     (i.status === "PROPOSED" || i.status === "IN_PROGRESS") &&
     i.state.kind === "active";
   const blockers = live.filter((i) => open(i) && blocksOtherWork(i));
+  const factors = new Map(inputs.map((i) => [i, planFactors(i)]));
   const item = (
     i: PlanInput,
     group: PlanGroup,
@@ -162,11 +216,17 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     id: i.id,
     title: i.title,
     ...splitTitle(i.title),
-    affectedPages: i.meta?.coverage?.affected ?? (i.meta?.urls.length || null),
+    // A page to be created has no affected pages (its URLs are the pages
+    // that were considered, not affected).
+    affectedPages:
+      workType(i.basis) === "new-page"
+        ? null
+        : (i.meta?.coverage?.affected ?? (i.meta?.urls.length || null)),
     group,
     status: i.status,
     statusLabel: taskStatusLabel(i.status, i.state.kind),
     priority: i.priority,
+    detected: i.meta?.detected ?? null,
     why: i.explanation,
     guidance: i.recommendedAction,
     benefit: i.meta ? BENEFIT[i.meta.benefit].text : null,
@@ -174,17 +234,26 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     urls: i.meta?.urls ?? [],
     rationale: i.meta?.priorityRationale ?? null,
     effort: i.meta?.effort ?? null,
+    confidence: i.meta
+      ? { level: i.meta.confidence, reason: i.meta.confidenceReason }
+      : null,
+    limits: i.meta?.limits ?? [],
     verification: i.meta?.verification ?? null,
     dependsOn:
       group !== "fix-first" && crawlBased(i)
         ? blockers.map((b) => b.title)
         : [],
+    workType: workType(i.basis),
+    proposal: i.meta?.proposal ?? null,
+    factors: factors.get(i)!,
+    ranking: describeFactors(factors.get(i)!),
     note,
   });
   const byPriority = (a: PlanInput, b: PlanInput) =>
-    PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority) ||
-    (b.meta?.coverage?.affected ?? 0) - (a.meta?.coverage?.affected ?? 0) ||
-    a.title.localeCompare(b.title);
+    comparePriority(
+      { factors: factors.get(a)!, title: a.title },
+      { factors: factors.get(b)!, title: b.title },
+    );
 
   for (const i of [...live].sort(byPriority)) {
     if (open(i) && blocksOtherWork(i))
@@ -223,7 +292,9 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
           i,
           "waiting",
           i.state.kind === "ignored"
-            ? "Everything behind it is ignored; dismiss it if it no longer applies."
+            ? i.basis.kind === "coverage"
+              ? "The business facts behind it are no longer approved; dismiss it if it no longer applies."
+              : "Everything behind it is ignored; dismiss it if it no longer applies."
             : "Waiting for a recheck to confirm the current state.",
         ),
       );
@@ -249,14 +320,18 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
   return plan;
 }
 
-/** Loads the plan preview for one website (root client with explicit scope). */
+/**
+ * Loads the plan preview for one website (root client with explicit scope).
+ * `visible` narrows what the viewer may see (business/visibility.ts).
+ */
 export async function loadPlan(
   db: PrismaClient,
   scope: { websiteId: string; organizationId: string },
+  visible: Prisma.RecommendationWhereInput = {},
 ): Promise<Plan> {
   const [recs, ctx] = await Promise.all([
     db.recommendation.findMany({
-      where: { ...scope, status: { not: "DISMISSED" } },
+      where: { AND: [{ ...scope, status: { not: "DISMISSED" } }, visible] },
       select: {
         id: true,
         title: true,
@@ -272,11 +347,15 @@ export async function loadPlan(
   ]);
   const drafts = buildRecommendations(ctx.inputs);
   return buildPlan(
-    recs.map((r) => ({
-      ...r,
-      basis: recommendationBasis(r),
-      state: recommendationState(r, drafts, ctx),
-      meta: recommendationMeta(r, ctx),
-    })),
+    recs.map((r) => {
+      const meta = recommendationMeta(r, ctx);
+      return {
+        ...r,
+        basis: recommendationBasis(r),
+        state: recommendationState(r, drafts, ctx),
+        meta,
+        facts: relevantFacts(r, meta, ctx.coverage ?? null),
+      };
+    }),
   );
 }

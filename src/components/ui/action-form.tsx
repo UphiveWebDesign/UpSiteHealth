@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, type ReactNode } from "react";
-import type { ButtonVariant } from "./button";
+import type { ButtonSize, ButtonVariant } from "./button";
 import { Button, inputClass } from "./form";
 
 type State =
@@ -18,6 +18,7 @@ export function ActionForm({
   submitLabel,
   pendingLabel = "Saving…",
   variant = "primary",
+  size,
   children,
   className = "flex flex-col gap-4",
 }: {
@@ -25,6 +26,7 @@ export function ActionForm({
   submitLabel: string;
   pendingLabel?: string;
   variant?: ButtonVariant;
+  size?: ButtonSize;
   children?: ReactNode;
   className?: string;
 }) {
@@ -39,6 +41,7 @@ export function ActionForm({
         <Button
           type="submit"
           variant={variant}
+          size={size}
           disabled={pending}
           aria-busy={pending || undefined}
         >

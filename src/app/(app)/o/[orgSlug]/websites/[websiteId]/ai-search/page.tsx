@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ActionForm, inputClass } from "@/components/ui/action-form";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +16,6 @@ import {
   addCompetitorAction,
   deleteAiQueryAction,
   deleteCompetitorAction,
-  saveAiProfileAction,
   startAiRunAction,
   toggleAiQueryAction,
 } from "../../../insights-actions";
@@ -87,76 +87,57 @@ export default async function AiSearchPage({
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
       {!profile && editor && (
         <div className="mb-6">
-          <Callout tone="info" title="Start with the brand profile">
-            Add the brand name and any other names people use, then a few
-            questions customers ask. Each run checks whether assistants mention
-            and cite this website.
+          <Callout
+            tone="info"
+            title="Start with the brand profile"
+            action={
+              <Link
+                href={`/o/${orgSlug}/websites/${websiteId}/business`}
+                className="font-medium hover:underline"
+              >
+                Open Business profile
+              </Link>
+            }
+          >
+            Add the brand name and any other names people use on the Business
+            profile, then a few questions customers ask here. Each run checks
+            whether assistants mention and cite this website.
           </Callout>
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Brand profile">
-          {editor ? (
-            <ActionForm
-              action={saveAiProfileAction.bind(null, orgSlug, websiteId)}
-              submitLabel="Save profile"
-            >
-              <label className="text-sm font-medium">
-                Brand name
-                <input
-                  name="brandName"
-                  required
-                  defaultValue={profile?.brandName ?? website.name}
-                  className={inputClass}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                Legal name
-                <input
-                  name="legalName"
-                  defaultValue={profile?.legalName ?? ""}
-                  className={inputClass}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                Other names (one per line or comma-separated)
-                <textarea
-                  name="aliases"
-                  rows={2}
-                  defaultValue={profile?.aliases.join("\n")}
-                  className={inputClass}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                Services
-                <textarea
-                  name="primaryServices"
-                  rows={2}
-                  defaultValue={profile?.primaryServices.join("\n")}
-                  className={inputClass}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                Locations
-                <textarea
-                  name="locations"
-                  rows={2}
-                  defaultValue={profile?.locations.join("\n")}
-                  className={inputClass}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                Description
-                <textarea
-                  name="businessDescription"
-                  rows={3}
-                  defaultValue={profile?.businessDescription ?? ""}
-                  className={inputClass}
-                />
-              </label>
-            </ActionForm>
-          ) : profile ? (
-            <p className="text-sm">{profile.brandName}</p>
+        <Card
+          title="Brand profile"
+          actions={
+            editor && (
+              <Link
+                href={`/o/${orgSlug}/websites/${websiteId}/business`}
+                className="text-sm font-medium text-brand-700 hover:underline"
+              >
+                Edit in Business profile
+              </Link>
+            )
+          }
+        >
+          {profile ? (
+            <dl className="flex flex-col gap-2 text-sm">
+              <div>
+                <dt className="text-xs text-muted">Name</dt>
+                <dd className="font-medium text-ink">{profile.brandName}</dd>
+              </div>
+              {profile.legalName && (
+                <div>
+                  <dt className="text-xs text-muted">Legal name</dt>
+                  <dd className="text-ink-2">{profile.legalName}</dd>
+                </div>
+              )}
+              <div>
+                <dt className="text-xs text-muted">Other names</dt>
+                <dd className="text-ink-2">
+                  {profile.aliases.length ? profile.aliases.join(", ") : "None"}
+                </dd>
+              </div>
+            </dl>
           ) : (
             <Empty>No profile yet.</Empty>
           )}

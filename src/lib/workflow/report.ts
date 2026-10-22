@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { IssueSeverity } from "@/generated/prisma/enums";
 import { SEVERITY_WEIGHT } from "@/lib/insights/seo";
 import type { ChangeItem } from "@/lib/seo/compare";
@@ -62,6 +62,7 @@ export async function loadReport(
   websiteId: string,
   kind: PeriodKind,
   now = new Date(),
+  visible: Prisma.RecommendationWhereInput = {},
 ): Promise<ReportModel | null> {
   const website = await tdb.website.findFirst({
     where: { id: websiteId },
@@ -78,8 +79,8 @@ export async function loadReport(
   // Sequential: the local single-connection database cannot interleave.
   const baseline = (await loadBaseline(tdb, websiteId))!;
   const technical = await technicalProgress(tdb, websiteId, period);
-  const activity = await taskActivity(root, scope, period);
-  const plan = await loadPlan(root, scope);
+  const activity = await taskActivity(root, scope, period, visible);
+  const plan = await loadPlan(root, scope, visible);
   const [uptimeChecks, perfTests, lastProbe] = await Promise.all([
     tdb.websiteCheck.count({
       where: {

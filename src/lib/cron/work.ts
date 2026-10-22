@@ -18,6 +18,7 @@ import {
   scheduleDueChecks,
   type Runner,
 } from "@/lib/monitoring/worker";
+import { websitesNeedingSync } from "@/lib/recommendations/after-crawl";
 import { syncRecommendations } from "@/lib/recommendations/generate";
 import { refreshStaleSnapshots } from "@/lib/scoring/snapshots";
 import { StageIncompleteError, type Stage } from "./stages";
@@ -82,6 +83,47 @@ export function cronStages(deps: CronDeps): Stage[] {
           throw new StageIncompleteError("Some crawl work errored", stats);
         }
         return stats;
+      },
+    },
+    {
+      // Brings freshly analysed crawls into the plan (findings and business
+      // opportunities) without waiting for the hourly insights refresh. Its
+      // own stage, so a sync problem never fails the crawl itself.
+      name: "recommendations",
+      until: 0.75,
+      run: async ({ deadline }) => {
+        const due = await websitesNeedingSync(db, { now: new Date(clock()) });
+        let synced = 0;
+        let failed = 0;
+        let deferred = 0;
+        for (const website of due) {
+          if (deadline - clock() < SYNC_MIN_MS) {
+            deferred++; // still selected next run
+            continue;
+          }
+          try {
+            await syncRecommendations(db, website);
+            synced++;
+          } catch (error) {
+            failed++;
+            log.error(
+              "recommendations_sync_failed",
+              {
+                runId,
+                websiteId: website.id,
+                organizationId: website.organizationId,
+              },
+              error,
+            );
+          }
+        }
+        const result = { due: due.length, synced, failed, deferred };
+        if (failed > 0)
+          throw new StageIncompleteError(
+            `${failed} recommendation sync(s) after crawls failed`,
+            result,
+          );
+        return result;
       },
     },
     {

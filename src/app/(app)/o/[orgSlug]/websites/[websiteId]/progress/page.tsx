@@ -15,6 +15,7 @@ import {
 import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
 import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
+import { recommendationVisibility } from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { FINDINGS } from "@/lib/workflow/labels";
 import { formatDateTime, formatRelative } from "@/lib/format";
@@ -61,8 +62,9 @@ export default async function SeoProgressPage({
   const history = (await loadCrawlHistory(ctx.db, websiteId)) ?? [];
   const current = await technicalProgress(ctx.db, websiteId, periods.current);
   const previous = await technicalProgress(ctx.db, websiteId, periods.previous);
-  const activity = await taskActivity(db(), scope, periods.current);
-  const confirmed = await countConfirmedFixes(db(), scope);
+  const visible = recommendationVisibility(ctx.role);
+  const activity = await taskActivity(db(), scope, periods.current, visible);
+  const confirmed = await countConfirmedFixes(db(), scope, visible);
   const lastCheck = await ctx.db.websiteCheck.findFirst({
     where: { websiteId, type: "UPTIME", status: "COMPLETED" },
     orderBy: { createdAt: "desc" },

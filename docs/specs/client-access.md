@@ -12,6 +12,9 @@ organizations is unchanged and unaffected.
   are therefore visible to any CLIENT user in the organization.
 - Until this is built, invite CLIENT users only to organizations that hold
   that client's websites alone, or do not invite client users.
+- Business facts, coverage and business coverage tasks (`BIZ_…`) are
+  hidden from CLIENT members entirely until this is built
+  (`src/lib/business/visibility.ts`, [business-coverage.md](business-coverage.md)).
 
 ## Proposed design
 

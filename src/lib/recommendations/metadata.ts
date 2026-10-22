@@ -5,6 +5,12 @@ import type {
   IntegrationStatus,
 } from "@/lib/integrations/evaluate";
 import { formatDateTime } from "@/lib/format";
+import {
+  KNOWLEDGE_VERSION,
+  seoRule,
+  verificationText,
+  type Effort,
+} from "@/lib/knowledge/catalogue";
 import type { BenefitCategory } from "./benefits";
 
 /**
@@ -13,9 +19,11 @@ import type { BenefitCategory } from "./benefits";
  * percentages; effort is given only where it can be supported, otherwise null.
  */
 
-export type Effort = "small" | "medium" | "large";
+export type { Effort };
 
 export type RecommendationMeta = {
+  /** What was detected, in one sentence. */
+  detected: string;
   benefit: BenefitCategory;
   confidence: Confidence;
   confidenceReason: string;
@@ -29,128 +37,41 @@ export type RecommendationMeta = {
   /** ≥ 80 % of analysed pages: probably one shared template (a heuristic). */
   likelyTemplate: boolean;
   verification: string;
+  /** What the evidence does not show (empty when nothing needs saying). */
+  limits: string[];
+  /** Catalogue version behind SEO rule knowledge; null for other kinds. */
+  knowledgeVersion: string | null;
+  /** For a new-page opportunity: what the page is for (all proposals). */
+  proposal?: {
+    name: string;
+    slug: string;
+    topic: string;
+    intent: string;
+    outline: string[];
+    goals: string[];
+  };
 };
 
-type RuleMeta = {
-  benefit: BenefitCategory;
-  effort: Effort | null;
-  effortReason: string;
-  confidence?: Confidence;
-  confidenceReason?: string;
-};
-
-const PER_PAGE =
-  "Usually a small edit per page, or one change to a shared template.";
-
-/** Benefit and effort per technical SEO rule. */
-export const SEO_RULE_META: Record<string, RuleMeta> = {
-  TECH_HTTP_ERROR: {
-    benefit: "crawling-indexing",
-    effort: null,
-    effortReason: "Depends on why the page fails (removed, moved or broken).",
-  },
-  TECH_TITLE_MISSING: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_TITLE_TOO_SHORT: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_TITLE_TOO_LONG: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_META_DESCRIPTION_MISSING: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_META_DESCRIPTION_TOO_SHORT: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_META_DESCRIPTION_TOO_LONG: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_H1_MISSING: {
-    benefit: "content-quality",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_H1_MULTIPLE: {
-    benefit: "content-quality",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_CANONICAL_EXTERNAL: {
-    benefit: "crawling-indexing",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_NOINDEX: {
-    benefit: "crawling-indexing",
-    effort: "small",
-    effortReason:
-      "Remove the noindex directive if the page should appear in search.",
-  },
-  TECH_IMAGE_MISSING_ALT: {
-    benefit: "content-quality",
-    effort: "small",
-    effortReason: "A short description per image.",
-  },
-  TECH_IMAGE_MISSING_DIMENSIONS: {
-    benefit: "user-experience",
-    effort: "small",
-    effortReason:
-      "Add width and height attributes, usually in the image component or template.",
-  },
-  TECH_STRUCTURED_DATA_INVALID: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: "Fix the JSON syntax of each invalid block.",
-  },
-  TECH_THIN_CONTENT: {
-    benefit: "content-quality",
-    effort: "large",
-    effortReason: "Needs new writing.",
-    confidence: "medium",
-    confidenceReason:
-      "Word count is a rough signal; some short pages are fine as they are.",
-  },
-  TECH_DUPLICATE_TITLE: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_DUPLICATE_META_DESCRIPTION: {
-    benefit: "search-appearance",
-    effort: "small",
-    effortReason: PER_PAGE,
-  },
-  TECH_ROBOTS_TXT_MISSING: {
-    benefit: "crawling-indexing",
-    effort: "small",
-    effortReason: "One small text file.",
-  },
-  TECH_SITEMAP_MISSING: {
-    benefit: "crawling-indexing",
-    effort: "small",
-    effortReason: "Most CMSs can generate a sitemap.",
-  },
-};
-
-const DEFAULT_RULE: RuleMeta = {
-  benefit: "crawling-indexing",
+/** For findings of a rule that is no longer in the catalogue. */
+const UNKNOWN_RULE = {
+  benefit: "crawling-indexing" as BenefitCategory,
   effort: null,
   effortReason: "Not estimated.",
+  confidence: "medium" as Confidence,
+  confidenceReason: "This check is no longer in the current catalogue.",
+  limits: [] as string[],
 };
+
+/** One step less certain: used when the evidence is old or missing. */
+const LOWER: Record<Confidence, Confidence> = {
+  high: "medium",
+  medium: "low",
+  low: "low",
+};
+
+/** The benefit category of a technical SEO rule. */
+export const seoRuleBenefit = (ruleId: string): BenefitCategory =>
+  seoRule(ruleId)?.benefit ?? UNKNOWN_RULE.benefit;
 
 export const ISSUE_BENEFIT: Record<CheckType, BenefitCategory> = {
   UPTIME: "availability",
@@ -195,7 +116,8 @@ export function seoRuleMeta(input: {
   analysedPages: number | null;
   homepageAffected: boolean;
 }): RecommendationMeta {
-  const rule = SEO_RULE_META[input.ruleId] ?? DEFAULT_RULE;
+  const entry = seoRule(input.ruleId);
+  const rule = entry ?? UNKNOWN_RULE;
   // Numerator and denominator come from the same population: pages the
   // latest crawl analysed. Site-wide rules and error pages have no share.
   const measurable =
@@ -221,12 +143,22 @@ export function seoRuleMeta(input: {
       );
   } else parts.push(n(input.open, "affected page"));
   if (input.homepageAffected) parts.push("includes the home page");
+  // Never more certain than the evidence: findings the latest crawl could
+  // not re-evaluate may already have changed.
+  const stale =
+    input.analysedPages === null
+      ? "No analysed crawl is available to confirm these findings."
+      : input.scope === "PAGE" &&
+          !NOT_ON_ANALYSED_PAGES.has(input.ruleId) &&
+          affected === 0 &&
+          input.open > 0
+        ? "Found by an earlier crawl; the latest crawl did not analyse these pages, so they may have changed."
+        : null;
   return {
+    detected: `${entry?.title ?? input.ruleId}: ${n(input.open, "open finding")}.`,
     benefit: rule.benefit,
-    confidence: rule.confidence ?? "high",
-    confidenceReason:
-      rule.confidenceReason ??
-      "Measured directly from the crawled page source.",
+    confidence: stale ? LOWER[rule.confidence] : rule.confidence,
+    confidenceReason: stale ?? rule.confidenceReason,
     effort: rule.effort,
     effortReason: likelyTemplate
       ? "Likely one change to a shared template (see below)."
@@ -236,8 +168,11 @@ export function seoRuleMeta(input: {
     urls: input.urls,
     coverage,
     likelyTemplate,
-    verification:
-      "Confirmed by the next crawl, once every affected page loads and passes this check.",
+    verification: entry
+      ? verificationText(entry)
+      : "Confirmed by a later crawl that rechecks every affected page.",
+    limits: rule.limits,
+    knowledgeVersion: KNOWLEDGE_VERSION,
   };
 }
 
@@ -249,6 +184,7 @@ export function issueMeta(issue: {
   lastSeenAt: Date;
 }): RecommendationMeta {
   return {
+    detected: `The ${issue.category.toLowerCase()} check is failing.`,
     benefit: ISSUE_BENEFIT[issue.category],
     confidence: "high",
     confidenceReason: "Reported by UpSiteHealth's own monitoring checks.",
@@ -263,6 +199,8 @@ export function issueMeta(issue: {
     coverage: null,
     likelyTemplate: false,
     verification: `Confirmed when the next ${issue.category.toLowerCase()} check passes.`,
+    limits: [],
+    knowledgeVersion: null,
   };
 }
 
@@ -272,6 +210,7 @@ export function performanceMeta(p: {
   clsScore: number | null;
 }): RecommendationMeta {
   return {
+    detected: `The latest PageSpeed lab score is ${p.score ?? "not measured"}/100.`,
     benefit: "user-experience",
     confidence: "medium",
     confidenceReason:
@@ -295,6 +234,10 @@ export function performanceMeta(p: {
     coverage: null,
     likelyTemplate: false,
     verification: "Confirmed when a later PageSpeed test scores 90 or more.",
+    limits: [
+      "A lab test of one URL; it does not measure real visitors (field data).",
+    ],
+    knowledgeVersion: null,
   };
 }
 
@@ -303,6 +246,7 @@ export function aiSearchMeta(a: {
   mentioned: number;
 }): RecommendationMeta {
   return {
+    detected: `The brand was mentioned in ${a.mentioned} of ${a.results} recent AI answers.`,
     benefit: "ai-visibility",
     confidence: "low",
     confidenceReason: `Based on ${a.results} AI answers, which vary between runs and providers.`,
@@ -316,6 +260,10 @@ export function aiSearchMeta(a: {
     coverage: null,
     likelyTemplate: false,
     verification: "Re-measured by the next AI Search run.",
+    limits: [
+      "Mentions in AI answers are not search rankings or traffic, and they change between runs.",
+    ],
+    knowledgeVersion: null,
   };
 }
 
@@ -324,6 +272,7 @@ export function integrationMeta(
   problem: IntegrationProblem,
 ): RecommendationMeta {
   return {
+    detected: problem.summary,
     benefit: status.benefit,
     confidence: problem.confidence,
     confidenceReason:
@@ -346,5 +295,7 @@ export function integrationMeta(
     coverage: null,
     likelyTemplate: false,
     verification: status.verification,
+    limits: status.limitations,
+    knowledgeVersion: null,
   };
 }

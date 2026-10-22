@@ -1,0 +1,269 @@
+[
+  {
+    "ruleId": "TECH_HTTP_ERROR",
+    "scope": "PAGE",
+    "severity": "HIGH",
+    "title": "Page returns an error status",
+    "description": "Visitors and search engines receive an HTTP error for this page.",
+    "recommendation": "Fix the page or redirect it, and update internal links that point to it.",
+    "evidence": {
+      "url": "https://site.example/gone",
+      "httpStatus": 404
+    },
+    "fingerprint": "TECH_HTTP_ERROR::https://site.example/gone",
+    "crawlPageId": "err"
+  },
+  {
+    "ruleId": "TECH_TITLE_MISSING",
+    "scope": "PAGE",
+    "severity": "MEDIUM",
+    "title": "Missing page title",
+    "description": "The page has no <title> element.",
+    "recommendation": "Add a unique, descriptive title of 15–60 characters.",
+    "evidence": {
+      "url": "https://site.example/bare"
+    },
+    "fingerprint": "TECH_TITLE_MISSING::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_META_DESCRIPTION_MISSING",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Missing meta description",
+    "description": "Search engines will pick their own snippet for this page.",
+    "recommendation": "Add a meta description of 50–160 characters.",
+    "evidence": {
+      "url": "https://site.example/bare"
+    },
+    "fingerprint": "TECH_META_DESCRIPTION_MISSING::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_H1_MISSING",
+    "scope": "PAGE",
+    "severity": "MEDIUM",
+    "title": "Missing H1 heading",
+    "description": "The page has no main heading.",
+    "recommendation": "Add one H1 that describes the page content.",
+    "evidence": {
+      "url": "https://site.example/bare"
+    },
+    "fingerprint": "TECH_H1_MISSING::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_CANONICAL_EXTERNAL",
+    "scope": "PAGE",
+    "severity": "INFO",
+    "title": "Canonical URL points to another domain",
+    "description": "Search engines are told the preferred version lives on a different host.",
+    "recommendation": "Confirm this is intentional; otherwise point the canonical at this site.",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "canonicalUrl": "https://other.example/bare",
+      "canonicalHost": "other.example"
+    },
+    "fingerprint": "TECH_CANONICAL_EXTERNAL::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_NOINDEX",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Page is excluded from search (noindex)",
+    "description": "A robots meta tag tells search engines not to index this page.",
+    "recommendation": "Remove noindex if this page should appear in search results.",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "robotsMeta": "noindex, follow"
+    },
+    "fingerprint": "TECH_NOINDEX::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_IMAGE_MISSING_ALT",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Images without alt text",
+    "description": "Images lack alternative text for screen readers and image search.",
+    "recommendation": "Add descriptive alt text, or alt=\"\" for decorative images.",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "affectedCount": 1,
+      "totalCount": 2
+    },
+    "fingerprint": "TECH_IMAGE_MISSING_ALT::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_IMAGE_MISSING_DIMENSIONS",
+    "scope": "PAGE",
+    "severity": "INFO",
+    "title": "Images without width and height",
+    "description": "Missing dimensions cause layout shift while the page loads.",
+    "recommendation": "Set width and height attributes on images.",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "affectedCount": 1,
+      "totalCount": 2
+    },
+    "fingerprint": "TECH_IMAGE_MISSING_DIMENSIONS::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_STRUCTURED_DATA_INVALID",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Invalid structured data",
+    "description": "A JSON-LD block could not be parsed.",
+    "recommendation": "Fix the JSON syntax so search engines can read the markup.",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "invalidCount": 1
+    },
+    "fingerprint": "TECH_STRUCTURED_DATA_INVALID::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_THIN_CONTENT",
+    "scope": "PAGE",
+    "severity": "INFO",
+    "title": "Thin content",
+    "description": "The page has very little text.",
+    "recommendation": "Consider adding substantive content (at least 200 words).",
+    "evidence": {
+      "url": "https://site.example/bare",
+      "wordCount": 12,
+      "minWords": 200
+    },
+    "fingerprint": "TECH_THIN_CONTENT::https://site.example/bare",
+    "crawlPageId": "bare"
+  },
+  {
+    "ruleId": "TECH_TITLE_TOO_SHORT",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Page title is too short",
+    "description": "Short titles give search engines and users little context.",
+    "recommendation": "Write a descriptive title of at least 15 characters.",
+    "evidence": {
+      "url": "https://site.example/short",
+      "actualLength": 5,
+      "minLength": 15
+    },
+    "fingerprint": "TECH_TITLE_TOO_SHORT::https://site.example/short",
+    "crawlPageId": "short"
+  },
+  {
+    "ruleId": "TECH_META_DESCRIPTION_TOO_SHORT",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Meta description is too short",
+    "description": "Short descriptions make weak search snippets.",
+    "recommendation": "Write a meta description of at least 50 characters.",
+    "evidence": {
+      "url": "https://site.example/short",
+      "actualLength": 10,
+      "minLength": 50
+    },
+    "fingerprint": "TECH_META_DESCRIPTION_TOO_SHORT::https://site.example/short",
+    "crawlPageId": "short"
+  },
+  {
+    "ruleId": "TECH_H1_MULTIPLE",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Multiple H1 headings",
+    "description": "Several H1 headings make the main topic less clear.",
+    "recommendation": "Use a single H1 and H2–H3 for subsections.",
+    "evidence": {
+      "url": "https://site.example/short",
+      "count": 2
+    },
+    "fingerprint": "TECH_H1_MULTIPLE::https://site.example/short",
+    "crawlPageId": "short"
+  },
+  {
+    "ruleId": "TECH_TITLE_TOO_LONG",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Page title is too long",
+    "description": "Long titles are truncated in search results.",
+    "recommendation": "Keep the title under 60 characters.",
+    "evidence": {
+      "url": "https://site.example/long",
+      "actualLength": 70,
+      "maxLength": 60
+    },
+    "fingerprint": "TECH_TITLE_TOO_LONG::https://site.example/long",
+    "crawlPageId": "long"
+  },
+  {
+    "ruleId": "TECH_META_DESCRIPTION_TOO_LONG",
+    "scope": "PAGE",
+    "severity": "LOW",
+    "title": "Meta description is too long",
+    "description": "Long descriptions are truncated in search results.",
+    "recommendation": "Keep the meta description under 160 characters.",
+    "evidence": {
+      "url": "https://site.example/long",
+      "actualLength": 200,
+      "maxLength": 160
+    },
+    "fingerprint": "TECH_META_DESCRIPTION_TOO_LONG::https://site.example/long",
+    "crawlPageId": "long"
+  },
+  {
+    "ruleId": "TECH_DUPLICATE_TITLE",
+    "scope": "SITE",
+    "severity": "MEDIUM",
+    "title": "Duplicate page titles",
+    "description": "Several pages share the same title.",
+    "recommendation": "Give every page a unique title.",
+    "evidence": {
+      "title": "A perfectly reasonable page title",
+      "count": 2,
+      "urls": ["https://site.example/dup1", "https://site.example/dup2"]
+    },
+    "fingerprint": "TECH_DUPLICATE_TITLE::site:ebed6c1ff241fa0e",
+    "crawlPageId": null
+  },
+  {
+    "ruleId": "TECH_DUPLICATE_META_DESCRIPTION",
+    "scope": "SITE",
+    "severity": "LOW",
+    "title": "Duplicate meta descriptions",
+    "description": "Several pages share the same meta description.",
+    "recommendation": "Write a unique description for each page.",
+    "evidence": {
+      "metaDescription": "A meta description that is comfortably within the recommended length range for snippets.",
+      "count": 2,
+      "urls": ["https://site.example/dup1", "https://site.example/dup2"]
+    },
+    "fingerprint": "TECH_DUPLICATE_META_DESCRIPTION::site:e1f522ebf9d1774d",
+    "crawlPageId": null
+  },
+  {
+    "ruleId": "TECH_ROBOTS_TXT_MISSING",
+    "scope": "SITE",
+    "severity": "INFO",
+    "title": "robots.txt not found",
+    "description": "The site has no robots.txt file.",
+    "recommendation": "Add a robots.txt that references your sitemap.",
+    "evidence": {},
+    "fingerprint": "TECH_ROBOTS_TXT_MISSING::site:robots",
+    "crawlPageId": null
+  },
+  {
+    "ruleId": "TECH_SITEMAP_MISSING",
+    "scope": "SITE",
+    "severity": "LOW",
+    "title": "No XML sitemap found",
+    "description": "No sitemap was found at /sitemap.xml or in robots.txt.",
+    "recommendation": "Publish an XML sitemap and reference it in robots.txt.",
+    "evidence": {},
+    "fingerprint": "TECH_SITEMAP_MISSING::site:sitemap",
+    "crawlPageId": null
+  }
+]

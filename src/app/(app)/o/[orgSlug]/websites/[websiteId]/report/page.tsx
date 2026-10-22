@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { FilterTabs, PageHeader } from "@/components/ui/layout";
 import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
+import { recommendationVisibility } from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import type { ChangeItem } from "@/lib/seo/compare";
@@ -84,6 +85,8 @@ export default async function SeoReportPage({
     ctx.organization.id,
     websiteId,
     kind,
+    undefined,
+    recommendationVisibility(ctx.role),
   );
   if (!report) notFound();
   const base = `/o/${orgSlug}/websites/${websiteId}`;
@@ -380,7 +383,10 @@ export default async function SeoReportPage({
             <ol className="list-decimal pl-5 text-sm text-ink">
               {nextUp.map((i) => (
                 <li key={i.id} className="py-0.5">
-                  {i.displayTitle}{" "}
+                  {i.displayTitle}
+                  {i.workType === "new-page" && (
+                    <span className="font-medium text-ink-2"> (new page)</span>
+                  )}{" "}
                   <span className="text-muted">
                     · {i.verification ?? "verification not available"}
                   </span>
