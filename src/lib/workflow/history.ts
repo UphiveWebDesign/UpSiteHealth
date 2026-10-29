@@ -91,6 +91,54 @@ export function buildTrend(
   return points;
 }
 
+/** Completed in the history but not analysed: pending, or failed and retried. */
+export const awaitingAnalysis = (row: CrawlHistoryRow) =>
+  row.status === "COMPLETED" && row.findings === null;
+
+export type TrendSummary = {
+  /** Latest completed crawl, analysed or not (newest-first history). */
+  latestCompleted: CrawlHistoryRow | null;
+  /** Completed crawls in the history whose analysis has not committed. */
+  awaitingAnalysis: number;
+  /** Trend points: comparable, analysed, completed crawls. */
+  points: number;
+  /** Shown instead of the chart (fewer than two points); null otherwise. */
+  empty: string | null;
+};
+
+/**
+ * What the Progress page says about its trend (pure). Counts the points
+ * actually plotted; only analysed, completed crawls with the baseline's
+ * limits are points, so a crawl awaiting analysis is named but never used.
+ */
+export function trendSummary(
+  rows: CrawlHistoryRow[],
+  trend: TrendPoint[],
+): TrendSummary {
+  const latestCompleted = rows.find((r) => r.status === "COMPLETED") ?? null;
+  const waiting = rows.filter(awaitingAnalysis).length;
+  const points = trend.length;
+  const pending =
+    waiting > 0
+      ? ` ${waiting} completed crawl${waiting === 1 ? " has" : "s have"} not been analysed yet and ${waiting === 1 ? "is" : "are"} not counted; analysis is retried automatically.`
+      : "";
+  let empty: string | null = null;
+  if (rows.length === 0)
+    empty =
+      "No crawls yet. Run a crawl to set the baseline; the trend starts after the second completed crawl.";
+  else if (points === 1)
+    empty = `One comparable completed crawl so far. The trend appears after the next completed crawl.${pending}`;
+  else if (points === 0 && waiting > 0)
+    empty = `No analysed completed crawl yet.${pending} The trend starts after two completed crawls are analysed.`;
+  else if (points === 0 && !latestCompleted)
+    empty =
+      "No completed crawl yet. Partial, cancelled and failed crawls are not compared, so there is no trend yet. Run a crawl that can complete within the page limit.";
+  else if (points === 0)
+    empty =
+      "No comparable completed crawl in the recent history: completed crawls used different limits from the baseline.";
+  return { latestCompleted, awaitingAnalysis: waiting, points, empty };
+}
+
 /**
  * The most recent crawls (up to HISTORY_LIMIT), newest first, with findings
  * for analysed crawls. Tenant-scoped; null if the website is not in this

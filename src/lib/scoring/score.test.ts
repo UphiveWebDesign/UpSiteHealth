@@ -174,3 +174,60 @@ describe("computeHealthScore", () => {
     expect(r.score).toBe(0);
   });
 });
+
+describe("technical SEO: incomplete crawls and repeated findings", () => {
+  const seoOf = (seo: ScoreInputs["seo"]) =>
+    computeHealthScore({ ...empty, seo }).dimensions.find(
+      (d) => d.dimension === "TECHNICAL_SEO",
+    )!;
+  const base = {
+    crawlRunId: "run1",
+    analyzedAt: NOW,
+    pagesAnalyzed: 80,
+    openFindings: { LOW: 4 },
+  };
+
+  test("a completed crawl of many pages has high coverage", () => {
+    const d = seoOf({ ...base, crawlStatus: "COMPLETED" });
+    expect(d).toMatchObject({ coverage: "HIGH", measured: true });
+    expect(d.summary).toBe("4 open findings across 80 analysed pages");
+    expect(d.evidence).toMatchObject({ crawlStatus: "COMPLETED" });
+  });
+
+  test("a partial or cancelled crawl is limited coverage and says so, same score", () => {
+    const complete = seoOf({ ...base, crawlStatus: "COMPLETED" });
+    for (const status of ["PARTIAL", "CANCELLED"] as const) {
+      const d = seoOf({ ...base, crawlStatus: status });
+      expect(d.coverage, status).toBe("LOW");
+      expect(d.summary).toMatch(
+        new RegExp(`the latest crawl was ${status.toLowerCase()}`),
+      );
+      expect(d.evidence).toMatchObject({ crawlStatus: status });
+      // The number is not changed: only how much it can be trusted.
+      expect(d.score).toBe(complete.score);
+    }
+  });
+
+  test("without a crawl status (older snapshots) nothing changes", () => {
+    const d = seoOf(base);
+    expect(d.coverage).toBe("HIGH");
+    expect(d.evidence).not.toHaveProperty("crawlStatus");
+  });
+
+  test("no analysed crawl is not a measurement, never a perfect score", () => {
+    const d = seoOf({ ...empty.seo, crawlStatus: null });
+    expect(d).toMatchObject({ measured: false, score: null, coverage: "NONE" });
+  });
+
+  test("the penalty grows with distinct findings and is normalised by pages", () => {
+    const few = seoOf({ ...base, openFindings: { MEDIUM: 2 } }).score!;
+    const many = seoOf({ ...base, openFindings: { MEDIUM: 8 } }).score!;
+    expect(many).toBeLessThan(few);
+    const bigger = seoOf({
+      ...base,
+      pagesAnalyzed: 160,
+      openFindings: { MEDIUM: 8 },
+    }).score!;
+    expect(bigger).toBeGreaterThan(many);
+  });
+});

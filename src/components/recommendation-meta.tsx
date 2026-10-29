@@ -1,5 +1,6 @@
 import { BENEFIT } from "@/lib/recommendations/benefits";
 import type { RecommendationMeta } from "@/lib/recommendations/metadata";
+import { provenanceLabel } from "@/lib/recommendations/provenance";
 import { Badge } from "./ui/badge";
 
 const CONFIDENCE_TONE = {
@@ -9,6 +10,16 @@ const CONFIDENCE_TONE = {
 } as const;
 const EFFORT_LABEL = { small: "Small", medium: "Medium", large: "Large" };
 const URLS_SHOWN = 50;
+
+/** Where a task's evidence comes from, when, and whether it is current. */
+export function BasedOn({ label }: { label: string }) {
+  return (
+    <p className="text-xs text-muted">
+      <span className="font-semibold uppercase tracking-wide">Based on:</span>{" "}
+      <span className="text-ink-2">{label}</span>
+    </p>
+  );
+}
 
 /** Evidence, benefit, confidence, effort, priority rationale and verification. */
 export function RecommendationDetails({
@@ -35,6 +46,7 @@ export function RecommendationDetails({
     : null;
   return (
     <div className="mt-3 flex flex-col gap-3">
+      {meta.provenance && <BasedOn label={provenanceLabel(meta.provenance)} />}
       <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-muted">

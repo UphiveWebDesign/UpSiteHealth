@@ -13,9 +13,21 @@ import {
   type NeedKind,
   type NeedStatus,
 } from "@/lib/business/coverage";
-import { factLabel } from "@/lib/business/facts";
+import {
+  factLabel,
+  SOURCE_LABEL,
+  unconfirmedFactsNote,
+} from "@/lib/business/facts";
+import {
+  buildKeywordMap,
+  MAX_CANDIDATES,
+  type KeywordCandidate,
+  type MappingState,
+} from "@/lib/business/keywords";
 import type { OpportunityState } from "@/lib/business/opportunities";
-import { readFacts } from "@/lib/business/load";
+import { buildTopicMap, type TopicState } from "@/lib/business/topics";
+import type { FreshnessState } from "@/lib/scoring/freshness";
+import { readWebsiteFacts } from "@/lib/business/load";
 import { canSeeBusiness } from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
@@ -33,6 +45,62 @@ const STATUS: Record<NeedStatus, { label: string; tone: Tone }> = {
   "not-confirmed": { label: "Not confirmed", tone: "info" },
   "not-checked": { label: "Not checked", tone: "neutral" },
 };
+const TOPIC_STATE: Record<
+  TopicState,
+  { label: string; tone: Tone; meaning: string }
+> = {
+  covered: {
+    label: "Covered",
+    tone: "success",
+    meaning: "a page is about it, can be indexed and has enough main content",
+  },
+  partial: {
+    label: "Partly covered",
+    tone: "warning",
+    meaning:
+      "pages mention it, or the page about it is thin, noindex or canonicalised elsewhere",
+  },
+  none: {
+    label: "No page",
+    tone: "danger",
+    meaning: "no analysed page names it, on a complete and recent crawl",
+  },
+  "not-checked": {
+    label: "Not checked",
+    tone: "neutral",
+    meaning:
+      "the crawl was missing, partial, limited or out of date, so a missing page cannot be confirmed",
+  },
+};
+const MAPPING: Record<
+  MappingState,
+  { label: string; tone: Tone; meaning: string }
+> = {
+  mapped: {
+    label: "Mapped",
+    tone: "success",
+    meaning: "the page that covers its topic serves it",
+  },
+  weak: {
+    label: "No sufficient page",
+    tone: "warning",
+    meaning:
+      "pages only mention it, or the page about it is thin, noindex or canonicalised elsewhere",
+  },
+  unmapped: {
+    label: "Unmapped",
+    tone: "danger",
+    meaning: "no page serves it, on a complete and recent crawl",
+  },
+  "not-checked": {
+    label: "Not checked",
+    tone: "neutral",
+    meaning:
+      "the crawl was missing, partial, limited or out of date, so a missing page cannot be confirmed",
+  },
+};
+/** Candidates listed before "Show all". */
+const KEYWORDS_SHOWN = 20;
 const KIND: Record<NeedKind, string> = {
   "service-page": "Service page",
   "location-page": "Location page",
@@ -53,6 +121,67 @@ const PAGE_TYPE: Record<string, string> = {
   unknown: "Unclear",
 };
 
+function KeywordRow({
+  k,
+  crawl,
+}: {
+  k: KeywordCandidate;
+  /** The crawl's freshness; a page found on an old crawl may have changed. */
+  crawl: FreshnessState | null;
+}) {
+  const m = k.mapping;
+  return (
+    <li className="flex flex-col gap-1 px-5 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-ink">{k.text}</span>
+        <span className="text-xs text-muted">
+          {k.kind === "service" ? "Service" : "Service and location"}
+        </span>
+        <Badge
+          value={m.state}
+          tone={MAPPING[m.state].tone}
+          label={MAPPING[m.state].label}
+          dot
+        />
+      </div>
+      {m.page ? (
+        <p className="text-sm text-ink-2">
+          <span className="break-all font-mono text-xs">{m.page}</span>
+          <span className="text-xs text-muted">
+            {" "}
+            · {m.where.join(", ")} ·{" "}
+            {m.wordingOnPage
+              ? "this wording is on the page"
+              : "this wording is not on the page"}
+          </span>
+        </p>
+      ) : (
+        <p className="text-sm text-ink-2">{m.reason}</p>
+      )}
+      {m.state === "mapped" && crawl && crawl !== "fresh" && (
+        <p className="text-xs font-medium text-warning-700">
+          From a crawl that is{" "}
+          {crawl === "stale"
+            ? "out of date"
+            : crawl === "incomplete"
+              ? "incomplete"
+              : "of unknown age"}
+          : the page may have changed since.
+        </p>
+      )}
+      <p className="text-xs text-muted">
+        From:{" "}
+        {k.from
+          .map(
+            (f) =>
+              `“${f.wording}” (${f.isName ? "name" : "other wording"}, ${SOURCE_LABEL[f.source].toLowerCase()}${f.approvedAt ? `, approved ${formatDateTime(f.approvedAt)}` : ""})`,
+          )
+          .join(" + ")}
+      </p>
+    </li>
+  );
+}
+
 export default async function CoveragePage({
   params,
 }: PageProps<"/o/[orgSlug]/websites/[websiteId]/coverage">) {
@@ -64,20 +193,7 @@ export default async function CoveragePage({
     select: { id: true, name: true },
   });
   if (!website) notFound();
-  const facts = await readFacts(() =>
-    ctx.db.businessFact.findMany({
-      where: { websiteId },
-      select: {
-        id: true,
-        kind: true,
-        value: true,
-        synonyms: true,
-        source: true,
-        status: true,
-      },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    }),
-  );
+  const facts = await readWebsiteFacts(ctx.db, websiteId);
   const base = `/o/${orgSlug}/websites/${websiteId}`;
   if (facts === null)
     return (
@@ -116,6 +232,19 @@ export default async function CoveragePage({
       ? [profile.brandName, profile.legalName ?? "", ...profile.aliases]
       : [],
   });
+  // Read-only: topics create no findings, tasks or score changes.
+  const topics = buildTopicMap({
+    facts,
+    pages: c.pages,
+    crawl: c.crawl,
+    crawlId: evidence?.crawl?.id ?? null,
+    errorPages: (evidence?.crawl?.pages ?? []).filter(
+      (p) => p.status === "CRAWLED" && (p.httpStatus ?? 0) >= 400,
+    ),
+    now: new Date(),
+  });
+  // Read-only, provider-neutral: nothing measured, nothing planned.
+  const keywords = buildKeywordMap({ facts, map: topics, pages: c.pages });
   const types = Object.entries(
     c.pages.reduce<Record<string, number>>((acc, p) => {
       acc[p.type] = (acc[p.type] ?? 0) + 1;
@@ -250,6 +379,271 @@ export default async function CoveragePage({
         </section>
       )}
 
+      {(topics.topics.length > 0 || topics.suppressed.length > 0) && (
+        <section
+          aria-labelledby="topics"
+          className="mt-6 flex flex-col gap-3"
+        >
+          <div>
+            <h2 id="topics" className="text-base font-semibold text-ink">
+              Topics
+            </h2>
+            <p className="text-sm text-muted">
+              The topics the approved services
+              {topics.locationNote?.startsWith("Each") ? " and locations" : ""}{" "}
+              call for, and the crawled page that serves each. For information
+              only: nothing here changes the plan or the score.
+            </p>
+          </div>
+          {topics.crawl ? (
+            <Callout
+              tone={
+                topics.crawl.gap || topics.crawl.freshness.state !== "fresh"
+                  ? "warning"
+                  : "info"
+              }
+              title={`Crawl ${topics.crawl.id ?? "(id not recorded)"}, analysed ${formatDateTime(topics.crawl.analyzedAt)}`}
+            >
+              {topics.crawl.freshness.reason}{" "}
+              {topics.crawl.gap
+                ? `${topics.crawl.gap} Topics without a page are "Not checked", not "No page".`
+                : "The crawl completed within its limits."}
+            </Callout>
+          ) : (
+            <Callout tone="info" title="No analysed crawl yet">
+              Every topic is &ldquo;Not checked&rdquo; until a crawl is analysed.
+            </Callout>
+          )}
+          <Card padded={false}>
+            <ul className="divide-y divide-line">
+              {topics.topics.map((t) => (
+                <li key={t.key} className="flex flex-col gap-1 px-5 py-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-ink">{t.label}</span>
+                    <Badge
+                      value={t.state}
+                      tone={TOPIC_STATE[t.state].tone}
+                      label={TOPIC_STATE[t.state].label}
+                      dot
+                    />
+                  </div>
+                  <p className="text-sm text-ink-2">{t.reason}</p>
+                  {(t.state === "covered" || t.state === "partial") &&
+                    topics.crawl &&
+                    topics.crawl.freshness.state !== "fresh" && (
+                      <p className="text-xs font-medium text-warning-700">
+                        From a crawl that is{" "}
+                        {topics.crawl.freshness.state === "stale"
+                          ? "out of date"
+                          : topics.crawl.freshness.state === "incomplete"
+                            ? "incomplete"
+                            : "of unknown age"}
+                        : the page may have changed since.
+                      </p>
+                    )}
+                  {t.audiences.length > 0 && (
+                    <p className="text-xs text-muted">
+                      For: {t.audiences.map((a) => factLabel(a)).join("; ")}
+                    </p>
+                  )}
+                  {unconfirmedFactsNote(t.facts) && (
+                    <p className="text-xs text-muted">
+                      {unconfirmedFactsNote(t.facts)}
+                    </p>
+                  )}
+                  {t.evidence.length > 0 && (
+                    <details className="mt-1 text-xs text-ink-2">
+                      <summary className="cursor-pointer font-medium text-brand-700">
+                        Evidence: {t.pagesMatched} page
+                        {t.pagesMatched === 1 ? "" : "s"}
+                        {t.pagesMatched > t.evidence.length
+                          ? ` (best ${t.evidence.length} shown)`
+                          : ""}
+                      </summary>
+                      <ul className="mt-1 flex flex-col gap-1.5">
+                        {t.evidence.map((e) => (
+                          <li key={e.url}>
+                            <span className="break-all font-mono">{e.url}</span>
+                            <p>{e.verdict}</p>
+                            {e.matched.length > 0 && (
+                              <p className="text-muted">
+                                Wording found:{" "}
+                                {e.matched.map((w) => `“${w}”`).join(", ")}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <dl className="grid gap-1 text-xs text-muted sm:grid-cols-2">
+            {(Object.keys(TOPIC_STATE) as TopicState[]).map((s) => (
+              <div key={s}>
+                <dt className="inline font-medium text-ink-2">
+                  {TOPIC_STATE[s].label}:
+                </dt>{" "}
+                <dd className="inline">{TOPIC_STATE[s].meaning}.</dd>
+              </div>
+            ))}
+          </dl>
+          {(topics.locationNote ||
+            topics.omitted > 0 ||
+            topics.suppressed.length > 0) && (
+            <ul className="flex flex-col gap-0.5 text-xs text-muted">
+              {topics.locationNote && <li>{topics.locationNote}</li>}
+              {topics.omitted > 0 && (
+                <li>
+                  {topics.omitted} more topic{topics.omitted === 1 ? "" : "s"}{" "}
+                  not shown: at most 50 are mapped (every service first, then
+                  service and location pairs).
+                </li>
+              )}
+              {topics.suppressed.map((x) => (
+                <li key={x.label}>
+                  &ldquo;{x.label}&rdquo; is left out: marked as not offered
+                  (&ldquo;{x.by}&rdquo;).
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-xs text-muted">
+            Topic rules {topics.version}. Audiences are shown as context; they
+            are not topics of their own.
+          </p>
+        </section>
+      )}
+
+      {(keywords.candidates.length > 0 || keywords.omitted > 0) && (
+        <section
+          aria-labelledby="keywords"
+          className="mt-6 flex flex-col gap-3"
+        >
+          <div>
+            <h2 id="keywords" className="text-base font-semibold text-ink">
+              Keyword candidates
+            </h2>
+            <p className="text-sm text-muted">
+              Search terms the approved facts suggest (their names and other
+              wordings, and service with location), and the crawled page
+              that serves each. For information only: nothing here changes
+              the plan or the score.
+            </p>
+          </div>
+          <Callout tone="info" title="Search volume is not measured">
+            These are candidates, not keywords people are known to search
+            for. No keyword data provider is connected, so there is no
+            search volume, ranking or traffic data
+            {keywords.crawl
+              ? `. Mapped from crawl ${keywords.crawl.id ?? "(id not recorded)"}, analysed ${formatDateTime(keywords.crawl.analyzedAt)}: ${keywords.crawl.freshness.reason}`
+              : ". No analysed crawl yet, so no candidate is mapped"}
+          </Callout>
+          <Card padded={false}>
+            <ul className="divide-y divide-line">
+              {keywords.candidates.slice(0, KEYWORDS_SHOWN).map((k) => (
+                <KeywordRow
+                  key={k.key}
+                  k={k}
+                  crawl={keywords.crawl?.freshness.state ?? null}
+                />
+              ))}
+            </ul>
+            {keywords.candidates.length > KEYWORDS_SHOWN && (
+              <details className="border-t border-line">
+                <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-brand-700">
+                  Show all {keywords.candidates.length} candidates
+                </summary>
+                <ul className="divide-y divide-line border-t border-line">
+                  {keywords.candidates.slice(KEYWORDS_SHOWN).map((k) => (
+                    <KeywordRow
+                  key={k.key}
+                  k={k}
+                  crawl={keywords.crawl?.freshness.state ?? null}
+                />
+                  ))}
+                </ul>
+              </details>
+            )}
+          </Card>
+          {keywords.crawl && (
+            <Card title="Possible overlap" padded={false}>
+              {keywords.overlaps.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-muted">
+                  No two analysed pages are each about the same candidate.
+                </p>
+              ) : (
+                <ul className="divide-y divide-line">
+                  {keywords.overlaps.map((o) => (
+                    <li
+                      key={`${o.topicKey}|${o.pages.map((p) => p.url).join("|")}`}
+                      className="flex flex-col gap-1 px-5 py-4"
+                    >
+                      <p className="font-medium text-ink">
+                        {o.candidates.map((t) => `“${t}”`).join(", ")}
+                      </p>
+                      <p className="text-sm text-ink-2">{o.reason}</p>
+                      {keywords.crawl!.freshness.state !== "fresh" && (
+                        <p className="text-xs font-medium text-warning-700">
+                          From a crawl that is not current: the pages may have
+                          changed since.
+                        </p>
+                      )}
+                      <ul className="flex flex-col gap-0.5">
+                        {o.pages.map((p) => (
+                          <li key={p.url} className="text-xs text-ink-2">
+                            <span className="break-all font-mono">
+                              {p.url}
+                            </span>
+                            <span className="text-muted">
+                              {" "}
+                              · {p.where.join(", ")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
+          <dl className="grid gap-1 text-xs text-muted sm:grid-cols-2">
+            {(Object.keys(MAPPING) as MappingState[]).map((s) => (
+              <div key={s}>
+                <dt className="inline font-medium text-ink-2">
+                  {MAPPING[s].label}:
+                </dt>{" "}
+                <dd className="inline">{MAPPING[s].meaning}.</dd>
+              </div>
+            ))}
+          </dl>
+          <ul className="flex flex-col gap-0.5 text-xs text-muted">
+            {keywords.omitted > 0 && (
+              <li>
+                {keywords.omitted} more candidate
+                {keywords.omitted === 1 ? "" : "s"} not shown: at most{" "}
+                {MAX_CANDIDATES} are listed (services first).
+              </li>
+            )}
+            {keywords.addresses.map((a) => (
+              <li key={a}>
+                &ldquo;{a}&rdquo; is an address, not a search term: its other
+                wordings are used instead.
+              </li>
+            ))}
+            <li>
+              Keyword rules {keywords.version}. Only approved wordings are
+              used; no modifiers such as &ldquo;near me&rdquo; are added.
+              Possible overlap is not a ranking problem: whether pages compete
+              is not measured.
+            </li>
+          </ul>
+        </section>
+      )}
+
       {checks.length > 0 && (
         <div className="mt-6">
           <Card title="Other coverage checks" padded={false}>
@@ -272,6 +666,11 @@ export default async function CoveragePage({
                     )}
                   </div>
                   <p className="text-sm text-ink-2">{n.note}</p>
+                  {unconfirmedFactsNote(n.facts) && (
+                    <p className="text-xs text-muted">
+                      {unconfirmedFactsNote(n.facts)}
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>

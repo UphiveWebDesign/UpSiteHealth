@@ -1,3 +1,4 @@
+import { EVIDENCE_MAX_AGE_DAYS } from "@/lib/scoring/freshness";
 import type { CrawlRunStatus } from "@/generated/prisma/enums";
 import type { IntegrationEvidence } from "@/lib/integrations/evaluate";
 import type { BusinessFact } from "@/lib/knowledge/priority";
@@ -12,7 +13,9 @@ import {
   approvedTypes,
   CONTACT_GOALS,
   factLabel,
+  factWithSource,
   GOAL_LABEL,
+  unconfirmedFactsNote,
   type Fact,
   type Goal,
 } from "./facts";
@@ -58,7 +61,8 @@ export { matchPage, type PageMatch, type Strength };
  * Bump COVERAGE_VERSION when a rule or threshold changes meaning.
  */
 export const COVERAGE_VERSION = "c1";
-export const STALE_DAYS = 60;
+/** Crawl evidence older than this cannot confirm a gap (scoring/freshness.ts). */
+export const STALE_DAYS = EVIDENCE_MAX_AGE_DAYS.TECHNICAL_SEO;
 
 export type NeedStatus =
   | "covered"
@@ -80,7 +84,7 @@ export type CoverageNeed = {
   key: string;
   kind: NeedKind;
   /** Approved facts behind it. */
-  facts: Array<Pick<Fact, "id" | "kind" | "value">>;
+  facts: Array<Pick<Fact, "id" | "kind" | "value" | "source">>;
   status: NeedStatus;
   matches: PageMatch[];
   /** Plain-language explanation of the status. */
@@ -167,8 +171,15 @@ function crawlEvidence(
       ? (discovery as {
           sitemapFilesOmitted?: unknown;
           sitemapUrlsCapped?: unknown;
+          sitemaps?: {
+            failed?: { count?: unknown };
+            unprocessed?: { count?: unknown };
+          };
         })
       : null;
+  const ledgerCount = (n: unknown) => (typeof n === "number" ? n : 0);
+  const sitemapsFailed = ledgerCount(d?.sitemaps?.failed?.count);
+  const sitemapsUnread = ledgerCount(d?.sitemaps?.unprocessed?.count);
   const linksOmitted = crawl.pages.filter((p) => {
     const n = (p.result as { linksOmitted?: unknown } | null)?.linksOmitted;
     return typeof n === "number" && n > 0;
@@ -210,7 +221,16 @@ function crawlEvidence(
       ? `The latest crawl reached its limit of ${crawl.maxDiscoveredUrls} discovered URLs, so further URLs were not recorded.`
       : null,
     sitemapFilesOmitted > 0
-      ? `${plural(sitemapFilesOmitted, "sitemap file")} listed by the site ${sitemapFilesOmitted === 1 ? "was" : "were"} not read (the crawl reads at most 3).`
+      ? d?.sitemaps
+        ? `${plural(sitemapFilesOmitted, "sitemap file")} listed by the site could not be read (${[
+            sitemapsFailed ? `${sitemapsFailed} failed` : null,
+            sitemapsUnread
+              ? `${sitemapsUnread} beyond the crawl's limits`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(", ")}), so pages listed only there were not checked.`
+        : `${plural(sitemapFilesOmitted, "sitemap file")} listed by the site ${sitemapFilesOmitted === 1 ? "was" : "were"} not read (the crawl reads at most 3).`
       : null,
     d?.sitemapUrlsCapped === true
       ? "A sitemap listed more URLs than the crawl records."
@@ -240,6 +260,74 @@ function crawlEvidence(
       ...failed.map((p) => ({ url: p.url, reason: "fetch-failed" as const })),
     ],
   };
+}
+
+/**
+ * Every page that matches a fact, best first, with the page-type rules of
+ * coverage applied: a legal page only ever mentions something, and a blog
+ * post or the home page of a multi-service business mentions a service
+ * rather than being the page about it. Shared with the topic map.
+ */
+export function factMatches(
+  pages: UnderstoodPage[],
+  f: Pick<Fact, "kind" | "value" | "synonyms">,
+  serviceCount: number,
+  opts: { fullTitle?: boolean; body?: boolean } = {},
+): PageMatch[] {
+  return best(
+    pages.flatMap((p) => {
+      // A legal page's text (a privacy policy listing what guests book)
+      // is no evidence that the business covers an offering.
+      const m = matchPage(
+        p,
+        f,
+        p.type === "legal" ? { ...opts, body: false } : opts,
+      );
+      if (!m) return [];
+      // A legal page that names an offering or place (a privacy policy
+      // with the business address) mentions it; it is never the page
+      // about it.
+      if (m.strength === "strong" && p.type === "legal")
+        return [
+          {
+            ...m,
+            strength: "medium" as const,
+            note: "A legal page names it.",
+          },
+        ];
+      // A blog post or the home page of a multi-service business mentions
+      // a service; it is not a page about it.
+      if (
+        m.strength === "strong" &&
+        f.kind === "SERVICE" &&
+        (p.type === "article" || (p.isHome && serviceCount > 1))
+      )
+        return [
+          {
+            ...m,
+            strength: "medium" as const,
+            note: p.isHome
+              ? "The home page names it, but the business offers several services."
+              : "A blog post or article names it.",
+          },
+        ];
+      return [m];
+    }),
+  );
+}
+
+/**
+ * A location's own page: classified as a location page, or unclassified and
+ * naming it in the title or H1. The home, contact and service pages that
+ * mention a place are not pages about that place.
+ */
+export function isLocationPage(pages: UnderstoodPage[], m: PageMatch): boolean {
+  const p = pages.find((x) => x.url === m.url);
+  return (
+    p?.type === "location" ||
+    (p?.type === "unknown" &&
+      m.where.some((w) => w === "title" || w === "main heading"))
+  );
 }
 
 /** Analyses one website's coverage from its latest crawl and its facts. */
@@ -288,30 +376,10 @@ export function analyzeCoverage(input: {
     (p) => p.status === "CRAWLED" && (p.httpStatus ?? 0) >= 400,
   );
 
-  const matchesFor = (f: Fact, opts: { fullTitle?: boolean } = {}) =>
-    best(
-      pages.flatMap((p) => {
-        const m = matchPage(p, f, opts);
-        if (!m) return [];
-        // A blog post or the home page of a multi-service business mentions
-        // a service; it is not a page about it.
-        if (
-          m.strength === "strong" &&
-          f.kind === "SERVICE" &&
-          (p.type === "article" || (p.isHome && services.length > 1))
-        )
-          return [
-            {
-              ...m,
-              strength: "medium" as const,
-              note: p.isHome
-                ? "The home page names it, but the business offers several services."
-                : "A blog post or article names it.",
-            },
-          ];
-        return [m];
-      }),
-    );
+  const matchesFor = (
+    f: Fact,
+    opts: { fullTitle?: boolean; body?: boolean } = {},
+  ) => factMatches(pages, f, services.length, opts);
 
   const needs: CoverageNeed[] = [];
   const missingNote = () =>
@@ -343,20 +411,13 @@ export function analyzeCoverage(input: {
       ? { status: "not-confirmed", note: `${missingNote()} ${crawl.gap}` }
       : { status: "missing", note: missingNote() };
   };
-  // A location's own page: classified as a location page, or unclassified
-  // and naming it in the title or H1. The home, contact and service pages
-  // that mention a place are not pages about that place.
-  const locationPage = (m: PageMatch) => {
-    const p = pages.find((x) => x.url === m.url);
-    return (
-      p?.type === "location" ||
-      (p?.type === "unknown" &&
-        m.where.some((w) => w === "title" || w === "main heading"))
-    );
-  };
+  const locationPage = (m: PageMatch) => isLocationPage(pages, m);
 
   for (const f of services) {
-    const matches = matchesFor(f);
+    // Body mentions count as mentions here: this check never creates a task
+    // or completes one (page opportunities do), so they can only turn
+    // "missing" into "mentioned".
+    const matches = matchesFor(f, { body: true });
     let { status, note } = statusOf(matches, () => true);
     const broken =
       status === "missing" || status === "not-confirmed"
@@ -411,18 +472,29 @@ export function analyzeCoverage(input: {
       const named = matchesFor(f, { fullTitle: true });
       const s = statusOf(named, () => true);
       // Named on one page or several: either way it is named.
-      const status =
+      let status: NeedStatus =
         s.status === "weak" || s.status === "ambiguous" ? "covered" : s.status;
+      let note =
+        status === "covered" && named.length
+          ? `Named on ${named[0].url}.`
+          : s.note;
+      // Named only in the main text: not a gap to fix with a new task, but
+      // not "covered" either, so a keyword in the body never completes one.
+      const inBody =
+        status === "missing" || status === "not-confirmed"
+          ? matchesFor(f, { fullTitle: true, body: true })
+          : [];
+      if (inBody.length) {
+        status = "weak";
+        note = `Named only in the main text of ${inBody[0].url}; consider showing it in a heading, the contact details or the business's structured data.`;
+      }
       needs.push({
         key: `Show the ${f.value} location on the website (BIZ_LOCATION_MENTION)`,
         kind: "location-mention",
         facts: [f],
         status,
-        matches: named.slice(0, 5),
-        note:
-          status === "covered" && named.length
-            ? `Named on ${named[0].url}.`
-            : s.note,
+        matches: (inBody.length ? inBody : named).slice(0, 5),
+        note,
         recommend: canRecommend && status === "missing",
       });
     }
@@ -527,8 +599,8 @@ export function analyzeCoverage(input: {
     crawl,
     needs,
     errorPages,
-    matchesFor: (f) =>
-      matchesFor({ id: "", source: "CLIENT", status: "APPROVED", ...f }),
+    matchesFor: (f, opts) =>
+      matchesFor({ id: "", source: "CLIENT", status: "APPROVED", ...f }, opts),
     existing: input.existing ?? new Map(),
   });
 
@@ -547,7 +619,7 @@ export function analyzeCoverage(input: {
 }
 
 /** Needs that ask for a page are handled as page opportunities. */
-const PAGE_NEEDS: NeedKind[] = [
+export const PAGE_NEEDS: NeedKind[] = [
   "service-page",
   "location-page",
   "contact-path",
@@ -682,7 +754,7 @@ export function coverageMeta(
 ): RecommendationMeta | null {
   const o = c?.opportunities.find((x) => x.key === title);
   if (o && c?.crawl) {
-    const facts = o.facts.map((f) => factLabel(f)).join(", ");
+    const facts = o.facts.map(factWithSource).join(", ");
     return {
       detected: o.stateReason,
       benefit: "business-coverage",
@@ -699,7 +771,12 @@ export function coverageMeta(
       coverage: null,
       likelyTemplate: false,
       verification: o.verification,
-      limits: [NOT_BODY, NOT_INDEX, ...o.assumptions],
+      // An unconfirmed fact is the first thing to check, before the crawl's limits.
+      limits: (() => {
+        const note = unconfirmedFactsNote(o.facts);
+        const rest = o.assumptions.filter((a) => a !== note);
+        return [...(note ? [note] : []), NOT_BODY, NOT_INDEX, ...rest];
+      })(),
       knowledgeVersion: OPPORTUNITY_VERSION,
       proposal: {
         name: o.name,
@@ -722,7 +799,7 @@ export function coverageMeta(
     confidenceReason: stale ? c.crawl.gap! : t.confidenceReason,
     effort: t.effort,
     effortReason: t.effortReason,
-    priorityRationale: `Based on approved business facts: ${n.facts.map((f) => factLabel(f)).join(", ")}.`,
+    priorityRationale: `Based on approved business facts: ${n.facts.map(factWithSource).join(", ")}.`,
     evidence: [
       `Checked ${plural(c.crawl.analysedPages, "analysed page")} from the crawl of ${c.crawl.analyzedAt.toISOString().slice(0, 10)}.`,
       ...n.matches.map(
@@ -734,7 +811,11 @@ export function coverageMeta(
     coverage: null,
     likelyTemplate: false,
     verification: t.verification(n),
-    limits: [NOT_BODY, NOT_INDEX],
+    limits: [
+      ...[unconfirmedFactsNote(n.facts)].filter((x): x is string => !!x),
+      NOT_BODY,
+      NOT_INDEX,
+    ],
     knowledgeVersion: COVERAGE_VERSION,
   };
 }

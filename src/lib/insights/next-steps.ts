@@ -1,4 +1,8 @@
-import type { CheckOutcome, WebsiteStatus } from "@/generated/prisma/enums";
+import type {
+  CheckOutcome,
+  CrawlMode,
+  WebsiteStatus,
+} from "@/generated/prisma/enums";
 import { WEIGHTS, type Dimension } from "@/lib/scoring/score";
 
 /**
@@ -28,6 +32,12 @@ export type WebsiteSignals = {
   crawlInProgress: boolean;
   performance: { score: number | null; measuredAt: Date } | null;
   hasAiProfile: boolean;
+  /**
+   * AUTOMATIC websites with monitoring on are recrawled weekly; an overdue
+   * routine crawl is reported by the portfolio attention list
+   * (insights/attention.ts), not as a stale crawl.
+   */
+  crawlMode?: CrawlMode;
 };
 
 export type StepTone = "danger" | "warning" | "brand" | "info";
@@ -163,7 +173,11 @@ export function nextSteps(
       reason: `Technical SEO is ${pct("TECHNICAL_SEO")} of the health score and is not measured yet.`,
       action: { label: "Start crawl", href: site },
     });
-  } else if (s.lastCrawl?.finishedAt && !s.crawlInProgress) {
+  } else if (
+    s.lastCrawl?.finishedAt &&
+    !s.crawlInProgress &&
+    !(s.crawlMode === "AUTOMATIC" && s.monitoringEnabled)
+  ) {
     const age = Math.floor(
       (now.getTime() - s.lastCrawl.finishedAt.getTime()) / DAY,
     );

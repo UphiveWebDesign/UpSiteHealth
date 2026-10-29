@@ -114,6 +114,7 @@ export default async function WebsitesPage({
                   <td className={td}>
                     <ScoreValue
                       score={s.latestScore?.score}
+                      freshness={s.latestScore?.freshness}
                       coverage={s.latestScore?.measuredWeight}
                     />
                   </td>

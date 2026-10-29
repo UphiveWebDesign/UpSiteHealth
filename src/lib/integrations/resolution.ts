@@ -47,6 +47,18 @@ const POSITIVE_CODES: Partial<Record<IntegrationKey, string[]>> = {
 };
 const NEEDS_TAGS: IntegrationKey[] = ["GA4", "GTM"];
 
+/**
+ * Whether confirming this problem gone depends on the crawl (and so on the
+ * crawl being current), as `confirmResolved` decides it. Only robots.txt,
+ * the sitemap's own files and the Search Console token are confirmed
+ * without it; a GTM container may be confirmed either way, so it counts.
+ */
+export function resolvedFromCrawl(key: IntegrationKey, code: string): boolean {
+  if (key === "ROBOTS" || key === "GSC") return false;
+  if (key === "SITEMAP") return !!PAGE_CODES.SITEMAP?.includes(code);
+  return true;
+}
+
 /** A page the latest crawl loaded, analysed and (if needed) tag-scanned. */
 function reexamined(
   page: EvidencePage | undefined,

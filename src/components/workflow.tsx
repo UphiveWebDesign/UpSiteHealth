@@ -60,10 +60,12 @@ export function BaselineSummary({ baseline }: { baseline: Baseline }) {
       <div className="text-sm text-ink-2">
         <p className="font-medium text-ink">No baseline yet</p>
         <p className="mt-1">
-          A baseline needs a crawl that completed.
+          A baseline needs a crawl that completed and was analysed.
+          {baseline.awaitingAnalysis > 0 &&
+            ` ${baseline.awaitingAnalysis} completed crawl${baseline.awaitingAnalysis === 1 ? " has" : "s have"} not been analysed yet. Analysis is retried automatically; the first completed crawl analysed becomes the baseline.`}
           {baseline.incompleteRuns > 0 &&
             ` ${baseline.incompleteRuns} crawl${baseline.incompleteRuns === 1 ? "" : "s"} did not complete (page limit, cancelled or failed), so ${baseline.incompleteRuns === 1 ? "it is" : "they are"} not used.`}{" "}
-          Run a full crawl to set it.
+          {baseline.awaitingAnalysis === 0 && "Run a full crawl to set it."}
         </p>
       </div>
     );
@@ -384,6 +386,12 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
                 Confidence: {item.confidence.level}.
               </span>{" "}
               {item.confidence.reason}
+            </p>
+          )}
+          {item.basedOn && (
+            <p className="text-ink-2">
+              <span className="font-medium text-ink">Based on:</span>{" "}
+              {item.basedOn}
             </p>
           )}
           {item.limits.length > 0 && (

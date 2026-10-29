@@ -66,6 +66,8 @@ function fakeDb() {
   const tx = { recommendation, $queryRaw: async () => [] };
   const db = {
     recommendation,
+    // A database without the history table: these tests are about locking.
+    $queryRaw: async () => [{ present: false }],
     // One transaction at a time: what the website row lock guarantees.
     $transaction: (fn: (t: typeof tx) => Promise<unknown>) => {
       const run = chain.then(() => fn(tx));
@@ -182,4 +184,53 @@ describe("re-keying and creation share the website lock (simulated concurrency)"
       expect.objectContaining({ recommendationId: "a", candidates: 2 }),
     );
   });
+
+  // Stage 2, D2 (approved): every identity move keeps the row and records an
+  // IDENTITY_CHANGED event with the old and new key and title. Today a move
+  // is only logged (the test above), so this fails until it lands.
+  test.fails(
+    "D2: a move records IDENTITY_CHANGED in the same transaction, where task history exists",
+    async () => {
+      vi.spyOn(log, "info").mockImplementation(() => {});
+      const rows = [{ id: "d", ...scope, title: OLD, status: "DISMISSED" }];
+      const written: Array<Record<string, unknown>> = [];
+      const tx = {
+        recommendation: {
+          findFirst: async () => null,
+          updateMany: async ({ data }: { data: { title: string } }) => {
+            rows[0].title = data.title;
+            return { count: 1 };
+          },
+        },
+        recommendationEvent: {
+          createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
+            written.push(...data);
+            return { count: data.length };
+          },
+        },
+        $queryRaw: async () => [],
+      };
+      const db = {
+        ...tx,
+        $queryRaw: async () => [{ present: true }],
+        $transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+      } as unknown as PrismaClient;
+      await applyRekeys(db, scope, {
+        moves: [{ id: "d", from: OLD, to: ACC }],
+        ambiguous: [],
+      });
+      expect(rows[0]).toMatchObject({
+        id: "d",
+        title: ACC,
+        status: "DISMISSED",
+      });
+      expect(written).toEqual([
+        expect.objectContaining({
+          recommendationId: "d",
+          type: "IDENTITY_CHANGED",
+          evidence: expect.objectContaining({ fromTitle: OLD, toTitle: ACC }),
+        }),
+      ]);
+    },
+  );
 });

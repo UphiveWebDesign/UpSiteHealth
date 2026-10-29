@@ -128,6 +128,20 @@ enum ScoreCategory {
   ACCESSIBILITY
 }
 
+/// Whether UpSiteHealth crawls a website on its own (weekly, and to verify
+/// work marked done) or only when a person starts a crawl.
+enum CrawlMode {
+  AUTOMATIC
+  MANUAL
+}
+
+/// What started a crawl run.
+enum CrawlTrigger {
+  MANUAL
+  SCHEDULED
+  VERIFICATION
+}
+
 enum CrawlRunStatus {
   QUEUED
   RUNNING
@@ -318,12 +332,13 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  accounts       Account[]
-  sessions       Session[]
-  memberships    OrganizationMember[]
-  assignedIssues Issue[]
-  factsCreated   BusinessFact[]       @relation("BusinessFactCreatedBy")
-  factsReviewed  BusinessFact[]       @relation("BusinessFactReviewedBy")
+  accounts             Account[]
+  sessions             Session[]
+  memberships          OrganizationMember[]
+  assignedIssues       Issue[]
+  factsCreated         BusinessFact[]        @relation("BusinessFactCreatedBy")
+  recommendationEvents RecommendationEvent[] @relation("RecommendationEventActor")
+  factsReviewed        BusinessFact[]        @relation("BusinessFactReviewedBy")
 
   @@map("users")
 }
@@ -388,6 +403,7 @@ model Organization {
   seoFindings              SeoFinding[]
   issues                   Issue[]
   recommendations          Recommendation[]
+  recommendationEvents     RecommendationEvent[]
   scoreSnapshots           WebsiteScoreSnapshot[]
   performanceObservations  PerformanceObservation[]
   aiSearchProfiles         AiSearchProfile[]
@@ -455,6 +471,9 @@ model Website {
   monitoringIntervalMinutes Int           @default(5)
   monitoringPriority        JobPriority   @default(NORMAL)
   nextCheckAt               DateTime?
+  /// MANUAL by default, so websites created before crawl modes keep being
+  /// crawled only on request; onboarding offers AUTOMATIC first.
+  crawlMode                 CrawlMode     @default(MANUAL)
   createdAt                 DateTime      @default(now())
   updatedAt                 DateTime      @updatedAt
 
@@ -595,6 +614,7 @@ model CrawlRun {
   robotsTxtStatus       String?
   sitemapUrlsDiscovered Int?
   seoAnalyzedAt         DateTime?
+  trigger               CrawlTrigger   @default(MANUAL)
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
 
@@ -738,13 +758,56 @@ model Recommendation {
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
-  issue        Issue?       @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website               @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  issue        Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  events       RecommendationEvent[]
 
+  // Lets history rows reference (id, websiteId, organizationId) together, so
+  // an event can never point at another organization's or website's task.
+  @@unique([id, websiteId, organizationId])
   @@index([organizationId])
   @@index([websiteId, status])
   @@map("recommendations")
+}
+
+/// What happened to a task (docs/specs/seo-engagement-workflow.md).
+enum RecommendationEventType {
+  CREATED
+  STATUS_CHANGED
+  NOTE_ADDED
+  ESTIMATE_CHANGED
+  PLANNED
+  VERIFICATION_RECORDED
+}
+
+/// Append-only task history: rows are added, never changed (an UPDATE trigger
+/// in the migration refuses edits). History starts when this table was
+/// created; earlier changes are not reconstructed.
+model RecommendationEvent {
+  id               String                  @id @default(cuid())
+  organizationId   String
+  websiteId        String
+  recommendationId String
+  type             RecommendationEventType
+  fromStatus       RecommendationStatus?
+  toStatus         RecommendationStatus?
+  note             String?
+  /// What the event rests on: ids of the crawl, check or finding involved.
+  /// Only what UpSiteHealth actually recorded; never invented.
+  evidence         Json?
+  /// The person who made the change; null when UpSiteHealth made it.
+  actorUserId      String?
+  createdAt        DateTime                @default(now())
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recommendation Recommendation @relation(fields: [recommendationId, websiteId, organizationId], references: [id, websiteId, organizationId], onDelete: Cascade)
+  actor          User?          @relation("RecommendationEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([recommendationId, createdAt])
+  @@index([websiteId, createdAt])
+  @@index([organizationId])
+  @@map("recommendation_events")
 }
 
 // ─── Scoring and performance ────────────────────────────────────────────────

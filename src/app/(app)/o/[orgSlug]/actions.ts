@@ -10,12 +10,18 @@ import type { Role } from "@/generated/prisma/enums";
 import { slugify } from "@/lib/auth/accounts";
 import {
   CrawlError,
-  processCrawls,
   requestCrawlCancel,
   startCrawl,
 } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
+import { refreshActionPlan } from "@/lib/recommendations/after-crawl";
 import { db } from "@/lib/db";
-import { runBackground } from "@/lib/log";
+import { log, runBackground } from "@/lib/log";
+import {
+  FINDING_ACTION,
+  findingStatusFeedback,
+  type FindingChangeOutcome,
+} from "@/lib/seo/finding-status";
 import { processMonitoringJobs } from "@/lib/monitoring/worker";
 import {
   ForbiddenError,
@@ -28,6 +34,7 @@ import {
   requestImmediateChecks,
   updateWebsite,
   WebsiteError,
+  type WebsiteInput,
 } from "@/lib/websites/service";
 
 export type FormState =
@@ -59,6 +66,9 @@ const websiteForm = (formData: FormData) => ({
   url: String(formData.get("url") ?? ""),
   clientId: String(formData.get("clientId") ?? ""),
   monitoringEnabled: formData.get("monitoringEnabled") === "on",
+  // Validated by websiteInputSchema; absent leaves the mode unchanged.
+  crawlMode: (formData.get("crawlMode") ?? undefined) as
+    WebsiteInput["crawlMode"] | undefined,
 });
 
 // ─── Websites ───────────────────────────────────────────────────────────────
@@ -156,10 +166,14 @@ export async function startCrawlAction(
   } catch (error) {
     return formError(error);
   }
-  // Start crawling right after the response; the cron worker continues it.
+  // Start crawling right after the response, and refresh the action plan
+  // once the crawl is analysed; cron or the crawl worker continues it.
   after(() =>
     runBackground("crawl_kickoff", { websiteId }, () =>
-      processCrawls(db(), { deadline: Date.now() + 50_000 }),
+      processCrawls(db(), {
+        deadline: Date.now() + 50_000,
+        afterAnalysis: refreshActionPlan(db()),
+      }),
     ),
   );
   revalidatePath(`/o/${orgSlug}`, "layout");
@@ -171,7 +185,10 @@ export async function cancelCrawlAction(orgSlug: string, runId: string) {
   await requestCrawlCancel(ctx.db, runId);
   after(() =>
     runBackground("crawl_cancel", { runId }, () =>
-      processCrawls(db(), { deadline: Date.now() + 20_000 }),
+      processCrawls(db(), {
+        deadline: Date.now() + 20_000,
+        afterAnalysis: refreshActionPlan(db()),
+      }),
     ),
   );
   revalidatePath(`/o/${orgSlug}`, "layout");
@@ -228,18 +245,67 @@ export async function assignIssueAction(
 
 const findingStatus = z.enum(["OPEN", "IGNORED"]);
 
+/**
+ * A person ignores an open finding or reopens an ignored one; nothing else.
+ * Whether a finding is OPEN or RESOLVED is the crawl's evidence: a resolved
+ * finding (a later crawl showed it fixed) is never turned back into a current
+ * issue by hand. `from` is the status the page showed; one conditional
+ * update, so a finding that changed meanwhile (or belongs to another
+ * organization) is left alone. Every outcome is returned for the page.
+ */
 export async function setFindingStatusAction(
   orgSlug: string,
   findingId: string,
+  _prev: FormState,
   formData: FormData,
-) {
-  const ctx = await ctxFor(orgSlug, "MEMBER");
-  const status = findingStatus.parse(formData.get("status"));
-  await ctx.db.seoFinding.updateMany({
+): Promise<FormState> {
+  let ctx: OrgContext;
+  try {
+    ctx = await ctxFor(orgSlug, "MEMBER");
+  } catch (error) {
+    if (error instanceof ForbiddenError) return { error: error.message };
+    throw error;
+  }
+  const parsed = findingStatus.safeParse(formData.get("status"));
+  if (!parsed.success) return findingStatusFeedback({ kind: "invalid" });
+  const status = parsed.data;
+  const shown = z
+    .enum(["OPEN", "IGNORED", "RESOLVED"])
+    .safeParse(formData.get("from"));
+  const current = await ctx.db.seoFinding.findFirst({
     where: { id: findingId },
+    select: { status: true },
+  });
+  const refuse = (outcome: FindingChangeOutcome) => {
+    log.warn("seo_finding_status_refused", {
+      organizationId: ctx.organization.id,
+      findingId,
+      reason: outcome.kind,
+      to: status,
+    });
+    revalidatePath(`/o/${orgSlug}`, "layout");
+    return findingStatusFeedback(outcome);
+  };
+  if (!current) return refuse({ kind: "missing" });
+  if (shown.success && shown.data !== current.status)
+    return refuse({ kind: "stale", now: current.status });
+  if (FINDING_ACTION[current.status]?.to !== status)
+    return refuse({ kind: "unsupported", from: current.status });
+  const { count } = await ctx.db.seoFinding.updateMany({
+    where: { id: findingId, status: current.status },
     data: { status, resolvedAt: null },
   });
+  if (count === 0) {
+    const now = await ctx.db.seoFinding.findFirst({
+      where: { id: findingId },
+      select: { status: true },
+    });
+    return refuse(
+      now ? { kind: "stale", now: now.status } : { kind: "missing" },
+    );
+  }
   revalidatePath(`/o/${orgSlug}`, "layout");
+  return findingStatusFeedback({ kind: "changed", from: current.status });
 }
 
 // ─── Clients ────────────────────────────────────────────────────────────────

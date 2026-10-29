@@ -1,6 +1,7 @@
 import {
   containsAllWords,
   containsPhrase,
+  withoutPhrases,
   words,
   type UnderstoodPage,
 } from "./pages";
@@ -39,23 +40,36 @@ export const phrases = (f: Pick<Fact, "value" | "synonyms">) =>
  * How strongly one page serves a fact. Strong: named in the title, an H1 or
  * structured data. Medium: in a subheading, the link text of two or more
  * links to it, all words of it in the title/H1, or in the URL plus one
- * other place. Weak: only the description, the URL or one link. A page
- * that is noindex or canonicalised elsewhere counts one level lower.
+ * other place. Weak: only the description, the URL, one link or (when
+ * asked for) the main content. A page that is noindex or canonicalised
+ * elsewhere counts one level lower. The site name is removed from every
+ * text first, so "Contact MOH MAYA Cottages & Cafe" names neither cottages
+ * nor a cafe.
  */
 export function matchPage(
   page: UnderstoodPage,
   fact: Pick<Fact, "kind" | "value" | "synonyms">,
-  /**
-   * Match the published title, site name included. Only for "is it named
-   * anywhere" checks: a brand such as "Kasol Cottages" does name Kasol, but
-   * never makes a page about a service or location.
-   */
-  opts: { fullTitle?: boolean } = {},
+  opts: {
+    /**
+     * Match the published texts, site name included. Only for "is it named
+     * anywhere" checks: a brand such as "Kasol Cottages" does name Kasol,
+     * but never makes a page about a service or location.
+     */
+    fullTitle?: boolean;
+    /**
+     * Also look in the main content (header, navigation, footer and
+     * site-wide text removed). A body mention is only ever weak: evidence
+     * that the offering is mentioned, never that a page is about it.
+     */
+    body?: boolean;
+  } = {},
 ): PageMatch | null {
   const ps = phrases(fact);
   if (!ps.length) return null;
+  const clean = (t: string | null) =>
+    opts.fullTitle ? words(t) : withoutPhrases(words(t), page.siteNames);
   const any = (texts: Array<string | null>) =>
-    texts.some((t) => ps.some((p) => containsPhrase(words(t), p)));
+    texts.some((t) => ps.some((p) => containsPhrase(clean(t), p)));
   const schema =
     fact.kind === "SERVICE" || fact.kind === "EXCLUDED"
       ? page.schemaNames
@@ -70,7 +84,7 @@ export function matchPage(
   const inSub = any(page.h2h3);
   if (inSub) where.push("subheading");
   const links = page.inbound.filter((t) =>
-    ps.some((p) => containsPhrase(words(t), p)),
+    ps.some((p) => containsPhrase(clean(t), p)),
   ).length;
   if (links) where.push(`link text of ${plural(links, "link")}`);
   const inMeta = any([page.meta]);
@@ -83,15 +97,17 @@ export function matchPage(
     !inTitle &&
     !inH1 &&
     [page.title, ...page.h1].some((t) =>
-      ps.some((p) => containsAllWords(words(t), p)),
+      ps.some((p) => containsAllWords(clean(t), p)),
     );
   if (loose) where.push("all its words in the title or heading");
+  const inBody = !!opts.body && !!page.content && any(page.content.blocks);
+  if (inBody) where.push("main content");
 
   let strength: Strength | null = null;
   if (inTitle || inH1 || inSchema) strength = "strong";
   else if (inSub || links >= 2 || loose || (inUrl && (inMeta || links === 1)))
     strength = "medium";
-  else if (inMeta || inUrl || links === 1) strength = "weak";
+  else if (inMeta || inUrl || links === 1 || inBody) strength = "weak";
   if (!strength) return null;
 
   let note: string | null = null;

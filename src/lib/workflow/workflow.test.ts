@@ -2,7 +2,12 @@ import { describe, expect, test } from "vitest";
 import { SEO_RULE_IDS } from "@/lib/seo/rules";
 import type { RecommendationMeta } from "@/lib/recommendations/metadata";
 import { BASELINE_CATEGORIES, summarizeFindings } from "./baseline";
-import { buildTrend, comparability, type CrawlHistoryRow } from "./history";
+import {
+  buildTrend,
+  comparability,
+  trendSummary,
+  type CrawlHistoryRow,
+} from "./history";
 import {
   buildPlan,
   NEXT_LIMIT,
@@ -219,6 +224,35 @@ describe("plan preview", () => {
     expect(plan.later).toBe(4);
   });
 
+  test("plan items carry the 'Based on' line when provenance is known, and nothing else changes", () => {
+    const provenance = {
+      source: "crawl" as const,
+      basis: "observed" as const,
+      observedAt: new Date("2026-10-24T09:00:00Z"),
+      freshness: "stale" as const,
+      facts: null,
+    };
+    const withP = input({ meta: { ...meta(1), provenance } });
+    const without = input({});
+    const [a, b] = buildPlan([withP, without]).next;
+    expect(a.basedOn).toBe(
+      "Crawl · Observed 24 Oct 2026 · Out of date — recrawl before acting",
+    );
+    expect(b.basedOn).toBeNull();
+    // Provenance does not change ranking, group, status or priority.
+    // Compare everything except the line itself and each item's identity.
+    const strip = ({
+      basedOn: _b,
+      id: _i,
+      title: _t,
+      displayTitle: _d,
+      code: _c,
+      ...rest
+    }: typeof a) => rest;
+    const [restA, restB] = [strip(a), strip(b)];
+    expect(restA).toEqual(restB);
+  });
+
   test("effort is a size or 'not estimated', never hours", () => {
     const [a, b] = buildPlan([input({}), input({ meta: null })]).next;
     expect(a.effort).toBe("small");
@@ -307,6 +341,78 @@ describe("crawl history trend (charts)", () => {
     });
     expect(comparability(row({}), null)).toEqual({ comparable: true });
     expect(buildTrend([], baseline)).toEqual([]);
+  });
+
+  describe("trend summary (Progress page)", () => {
+    const at = (day: number) =>
+      new Date(`2026-10-${String(day).padStart(2, "0")}T10:00:00Z`);
+    // Newest first, as loadCrawlHistory returns them.
+    const summarize = (rows: CrawlHistoryRow[]) =>
+      trendSummary(rows, buildTrend(rows, baseline));
+
+    test("no crawls", () => {
+      expect(summarize([])).toMatchObject({
+        latestCompleted: null,
+        points: 0,
+        awaitingAnalysis: 0,
+      });
+      expect(summarize([]).empty).toMatch(/^No crawls yet/);
+    });
+
+    test("zero points: completed crawls awaiting analysis are named, never counted", () => {
+      const rows = [
+        row({ id: "b", at: at(11), findings: null, bySeverity: {} }),
+        row({ id: "a", at: at(10), findings: null, bySeverity: {} }),
+        row({ id: "x", status: "CANCELLED", at: at(9), findings: null }),
+      ];
+      const s = summarize(rows);
+      expect(s).toMatchObject({ points: 0, awaitingAnalysis: 2 });
+      expect(s.latestCompleted?.id).toBe("b");
+      expect(s.empty).toMatch(
+        /^No analysed completed crawl yet\. 2 completed crawls have not been analysed yet/,
+      );
+      expect(s.empty).not.toMatch(/One comparable/);
+    });
+
+    test("zero points: only partial, cancelled or failed crawls", () => {
+      const s = summarize([
+        row({ status: "PARTIAL", at: at(10) }),
+        row({ status: "CANCELLED", findings: null, at: at(9) }),
+      ]);
+      expect(s).toMatchObject({ points: 0, latestCompleted: null });
+      expect(s.empty).toMatch(/^No completed crawl yet/);
+    });
+
+    test("zero points: completed crawls with other limits", () => {
+      const s = summarize([row({ maxPages: 20, at: at(10) })]);
+      expect(s.points).toBe(0);
+      expect(s.empty).toMatch(/different limits/);
+    });
+
+    test("one point", () => {
+      expect(summarize([row({ at: at(10) })])).toMatchObject({
+        points: 1,
+        empty:
+          "One comparable completed crawl so far. The trend appears after the next completed crawl.",
+      });
+      // A newer completed crawl awaiting analysis is mentioned, not plotted.
+      const s = summarize([
+        row({ at: at(11), findings: null, bySeverity: {} }),
+        row({ at: at(10) }),
+      ]);
+      expect(s).toMatchObject({ points: 1, awaitingAnalysis: 1 });
+      expect(s.empty).toMatch(/1 completed crawl has not been analysed yet/);
+    });
+
+    test("two or more points show the chart", () => {
+      expect(
+        summarize([
+          row({ at: at(12) }),
+          row({ at: at(11) }),
+          row({ at: at(10) }),
+        ]),
+      ).toMatchObject({ points: 3, empty: null });
+    });
   });
 });
 

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { CrawlWaitNotice } from "@/components/crawl-wait-notice";
 import { PlanItemCard } from "@/components/workflow";
 import { EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
@@ -60,7 +61,13 @@ export default async function SeoPlanPage({
   const ctx = await requireOrgContext(orgSlug);
   const website = await ctx.db.website.findFirst({
     where: { id: websiteId },
-    select: { id: true, name: true, client: { select: { name: true } } },
+    select: {
+      id: true,
+      name: true,
+      crawlMode: true,
+      monitoringEnabled: true,
+      client: { select: { name: true } },
+    },
   });
   if (!website) notFound();
   const lastCrawl = await ctx.db.crawlRun.findFirst({
@@ -108,6 +115,15 @@ export default async function SeoPlanPage({
         subtitle="What to work on next, why it matters, and how it will be verified. A preview built from current recommendations: nothing is created or scheduled automatically."
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
+      <CrawlWaitNotice
+        crawlMode={website.crawlMode}
+        monitoringEnabled={website.monitoringEnabled}
+        waiting={
+          [...plan.verify, ...plan.waiting].filter((i) => i.waitsForCrawl)
+            .length
+        }
+        crawlsHref={`/o/${orgSlug}/websites/${websiteId}/crawls`}
+      />
 
       <dl className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat

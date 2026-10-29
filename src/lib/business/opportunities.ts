@@ -5,7 +5,12 @@ import type {
 import { SEO_LIMITS, type BusinessType } from "@/lib/knowledge/catalogue";
 import type { Effort } from "@/lib/recommendations/metadata";
 import type { CoverageCrawl, CoverageNeed } from "./coverage";
-import { GOAL_LABEL, type Fact, type Goal } from "./facts";
+import {
+  GOAL_LABEL,
+  unconfirmedFactsNote,
+  type Fact,
+  type Goal,
+} from "./facts";
 import { phrases, type PageMatch } from "./match";
 import {
   containsPhrase,
@@ -44,6 +49,7 @@ export type OpportunityCategory =
   | "accommodation"
   | "food"
   | "facilities"
+  | "experience"
   | "service"
   | "product"
   | "location"
@@ -74,7 +80,7 @@ export type PageOpportunity = {
   state: OpportunityState;
   stateReason: string;
   why: string;
-  facts: Array<Pick<Fact, "id" | "kind" | "value">>;
+  facts: Array<Pick<Fact, "id" | "kind" | "value" | "source">>;
   goals: Goal[];
   considered: ConsideredPage[];
   /** A proposal only; the business chooses the real URL. */
@@ -149,12 +155,43 @@ const TYPE_WORDS: Record<string, string[]> = {
     "barbecue",
     "playground",
   ],
+  // Things guests do or events they book during a stay, and attractions:
+  // worth mentioning, rarely worth a page of their own.
+  experience: [
+    "party",
+    "celebration",
+    "birthday",
+    "wedding",
+    "anniversary",
+    "event",
+    "dj",
+    "music",
+    "karaoke",
+    "photography",
+    "photo",
+    "photoshoot",
+    "viewpoint",
+    "trek",
+    "trekking",
+    "hike",
+    "hiking",
+    "tour",
+    "excursion",
+    "activity",
+    "adventure",
+    "yoga",
+    "sightseeing",
+    "rafting",
+    "paragliding",
+    "stargazing",
+  ],
 };
 const CATEGORY_OF_TYPE: Record<string, OpportunityCategory> = {
   stay: "accommodation",
   camping: "accommodation",
   food: "food",
   facility: "facilities",
+  experience: "experience",
 };
 
 /** The offering type of a phrase, or null when no word is recognised. */
@@ -250,6 +287,7 @@ const GOALS_FOR: Record<OpportunityCategory, Goal[]> = {
   accommodation: ["bookings", "calls", "visits"],
   food: ["visits", "calls"],
   facilities: ["bookings", "visits"],
+  experience: ["bookings", "calls"],
   service: ["leads", "calls", "bookings", "sales"],
   product: ["sales"],
   location: ["visits", "calls"],
@@ -320,7 +358,10 @@ export type OpportunityInput = {
   crawl: CoverageCrawl | null;
   needs: CoverageNeed[];
   errorPages: Array<{ url: string; httpStatus: number | null }>;
-  matchesFor: (f: Pick<Fact, "kind" | "value" | "synonyms">) => PageMatch[];
+  matchesFor: (
+    f: Pick<Fact, "kind" | "value" | "synonyms">,
+    opts?: { body?: boolean },
+  ) => PageMatch[];
   existing: ExistingTasks;
 };
 
@@ -329,7 +370,7 @@ export type OpportunityInput = {
  * Main-content words are a minimum signal; the main content must also
  * mention the offering (one of its approved wordings).
  */
-function sufficiency(
+export function sufficiency(
   p: UnderstoodPage,
   opts: { contact?: boolean; wordings?: string[][]; label?: string },
 ): string | null {
@@ -356,6 +397,20 @@ function sufficiency(
   )
     return `its main content does not mention ${opts.label ? quote(opts.label) : "it"}`;
   return null;
+}
+
+/**
+ * The approved "not offered" fact that names one of these wordings, if any.
+ * Checked against every approved wording of an offering (its name and the
+ * other wordings stored for it), never against inferred synonyms.
+ */
+export function excludedBy<F extends Pick<Fact, "value" | "synonyms">>(
+  excluded: F[],
+  wordings: string[],
+): F | undefined {
+  return excluded.find((e) =>
+    phrases(e).some((ph) => wordings.some((w) => containsPhrase(words(w), ph))),
+  );
 }
 
 export function buildOpportunities(input: OpportunityInput): {
@@ -595,7 +650,7 @@ export function buildOpportunities(input: OpportunityInput): {
       state: "confirmed",
       reason: matches.length
         ? `Only mentioned, on ${plural(matches.length, "page")}; no page among the ${plural(crawl.analysedPages, "analysed page")} is about it.`
-        : `No page among the ${plural(crawl.analysedPages, "analysed page")} names it in its title, headings, description, links or structured data.`,
+        : `No page among the ${plural(crawl.analysedPages, "analysed page")} names it in its title, headings, description, links, structured data or main content.`,
       considered,
       fulfilledBy: null,
     };
@@ -612,12 +667,7 @@ export function buildOpportunities(input: OpportunityInput): {
   // "Not offered" is checked against every approved wording of the
   // offering (its name and the other wordings stored for it), never
   // against inferred synonyms.
-  const isExcluded = (o: Offering) =>
-    excluded.find((e) =>
-      phrases(e).some((ph) =>
-        o.wordings.some((w) => containsPhrase(words(w), ph)),
-      ),
-    );
+  const isExcluded = (o: Offering) => excludedBy(excluded, o.wordings);
 
   const services = pages.some((p) => /^\/services?\//.test(p.path));
   const facilityOfferings = offerings.filter(
@@ -638,11 +688,12 @@ export function buildOpportunities(input: OpportunityInput): {
           ? `Add a page for the ${o.label} (BIZ_FOOD_PAGE)`
           : `Add a page for ${quote(o.label)} (BIZ_SERVICE_PAGE)`;
     const g = supported(cat);
-    const matches = input.matchesFor({
-      kind: "SERVICE",
-      value: o.label,
-      synonyms: o.wordings.slice(1),
-    });
+    // Main-content mentions count as mentions (weak): an offering the site
+    // already talks about is a decision to review, not a confirmed gap.
+    const matches = input.matchesFor(
+      { kind: "SERVICE", value: o.label, synonyms: o.wordings.slice(1) },
+      { body: true },
+    );
     let a = assess(matches, notHomeUnlessOnly, {
       mentionIsGap: cat === "accommodation",
       wordings: o.wordings.flatMap((w) => phrases({ value: w, synonyms: [] })),
@@ -673,6 +724,14 @@ export function buildOpportunities(input: OpportunityInput): {
         state: "review",
         reason: `${a.reason} The ${o.label.toLowerCase()} is part of ${quote(o.fact.value)}; a separate page helps only if it serves visitors on its own.`,
       };
+    // An experience, event or attraction is worth mentioning, but a page of
+    // its own needs distinct content and search interest a person judges.
+    if (cat === "experience" && a.state === "confirmed")
+      a = {
+        ...a,
+        state: "review",
+        reason: `${a.reason} It is an experience or event: mention it where guests choose their stay, and consider a page of its own only if it has distinct details (what it includes, when it runs, how to book) that people look for.`,
+      };
     if (ex)
       a = {
         ...a,
@@ -685,7 +744,9 @@ export function buildOpportunities(input: OpportunityInput): {
         ? `Accommodation: ${o.label}`
         : cat === "food"
           ? `${o.label} (food and drink)`
-          : o.label;
+          : cat === "experience"
+            ? `${o.label} (experience or event)`
+            : o.label;
     const outline =
       cat === "accommodation"
         ? [
@@ -728,7 +789,9 @@ export function buildOpportunities(input: OpportunityInput): {
           ? goals.includes("visits")
             ? "MEDIUM"
             : "LOW"
-          : "MEDIUM";
+          : cat === "experience"
+            ? "LOW"
+            : "MEDIUM";
     opportunities.push({
       key,
       category: cat,
@@ -740,7 +803,9 @@ export function buildOpportunities(input: OpportunityInput): {
           ? `${quote(o.label)} is what guests book. A page about it lets people see what they would book${g.length ? ` and supports the approved goals: ${goalNames(g)}` : ""}.`
           : cat === "food"
             ? `A page for the ${o.label.toLowerCase()} lets visitors find what it offers and when${g.length ? `, supporting ${goalNames(g)}` : ""}.`
-            : `${quote(o.label)} is an approved offering. A page about it lets people find and understand it${g.length ? `, supporting ${goalNames(g)}` : ""}.`,
+            : cat === "experience"
+              ? `${quote(o.label)} is an approved experience or event. Describing it clearly helps guests choose their stay${g.length ? `, supporting ${goalNames(g)}` : ""}.`
+              : `${quote(o.label)} is an approved offering. A page about it lets people find and understand it${g.length ? `, supporting ${goalNames(g)}` : ""}.`,
       facts: [o.fact],
       goals: g,
       considered: a.considered,
@@ -751,7 +816,9 @@ export function buildOpportunities(input: OpportunityInput): {
           ? "People choosing and booking a place to stay."
           : cat === "food"
             ? "People looking for somewhere to eat or drink nearby."
-            : "People looking for this service and how to get it.",
+            : cat === "experience"
+              ? "Guests choosing what to do during their stay."
+              : "People looking for this service and how to get it.",
       outline: outline.filter((x): x is string => !!x),
       assumptions,
       priority,
@@ -760,11 +827,13 @@ export function buildOpportunities(input: OpportunityInput): {
           ? `The main offering, and it supports approved goals (${goalNames(g)}).`
           : cat === "food" && priority === "LOW"
             ? "Secondary offering; no approved goal of visits."
-            : `An approved offering${g.length ? ` supporting ${goalNames(g)}` : ""}.`,
+            : cat === "experience"
+              ? "An experience or event: it supports a stay rather than being booked on its own."
+              : `An approved offering${g.length ? ` supporting ${goalNames(g)}` : ""}.`,
       confidence: a.state === "confirmed" ? "medium" : "low",
       confidenceReason:
         a.state === "confirmed"
-          ? "The crawl is complete and recent, but page body text is not stored, so a mention in the body would not be seen."
+          ? "The crawl is complete and recent, and no analysed page names it in a title, heading, description, link, structured data or main content."
           : a.reason,
       effort: cat === "food" ? "medium" : "large",
       effortReason:
@@ -797,12 +866,16 @@ export function buildOpportunities(input: OpportunityInput): {
       ),
       label: "the facilities",
     });
-    if (facilityOfferings.length < 2 && a.state === "confirmed")
+    // Facilities help people decide, but rarely need a page of their own:
+    // never a confirmed gap, always a decision for a person.
+    if (a.state === "confirmed")
       a = {
         ...a,
         state: "review",
         reason:
-          "Only one approved facility; mention it on the accommodation page instead of a page of its own.",
+          facilityOfferings.length < 2
+            ? "Only one approved facility; mention it on the accommodation page instead of a page of its own."
+            : `${a.reason} Facilities usually belong on the accommodation page; a page of its own helps only with enough distinct detail (what is included, when, any charges).`,
       };
     opportunities.push({
       key,
@@ -979,12 +1052,17 @@ export function buildOpportunities(input: OpportunityInput): {
     o.state = "review";
     o.stateReason = `${o.stateReason} Held for review: at most ${MAX_CONFIRMED} new pages are suggested at a time.`;
   }
-  for (const o of opportunities)
+  for (const o of opportunities) {
+    // Facts the client did not supply are our understanding of the business:
+    // the first thing to confirm before writing a page that relies on them.
+    const unconfirmed = unconfirmedFactsNote(o.facts);
+    if (unconfirmed) o.assumptions.unshift(unconfirmed);
     o.recommend =
       o.decision !== "dismissed" &&
       (o.state === "confirmed" ||
         (o.decision === "accepted" &&
           o.state !== "fulfilled" &&
           o.state !== "unsupported"));
+  }
   return { opportunities, clarifications };
 }

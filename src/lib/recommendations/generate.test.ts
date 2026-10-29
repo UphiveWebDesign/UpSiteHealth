@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { IntegrationStatus } from "@/lib/integrations/evaluate";
-import { seoRuleMeta } from "./metadata";
+import { performanceMeta, seoRuleMeta } from "./metadata";
 import {
   buildRecommendations,
+  latestDeviceResults,
+  PAGE_SPEED_TITLE,
+  performanceInput,
   heldReason,
   matchDraft,
   recommendationBasis,
@@ -109,6 +112,8 @@ describe("buildRecommendations", () => {
 
 const T0 = new Date("2026-10-20T10:00:00Z");
 const T1 = new Date("2026-10-21T10:00:00Z");
+// An hour after T1: evidence from T1 is current under every age limit.
+const NOW = new Date("2026-10-21T11:00:00Z");
 
 function ctx(o: Partial<RecommendationContext> = {}): RecommendationContext {
   return {
@@ -122,6 +127,19 @@ function ctx(o: Partial<RecommendationContext> = {}): RecommendationContext {
     evidenceAt: { crawl: null, checks: {}, performance: null, aiSearch: null },
     ...o,
   };
+}
+// Current, complete evidence for every family (see resolutionEvidenceHold).
+function fresh(o: Partial<RecommendationContext> = {}): RecommendationContext {
+  return ctx({
+    crawlStatus: "COMPLETED",
+    evidenceAt: {
+      crawl: T1,
+      checks: { UPTIME: T1 },
+      performance: null,
+      aiSearch: null,
+    },
+    ...o,
+  });
 }
 const ruleRec = {
   id: "r1",
@@ -189,7 +207,7 @@ describe("heldReason: never complete without evidence", () => {
     expect(heldReason(ruleRec, c)).toBe("unverified");
   });
   test("resolved findings release the recommendation", () => {
-    expect(heldReason(ruleRec, ctx())).toBeNull();
+    expect(heldReason(ruleRec, fresh(), NOW)).toBeNull();
   });
   test("an issue resolved by hand holds until a check confirms it", () => {
     const rec = { title: "Resolve: down", issueId: "i1" };
@@ -197,7 +215,7 @@ describe("heldReason: never complete without evidence", () => {
       resolution: "verified" | "unverified" | null,
       status = "RESOLVED",
     ) =>
-      ctx({
+      fresh({
         issues: new Map([
           [
             "i1",
@@ -214,7 +232,7 @@ describe("heldReason: never complete without evidence", () => {
         ]),
       });
     expect(heldReason(rec, issue("unverified"))).toBe("unverified");
-    expect(heldReason(rec, issue("verified"))).toBeNull();
+    expect(heldReason(rec, issue("verified"), NOW)).toBeNull();
     expect(heldReason(rec, issue(null, "IGNORED"))).toBe("ignored");
     expect(heldReason(rec, ctx())).toBe("unverified"); // issue unknown
   });
@@ -256,7 +274,9 @@ describe("recommendationState", () => {
     ).toEqual({ kind: "awaiting-recheck" });
   });
   test("verified only when the problem is gone", () => {
-    expect(recommendationState(done, [], ctx())).toEqual({ kind: "verified" });
+    expect(recommendationState(done, [], fresh(), NOW)).toEqual({
+      kind: "verified",
+    });
   });
   test("ignored evidence is shown as ignored, never as fixed", () => {
     const c = ctx({
@@ -361,12 +381,13 @@ describe("integration setup tasks and metadata", () => {
     expect(
       heldReason(
         rec,
-        ctx({
+        fresh({
           integrations: [status("detected")],
           integrationResolution: new Map([
             ["INT_GA4_MISSING", { conclusive: true }],
           ]),
         }),
+        NOW,
       ),
     ).toBeNull();
     // Still reported: not held (it is still an active task, not "fixed").
@@ -544,5 +565,147 @@ describe("integration setup tasks and metadata", () => {
       expect(errors).toMatchObject({ coverage: null, likelyTemplate: false });
       expect(errors.priorityRationale).toContain("9 affected pages");
     });
+  });
+});
+
+describe("PageSpeed: mobile and desktop are evaluated together", () => {
+  const at = (iso: string) => new Date(`${iso}T12:00:00Z`);
+  const obs = (
+    strategy: "MOBILE" | "DESKTOP",
+    performanceScore: number | null,
+    measuredAt: Date,
+    lcpMs: number | null = 1500,
+  ) => ({ strategy, performanceScore, lcpMs, clsScore: 0, measuredAt });
+
+  test("poor mobile, good desktop measured later: the mobile result leads (Moh Maya)", () => {
+    const devices = latestDeviceResults([
+      obs("DESKTOP", 93, at("2026-10-23"), 1307),
+      obs("MOBILE", 69, new Date("2026-10-23T11:59:00Z"), 6756),
+    ]);
+    const input = performanceInput(devices)!;
+    expect(input).toMatchObject({
+      score: 69,
+      strategy: "MOBILE",
+      lcpMs: 6756,
+    });
+    const recs = buildRecommendations({ ...none, performance: input });
+    expect(recs).toHaveLength(1);
+    expect(recs[0]).toMatchObject({
+      title: PAGE_SPEED_TITLE,
+      priority: "MEDIUM",
+      explanation:
+        "The latest mobile PageSpeed score is 69/100, with slow Largest Contentful Paint. Desktop: 93/100.",
+    });
+    const meta = performanceMeta(input);
+    expect(meta.evidence).toEqual([
+      "Mobile: score 69/100, Largest Contentful Paint 6.8 s, Cumulative Layout Shift 0 (tested 2026-10-23)",
+      "Desktop: score 93/100, Largest Contentful Paint 1.3 s, Cumulative Layout Shift 0 (tested 2026-10-23)",
+    ]);
+    expect(meta.priorityRationale).toBe(
+      "The mobile PageSpeed score 69/100 is below 90.",
+    );
+  });
+
+  test("both devices good: no recommendation; a poor desktop still counts", () => {
+    const good = performanceInput(
+      latestDeviceResults([
+        obs("MOBILE", 91, at("2026-10-20")),
+        obs("DESKTOP", 98, at("2026-10-20")),
+      ]),
+    );
+    expect(buildRecommendations({ ...none, performance: good })).toEqual([]);
+    const desktopPoor = performanceInput(
+      latestDeviceResults([
+        obs("MOBILE", 92, at("2026-10-20")),
+        obs("DESKTOP", 40, at("2026-10-20")),
+      ]),
+    )!;
+    expect(desktopPoor).toMatchObject({ strategy: "DESKTOP", score: 40 });
+    expect(
+      buildRecommendations({ ...none, performance: desktopPoor })[0].priority,
+    ).toBe("HIGH");
+  });
+
+  test("only the latest valid result per device; stale and unscored ones are ignored", () => {
+    const devices = latestDeviceResults([
+      obs("MOBILE", 45, at("2026-08-01")), // older mobile, superseded
+      obs("MOBILE", 88, at("2026-10-01")),
+      obs("MOBILE", null, at("2026-10-22")), // failed test: no score
+      obs("DESKTOP", 95, at("2026-10-22")),
+    ]);
+    expect(devices.map((d) => [d.strategy, d.score])).toEqual([
+      ["MOBILE", 88],
+      ["DESKTOP", 95],
+    ]);
+    // A mobile test more than 30 days older than the newest result is stale.
+    const stale = latestDeviceResults([
+      obs("MOBILE", 45, at("2026-09-01")),
+      obs("DESKTOP", 95, at("2026-10-22")),
+    ]);
+    expect(stale.map((d) => d.strategy)).toEqual(["DESKTOP"]);
+    expect(performanceMeta(performanceInput(stale)!).limits).toContain(
+      "Only desktop was tested recently; test the other device too.",
+    );
+    expect(latestDeviceResults([])).toEqual([]);
+    expect(performanceInput([])).toBeNull();
+  });
+
+  test("equal scores: mobile leads", () => {
+    const tie = performanceInput(
+      latestDeviceResults([
+        obs("DESKTOP", 70, at("2026-10-22")),
+        obs("MOBILE", 70, at("2026-10-22")),
+      ]),
+    )!;
+    expect(tie.strategy).toBe("MOBILE");
+  });
+});
+
+describe("routine snippet findings on legal pages rank as INFO", () => {
+  const group = (count: number, legalPages?: number) => ({
+    ruleId: "TECH_META_DESCRIPTION_TOO_SHORT",
+    severity: "LOW" as const,
+    count,
+    title: "Meta description is too short",
+    recommendation: "Write a meta description of at least 50 characters.",
+    ...(legalPages === undefined ? {} : { legalPages }),
+  });
+  const recs = (g: ReturnType<typeof group>) =>
+    buildRecommendations({ ...none, findingGroups: [g] });
+
+  test("only a privacy policy affected: listed as a finding, not a task (Moh Maya)", () => {
+    expect(recs(group(1, 1))).toEqual([]);
+  });
+
+  test("other pages affected too: a normal LOW task for the rule, once", () => {
+    const r = recs(group(4, 1));
+    expect(r.map((x) => [x.title, x.priority])).toEqual([
+      [
+        "Meta description is too short (TECH_META_DESCRIPTION_TOO_SHORT)",
+        "LOW",
+      ],
+    ]);
+    expect(recs(group(1))).toHaveLength(1); // no legal pages recorded
+  });
+
+  test("many legal pages still make one LOW task, like other INFO rules", () => {
+    expect(recs(group(6, 6)).map((x) => x.priority)).toEqual(["LOW"]);
+  });
+
+  test("other rules are never lowered for legal pages", () => {
+    const r = buildRecommendations({
+      ...none,
+      findingGroups: [
+        {
+          ruleId: "TECH_NOINDEX",
+          severity: "HIGH",
+          count: 1,
+          title: "Page is excluded from search (noindex)",
+          recommendation: "Remove noindex.",
+          legalPages: 1,
+        },
+      ],
+    });
+    expect(r.map((x) => x.priority)).toEqual(["HIGH"]);
   });
 });

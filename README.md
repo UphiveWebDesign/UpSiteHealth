@@ -21,6 +21,8 @@ All tenant data access goes through `requireOrgContext()` in
 | Command                    | Purpose                                                   |
 | -------------------------- | --------------------------------------------------------- |
 | `npm run dev`              | Start the development server                              |
+| `npm run dev:crawls`       | Local crawl-only worker (see below; needs `--target`)     |
+| `npm run dev:with-crawls`  | The app and the crawl worker on the app's database        |
 | `npm run build`            | Production build (needs no secrets)                       |
 | `npm run typecheck`        | Generate route types and run `tsc`                        |
 | `npm run lint`             | ESLint                                                    |
@@ -40,6 +42,13 @@ DIRECT_URL="<that url>" npx prisma migrate deploy   # creates the schema from 0_
 cp .env.example .env                                # set DATABASE_URL to the same local URL
 npm run dev
 ```
+
+Crawls: locally nothing runs the cron worker, so a crawl stops after the short burst that
+follows Start crawl. Run `npm run dev:crawls -- --target=app` in a second terminal to keep
+processing stored crawls (the crawl stage and the action-plan refresh after analysis; see
+[docs/operations/crawl-worker.md](docs/operations/crawl-worker.md)), or `npm run dev:with-crawls`
+for both at once. How crawls are processed, limits, retries and what production needs:
+[docs/operations/crawl-processing.md](docs/operations/crawl-processing.md).
 
 Integration tests: `TEST_DATABASE_URL="<local url>" npm test`. They refuse non-localhost URLs.
 Live network checks (example.com, badssl.com, PageSpeed): `LIVE_NETWORK=1 npx vitest run tests/live`.

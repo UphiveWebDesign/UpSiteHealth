@@ -8,6 +8,7 @@ import { planDecision } from "@/lib/business/decisions";
 import { factInput, normalizeFactValue } from "@/lib/business/facts";
 import { opportunityDraft } from "@/lib/business/coverage";
 import { db } from "@/lib/db";
+import { changeStatus, historyAvailable } from "@/lib/recommendations/events";
 import {
   createRecommendationOnce,
   loadRecommendationContext,
@@ -191,11 +192,23 @@ async function setStatus(
   id: string,
   status: "PROPOSED" | "DISMISSED",
 ): Promise<boolean> {
-  const { count } = await ctx.db.recommendation.updateMany({
-    where: { id, status: { not: "COMPLETED" } },
-    data: { status },
+  const now = await ctx.db.recommendation.findFirst({
+    where: { id },
+    select: { status: true, websiteId: true },
   });
-  return count > 0;
+  if (!now || now.status === "COMPLETED") return false;
+  if (now.status === status) return true; // nothing to change or record
+  // Recorded with the person as actor, in the same transaction; false if the
+  // task changed again in between.
+  return changeStatus(ctx.db, {
+    id,
+    organizationId: ctx.organization.id,
+    websiteId: now.websiteId,
+    from: now.status,
+    to: status,
+    actorUserId: ctx.user.id,
+    history: await historyAvailable(db()),
+  });
 }
 
 /**
@@ -236,10 +249,12 @@ export async function decideOpportunityAction(
   if (plan.kind === "create") {
     // Created at most once per title, even if a sync runs at the same time
     // (root client with the scope verified above).
-    const row = await createRecommendationOnce(db(), scope, {
-      ...opportunityDraft(o),
-      status: plan.status,
-    });
+    const row = await createRecommendationOnce(
+      db(),
+      scope,
+      { ...opportunityDraft(o), status: plan.status },
+      ctx.user.id,
+    );
     // Someone (or a sync) created it meanwhile: decide again on that task.
     if (!row.created) {
       plan = planDecision(decision, row, o.state);

@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/generated/prisma/client";
+import { syncRecommendations } from "./generate";
 
 type WebsiteRef = { id: string; organizationId: string };
 
@@ -39,3 +40,17 @@ export async function websitesNeedingSync(
     ORDER BY c.analysed ASC
     LIMIT ${limit}`;
 }
+
+/**
+ * The action-plan refresh a crawl processor runs after a crawl's SEO
+ * analysis commits (processCrawls' `afterAnalysis`, crawler/scheduler.ts):
+ * the same sync as cron's recommendations stage, for that run's website
+ * only (system code, root client). Idempotent, so a repeat or a concurrent
+ * cron sync changes nothing. Cron does not pass it: its own stage follows.
+ */
+export const refreshActionPlan =
+  (db: PrismaClient) => (run: { websiteId: string; organizationId: string }) =>
+    syncRecommendations(db, {
+      id: run.websiteId,
+      organizationId: run.organizationId,
+    });

@@ -8,6 +8,8 @@
   },
   "scripts": {
     "dev": "next dev",
+    "dev:with-crawls": "node scripts/dev-with-crawls.mjs",
+    "dev:crawls": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/ts-loader/register.mjs scripts/dev-crawl-worker.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

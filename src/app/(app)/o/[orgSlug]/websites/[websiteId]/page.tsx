@@ -5,7 +5,13 @@ import type { CheckType } from "@/generated/prisma/enums";
 import { SeverityBar } from "@/components/charts";
 import { ChangeSummary } from "@/components/crawl-changes";
 import { NextStepList } from "@/components/next-steps";
-import { DimensionList, scoreTone, Sparkline } from "@/components/score";
+import {
+  DimensionList,
+  dimensionLabel,
+  scoreTone,
+  Sparkline,
+} from "@/components/score";
+import { scoreFreshness } from "@/lib/scoring/freshness";
 import { recommendationVisibility } from "@/lib/business/visibility";
 import { FINDINGS, progressHint } from "@/lib/workflow/labels";
 import { ActionForm } from "@/components/ui/action-form";
@@ -110,9 +116,13 @@ export default async function WebsitePage({
   const site = `${base}/websites/${websiteId}`;
   const editor = can.editWebsites(ctx.role);
   const score = snapshots[0] ?? null;
-  const dimensions = Array.isArray(score?.dimensions)
-    ? (score.dimensions as unknown as DimensionScore[])
-    : [];
+  // Judged now, from the stored snapshot (which is never changed for this).
+  const freshness = scoreFreshness(score, new Date(), dimensionLabel);
+  const dimensions = (
+    Array.isArray(score?.dimensions)
+      ? (score.dimensions as unknown as DimensionScore[])
+      : []
+  ).map((d, i) => ({ ...d, freshness: freshness.dimensions[i] }));
   const measuredCount = dimensions.filter(
     (d) => d.measured && d.score !== null,
   ).length;
@@ -337,6 +347,23 @@ export default async function WebsitePage({
                     {healthLabel(score.score)}
                   </span>
                 </div>
+                {freshness.state === "fresh" ? (
+                  <p className="mt-1 text-xs text-muted">
+                    Based on current evidence
+                    {freshness.oldestObservedAt &&
+                      ` (oldest from ${formatRelative(freshness.oldestObservedAt)})`}
+                    .
+                  </p>
+                ) : (
+                  <p
+                    role="note"
+                    className="mt-1 text-xs font-medium text-warning-700"
+                  >
+                    {freshness.message}
+                    {freshness.oldestObservedAt &&
+                      ` Oldest evidence: ${formatRelative(freshness.oldestObservedAt)}.`}
+                  </p>
+                )}
                 <div className="mt-4">
                   <div className="mb-1.5 flex justify-between text-xs">
                     <span className="font-medium text-ink-2">Coverage</span>

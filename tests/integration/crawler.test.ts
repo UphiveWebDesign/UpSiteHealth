@@ -2,12 +2,15 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
-import {
-  processCrawls,
-  requestCrawlCancel,
-  startCrawl,
-} from "@/lib/crawler/engine";
+import { requestCrawlCancel, startCrawl } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
 import type { NetPolicy } from "@/lib/net/ssrf";
+import {
+  loadPortfolioAttention,
+  portfolioAttention,
+} from "@/lib/insights/attention";
+import { loadWebsiteSummaries } from "@/lib/insights/signals";
+import { syncRecommendations } from "@/lib/recommendations/generate";
 import { loadCrawlComparison } from "@/lib/seo/compare";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
@@ -22,6 +25,45 @@ const DESC =
   "A meta description that is long enough to pass the fifty character minimum.";
 let aboutTitle =
   "About us and a far too long page title that goes beyond sixty chars";
+/**
+ * Hotel JSON-LD on the home page and /level1 (off by default, so other tests
+ * see the site unchanged): "incomplete" has no address or telephone, while
+ * the home page links a phone number; "complete" adds both.
+ */
+let hotelMarkup: "off" | "incomplete" | "complete" = "off";
+/** Whether the home page carries the Hotel markup too (/level1 always does). */
+let hotelOnHome = true;
+/**
+ * 25 extra pages /dup/0 … /dup/24 linked from the home page (off by default):
+ * "same" gives them one title (a duplicate-title finding whose evidence lists
+ * only 20 of them), "unique" gives each its own; `dupUnique` makes only those
+ * pages unique while the others keep the shared title, and `dupFailing`
+ * makes one of them return HTTP 500.
+ */
+const DUP_PAGES = 25;
+let dupMode: "off" | "same" | "unique" = "off";
+let dupUnique = new Set<number>();
+let dupFailing: number | null = null;
+const hotel = () => {
+  if (hotelMarkup === "off") return "";
+  const data = {
+    "@context": "https://schema.org",
+    "@type": "Hotel",
+    "@id": `${origin}/#hotel`,
+    name: "Test Valley Stay",
+    ...(hotelMarkup === "complete"
+      ? {
+          address: {
+            "@type": "PostalAddress",
+            streetAddress: "1 Valley Road",
+            addressLocality: "Testville",
+          },
+          telephone: "+44 20 0000 0000",
+        }
+      : {}),
+  };
+  return `<script type="application/ld+json">${JSON.stringify(data)}</script>`;
+};
 let aboutStatus = 200;
 let levelOneStatus = 200;
 
@@ -56,7 +98,18 @@ beforeAll(async () => {
             "Home page for the test site",
             `<a href="/about">About</a><a href="/level1">Deep</a><a href="/private/x">Private</a>
              <a href="/missing">Broken</a><a href="https://external.example/">Ext</a>
-             <a href="/nofollow" rel="nofollow">NF</a><img src="/logo.png" alt="Logo">`,
+             <a href="/nofollow" rel="nofollow">NF</a><img src="/logo.png" alt="Logo">${
+               dupMode === "off"
+                 ? ""
+                 : Array.from(
+                     { length: DUP_PAGES },
+                     (_, i) => `<a href="/dup/${i}">Dup ${i}</a>`,
+                   ).join("")
+             }${
+               hotelMarkup === "off"
+                 ? ""
+                 : `<a href="tel:+442000000000">Call us</a>${hotelOnHome ? hotel() : ""}`
+             }`,
           ),
         );
       case "/about":
@@ -71,7 +124,10 @@ beforeAll(async () => {
           return res.end("<h1>Server error</h1>");
         }
         return html(
-          pageHtml("Level one page of the site", `<a href="/level2">L2</a>`),
+          pageHtml(
+            "Level one page of the site",
+            `<a href="/level2">L2</a>${hotel()}`,
+          ),
         );
       case "/level2":
         return html(
@@ -79,9 +135,26 @@ beforeAll(async () => {
         );
       case "/from-sitemap":
         return html(pageHtml("Only linked from the sitemap", ""));
-      default:
+      default: {
+        const dup = /^\/dup\/(\d+)$/.exec(req.url ?? "");
+        if (dup && dupMode !== "off") {
+          const n = Number(dup[1]);
+          if (n === dupFailing) {
+            res.writeHead(500, { "content-type": "text/html" });
+            return res.end("<h1>Server error</h1>");
+          }
+          return html(
+            pageHtml(
+              dupMode === "unique" || dupUnique.has(n)
+                ? `Unique duplicate-test page number ${n}`
+                : "One title shared by many test pages",
+              "<p>Test page</p>",
+            ),
+          );
+        }
         res.writeHead(404, { "content-type": "text/html" });
         return res.end("<h1>Not found</h1>");
+      }
     }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -374,6 +447,32 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       expect(third!.counts.fixed + third!.counts["came-back"]).toBe(2);
 
+      // The portfolio attention list reports the same came-back finding,
+      // once, linked to this comparison.
+      const now = new Date();
+      const attention = portfolioAttention(
+        await loadPortfolioAttention(
+          tdb,
+          db,
+          { organizationId: org.id, role: "MEMBER" },
+          await loadWebsiteSummaries(tdb, { now }),
+          "/o/x",
+          now,
+        ),
+        "/o/x",
+        { now, only: "returned" },
+      );
+      expect(attention.byCategory.returned).toEqual({ count: 1, websites: 1 });
+      expect(attention.sites[0].items).toMatchObject([
+        {
+          category: "returned",
+          count: 1,
+          action: {
+            href: `/o/x/websites/${site.id}/crawls/${third!.current.id}?change=came-back`,
+          },
+        },
+      ]);
+
       // Historical: comparing crawl 2 explicitly gives the same answer.
       const again = await loadCrawlComparison(tdb, site.id, second!.current.id);
       expect(again!.counts).toEqual(second!.counts);
@@ -388,6 +487,204 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(
         await loadCrawlComparison(otherDb, site.id, third!.current.id),
       ).toBeNull();
+    });
+
+    test("incomplete Hotel markup: one finding and one task across crawls, resolved and completed once fixed", async () => {
+      const RULE = "TECH_LOCAL_BUSINESS_INCOMPLETE";
+      const TITLE = `Business structured data is incomplete (${RULE})`;
+      const { org, tdb, site } = await setup("hotel");
+      const recrawl = async () => {
+        const run = await startCrawl(tdb, org.id, site.id);
+        await crawl();
+        const row = await db.crawlRun.findUniqueOrThrow({
+          where: { id: run.id },
+        });
+        expect(row.status).toBe("COMPLETED");
+        expect(row.seoAnalyzedAt).not.toBeNull();
+      };
+      const findings = () =>
+        db.seoFinding.findMany({ where: { websiteId: site.id, ruleId: RULE } });
+      const tasks = () =>
+        db.recommendation.findMany({
+          where: { websiteId: site.id, title: TITLE },
+        });
+      hotelMarkup = "incomplete";
+      try {
+        // Crawl 1: one site finding for the business, both pages listed.
+        await recrawl();
+        const [first, ...rest1] = await findings();
+        expect(rest1).toEqual([]);
+        expect(first).toMatchObject({
+          scope: "SITE",
+          severity: "LOW",
+          status: "OPEN",
+          crawlPageId: null,
+        });
+        expect(first.evidence).toEqual({
+          entity: "Test Valley Stay",
+          types: ["Hotel"],
+          missing: ["address", "telephone"],
+          telephoneLinksOnPage: 1,
+          count: 2,
+          urls: expect.arrayContaining([`${origin}/`, `${origin}/level1`]),
+        });
+
+        // Crawl 2: the same row (id and fingerprint), refreshed, no duplicate.
+        await recrawl();
+        const [second, ...rest2] = await findings();
+        expect(rest2).toEqual([]);
+        expect(second).toMatchObject({
+          id: first.id,
+          fingerprint: first.fingerprint,
+          status: "OPEN",
+        });
+        expect(second.lastSeenAt.getTime()).toBeGreaterThanOrEqual(
+          first.lastSeenAt.getTime(),
+        );
+
+        // Two syncs: exactly one task, keeping its identity.
+        await syncRecommendations(db, site);
+        const [task, ...restT1] = await tasks();
+        expect(restT1).toEqual([]);
+        expect(task).toMatchObject({ status: "PROPOSED", priority: "LOW" });
+        await syncRecommendations(db, site);
+        const [again, ...restT2] = await tasks();
+        expect(restT2).toEqual([]);
+        expect(again).toMatchObject({ id: task.id, status: "PROPOSED" });
+
+        // Fixed: address and telephone added; a completed crawl rechecks it.
+        hotelMarkup = "complete";
+        await recrawl();
+        const [fixed, ...rest3] = await findings();
+        expect(rest3).toEqual([]);
+        expect(fixed).toMatchObject({ id: first.id, status: "RESOLVED" });
+        expect(fixed.resolvedAt).not.toBeNull();
+        await syncRecommendations(db, site);
+        const [done, ...restT3] = await tasks();
+        expect(restT3).toEqual([]);
+        expect(done).toMatchObject({ id: task.id, status: "COMPLETED" });
+      } finally {
+        hotelMarkup = "off";
+      }
+    });
+
+    test("a business finding stays open when a page it lists fails, even in a completed crawl", async () => {
+      const RULE = "TECH_LOCAL_BUSINESS_INCOMPLETE";
+      const { org, tdb, site } = await setup("hotel-gap");
+      const recrawl = async () => {
+        const run = await startCrawl(tdb, org.id, site.id);
+        await crawl();
+        return db.crawlRun.findUniqueOrThrow({ where: { id: run.id } });
+      };
+      const findings = () =>
+        db.seoFinding.findMany({ where: { websiteId: site.id, ruleId: RULE } });
+      hotelMarkup = "incomplete";
+      hotelOnHome = false; // the business markup is only on /level1
+      try {
+        await recrawl();
+        const [first, ...rest] = await findings();
+        expect(rest).toEqual([]);
+        expect(first.evidence).toMatchObject({ urls: [`${origin}/level1`] });
+
+        // /level1 fails: the crawl still completes, but it cannot show the
+        // markup is fixed, so the finding stays open (and its task too).
+        levelOneStatus = 500;
+        const failed = await recrawl();
+        expect(failed.status).toBe("COMPLETED");
+        const [kept, ...rest2] = await findings();
+        expect(rest2).toEqual([]);
+        expect(kept).toMatchObject({ id: first.id, status: "OPEN" });
+        expect(kept.resolvedAt).toBeNull();
+      } finally {
+        hotelMarkup = "off";
+        hotelOnHome = true;
+        levelOneStatus = 200;
+      }
+    });
+
+    test("a duplicate on more than 20 pages resolves only when every page was rechecked", async () => {
+      const RULE = "TECH_DUPLICATE_TITLE";
+      const SHARED = "One title shared by many test pages";
+      const { org, tdb, site } = await setup("dup-25");
+      // One processCrawls call stops at its deadline and leaves the run
+      // RUNNING, and findings are synced only when a run finishes. About 30
+      // pages can take longer than one 20-second pass on a hosted database,
+      // so process until this run leaves QUEUED/RUNNING, within 150 s.
+      const recrawl = async (label: string) => {
+        const { id } = await startCrawl(tdb, org.id, site.id);
+        const started = Date.now();
+        let passes = 0;
+        for (;;) {
+          await crawl();
+          passes++;
+          const row = await db.crawlRun.findUniqueOrThrow({ where: { id } });
+          if (row.status !== "QUEUED" && row.status !== "RUNNING") {
+            console.info(
+              `${label} crawl: ${row.status} after ${passes} pass(es), ${Math.round((Date.now() - started) / 1000)} s`,
+            );
+            expect(
+              row.status,
+              `${label} crawl ended ${row.status}: ${row.errorMessage ?? "no error message"}`,
+            ).toBe("COMPLETED");
+            return row;
+          }
+          if (Date.now() - started >= 150_000) {
+            const pages = await db.crawlPage.groupBy({
+              by: ["status"],
+              where: { crawlRunId: id },
+              _count: true,
+            });
+            throw new Error(
+              `${label} crawl still ${row.status} after ${passes} pass(es) (150 s limit); pages by status: ${JSON.stringify(Object.fromEntries(pages.map((p) => [p.status, p._count])))}`,
+            );
+          }
+        }
+      };
+      const dupFinding = async () =>
+        (
+          await db.seoFinding.findMany({
+            where: { websiteId: site.id, ruleId: RULE },
+          })
+        ).filter(
+          (f) => (f.evidence as { title?: string } | null)?.title === SHARED,
+        );
+      dupMode = "same";
+      try {
+        await recrawl("initial");
+        const [first, ...rest] = await dupFinding();
+        expect(rest).toEqual([]);
+        const listed = (first.evidence as { urls: string[] }).urls;
+        expect(first.evidence).toMatchObject({ count: DUP_PAGES });
+        expect(listed).toHaveLength(20);
+        const all = Array.from(
+          { length: DUP_PAGES },
+          (_, i) => `${origin}/dup/${i}`,
+        );
+        const outside = all
+          .map((u, i) => [u, i] as const)
+          .filter(([u]) => !listed.includes(u));
+        expect(outside).toHaveLength(DUP_PAGES - 20);
+
+        // Every page now has its own title, but one page outside the
+        // 20-URL sample fails: the crawl shows no duplicate, yet that page
+        // was not rechecked, so the finding must stay open.
+        dupUnique = new Set(all.map((_, i) => i));
+        dupFailing = outside[0][1];
+        await recrawl("one page failing"); // must still be COMPLETED
+        const [kept] = await dupFinding();
+        expect(kept).toMatchObject({ id: first.id, status: "OPEN" });
+        expect(kept.resolvedAt).toBeNull();
+
+        // Every one of the 25 pages loads with its own title: resolved.
+        dupFailing = null;
+        await recrawl("all pages fixed");
+        const [fixed] = await dupFinding();
+        expect(fixed).toMatchObject({ id: first.id, status: "RESOLVED" });
+      } finally {
+        dupMode = "off";
+        dupUnique = new Set();
+        dupFailing = null;
+      }
     });
 
     test("a page budget makes the run PARTIAL with BUDGET_EXCEEDED skips", async () => {

@@ -14,7 +14,7 @@ import type { BenefitCategory } from "@/lib/recommendations/benefits";
  * open findings are grouped by that text. Changing it splits or duplicates
  * existing recommendations, so it needs a data plan, not just a version bump.
  */
-export const KNOWLEDGE_VERSION = "k1";
+export const KNOWLEDGE_VERSION = "k3";
 
 export const SEO_LIMITS = {
   titleMin: 15,
@@ -388,11 +388,79 @@ export const SEO_CATALOGUE = {
     applies: {
       ...ALL,
       assumption:
-        "The page is meant to inform; contact, category and utility pages can be short.",
+        "The page is meant to inform and may be indexed (noindex pages are not checked); contact, category and utility pages can be short.",
     },
-    evidence: { needs: "The page's word count.", freshness: PAGE_FRESH },
-    passes: `each page has at least ${SEO_LIMITS.thinContentWords} words`,
-    limits: ["Word count says nothing about quality or usefulness."],
+    evidence: {
+      needs:
+        "Main-content words (header, navigation and footer removed); the page's total word count for crawls stored before main-content extraction.",
+      freshness: PAGE_FRESH,
+    },
+    passes: `each indexable page has at least ${SEO_LIMITS.thinContentWords} words of main content`,
+    limits: [
+      "Word count says nothing about quality or usefulness.",
+      "Older crawls without main content are judged on the whole page, including theme text.",
+    ],
+  },
+  TECH_LOCAL_BUSINESS_INCOMPLETE: {
+    severity: "LOW",
+    title: "Business structured data is incomplete",
+    description:
+      "The site's local business markup (such as Hotel or LocalBusiness) leaves out its address, or a telephone number the page shows.",
+    recommendation:
+      "Add the business's real address and telephone to its structured data, exactly as published on the site; never add details the business has not confirmed.",
+    scope: "SITE",
+    benefit: "search-appearance",
+    effort: "small",
+    effortReason:
+      "Usually a setting in the SEO plugin or a few lines of JSON-LD.",
+    confidence: "medium",
+    confidenceReason:
+      "Read from valid JSON-LD; a telephone is asked for only when the page has phone links. Values are never suggested.",
+    applies: {
+      ...ALL,
+      assumption:
+        "The business serves customers at an address or by phone, as local business markup says it does.",
+    },
+    evidence: {
+      needs:
+        "Valid JSON-LD of a local business type, and the page's phone links.",
+      freshness: PAGE_FRESH,
+    },
+    passes:
+      "each local business entity in the markup has an address, and a telephone when the page shows one",
+    limits: [
+      "Checks that the fields exist, not that they are correct or eligible for rich results.",
+      "Business types outside the listed schema.org local business types are not checked.",
+    ],
+  },
+  TECH_PLACEHOLDER_CONTENT: {
+    severity: "MEDIUM",
+    title: "Default placeholder content is published",
+    description:
+      "An unedited default post or page (such as WordPress's “Hello world!” or “Sample Page”) is live and indexable.",
+    recommendation:
+      "Delete the placeholder post or page (or replace it with real content), and remove links to it.",
+    scope: "PAGE",
+    benefit: "content-quality",
+    effort: "small",
+    effortReason: "Usually deleting one default post or page.",
+    confidence: "high",
+    confidenceReason:
+      "Matched on the platform's shipped default text, or on both its default URL and title; a title alone is never enough.",
+    applies: {
+      ...ALL,
+      assumption:
+        "The page was never meant to be published; a real post that happens to use a default title is not matched.",
+    },
+    evidence: {
+      needs: "The page's URL, title, H1 and main-content text.",
+      freshness: PAGE_FRESH,
+    },
+    passes:
+      "no indexable page carries the platform's default placeholder content",
+    limits: [
+      "Recognises WordPress's English default post and sample page only.",
+    ],
   },
   TECH_DUPLICATE_TITLE: {
     severity: "MEDIUM",
@@ -478,11 +546,65 @@ export const SEO_CATALOGUE = {
 export type SeoRuleId = keyof typeof SEO_CATALOGUE;
 export const SEO_RULE_IDS = Object.keys(SEO_CATALOGUE) as SeoRuleId[];
 
+/**
+ * Content coverage rules (seo/content.ts): findings from the topic map of
+ * approved business facts (business/topics.ts), not from page markup alone.
+ * Stored and planned like technical findings, but resolved only by the
+ * topic map of a later complete crawl, and kept out of the health score.
+ * Their own catalogue, so the technical rules and KNOWLEDGE_VERSION are
+ * unchanged; the finding text is stored data here too (see above).
+ */
+export const CONTENT_CATALOGUE = {
+  CONTENT_SERVICE_LOCATION_GAP: {
+    severity: "LOW",
+    title: "Service not mentioned for a location",
+    description:
+      "No analysed page names this approved service together with this approved location, although the site has a page about each.",
+    recommendation:
+      "If the business offers this service at this location, say so where visitors look for it: on the location's page, or on the service page. Check with the client before publishing.",
+    scope: "SITE",
+    benefit: "business-coverage",
+    effort: "small",
+    effortReason:
+      "Usually a sentence or a section on an existing page; no new page is needed.",
+    confidence: "medium",
+    confidenceReason:
+      "Observed in a complete, recent crawl: no analysed page names both. The approved facts do not say that every service is offered at every location.",
+    applies: {
+      businessTypes: "all",
+      pageTypes: "all",
+      assumption:
+        "The business has several approved locations (or the multi-location type) and offers the approved service at each of them.",
+    },
+    evidence: {
+      needs:
+        "Approved services and locations, and the titles, headings, descriptions, link text, structured data and main content of every page of a complete crawl.",
+      freshness:
+        "The latest completed crawl, within the 60-day limit for crawl evidence.",
+    },
+    passes: "a page names both the service and the location",
+    verification:
+      "Confirmed when a later complete crawl finds a page that names both the service and the location (in its title, headings, description, link text, structured data or main content). A partial crawl, or a change to the approved facts, leaves it open.",
+    limits: [
+      "Approved facts do not record which services are offered at which location; confirm before writing.",
+      "A missing mention is not evidence of lost rankings or traffic: no search-demand or ranking data is used.",
+      "Only the approved wordings are recognised; a page that uses other words is not counted.",
+    ],
+  },
+} satisfies Record<string, SeoRuleEntry>;
+
+export type ContentRuleId = keyof typeof CONTENT_CATALOGUE;
+export const CONTENT_RULE_IDS = Object.keys(
+  CONTENT_CATALOGUE,
+) as ContentRuleId[];
+export const isContentRule = (ruleId: string): ruleId is ContentRuleId =>
+  Object.hasOwn(CONTENT_CATALOGUE, ruleId);
+
 /** The entry for a rule id, or undefined for ids no longer in the catalogue. */
 export function seoRule(ruleId: string): SeoRuleEntry | undefined {
-  return Object.hasOwn(SEO_CATALOGUE, ruleId)
-    ? SEO_CATALOGUE[ruleId as SeoRuleId]
-    : undefined;
+  if (Object.hasOwn(SEO_CATALOGUE, ruleId))
+    return SEO_CATALOGUE[ruleId as SeoRuleId];
+  return isContentRule(ruleId) ? CONTENT_CATALOGUE[ruleId] : undefined;
 }
 
 /**

@@ -16,8 +16,15 @@ import {
   executeAiSearchRun,
   startAiSearchRun,
 } from "@/lib/ai-search/runner";
+import { processCrawls } from "@/lib/crawler/scheduler";
+import { refreshActionPlan } from "@/lib/recommendations/after-crawl";
+import {
+  queueAutomaticCrawl,
+  verificationNote,
+  type QueueOutcome,
+} from "@/lib/crawler/schedule";
 import { db } from "@/lib/db";
-import { runBackground } from "@/lib/log";
+import { log, runBackground } from "@/lib/log";
 import { serverEnv } from "@/lib/env";
 import {
   claimIntegrationProbe,
@@ -25,7 +32,16 @@ import {
   runIntegrationCheck,
 } from "@/lib/integrations/service";
 import { recordPageSpeed } from "@/lib/performance/pagespeed";
-import { syncRecommendations } from "@/lib/recommendations/generate";
+import { changeStatus, historyAvailable } from "@/lib/recommendations/events";
+import {
+  syncRecommendations,
+  verifiedByCrawl,
+} from "@/lib/recommendations/generate";
+import {
+  canTransition,
+  statusChangeFeedback,
+  type StatusChangeOutcome,
+} from "@/lib/recommendations/transitions";
 import { recordScoreSnapshot } from "@/lib/scoring/snapshots";
 import {
   ForbiddenError,
@@ -150,18 +166,130 @@ const recommendationStatus = z.enum([
   "DISMISSED",
 ]);
 
+/**
+ * A person changes a task's status on the Recommendations page. Only the
+ * changes in STATUS_TRANSITIONS are allowed, checked here on the server: a
+ * crafted or stale request is refused without writing. `from` is the status
+ * the page showed: if the task has changed since, nothing is written and the
+ * person is told. The update also applies only if the status is still the
+ * one checked (a sync or another person may change it meanwhile). The
+ * tenant-scoped client keeps it to the person's organization; MEMBER or
+ * above only. Every outcome is returned for the page to show.
+ */
 export async function setRecommendationStatusAction(
   orgSlug: string,
   recommendationId: string,
+  _prev: FormState,
   formData: FormData,
-) {
-  const ctx = await requireOrgContext(orgSlug, "MEMBER");
-  const status = recommendationStatus.parse(formData.get("status"));
-  await ctx.db.recommendation.updateMany({
+): Promise<FormState> {
+  let ctx: Awaited<ReturnType<typeof requireOrgContext>>;
+  try {
+    ctx = await requireOrgContext(orgSlug, "MEMBER");
+  } catch (error) {
+    if (error instanceof ForbiddenError) return { error: error.message };
+    throw error;
+  }
+  const parsed = recommendationStatus.safeParse(formData.get("status"));
+  if (!parsed.success) return statusChangeFeedback({ kind: "invalid" });
+  const status = parsed.data;
+  const shown = recommendationStatus.safeParse(formData.get("from"));
+  const current = await ctx.db.recommendation.findFirst({
     where: { id: recommendationId },
-    data: { status },
+    select: { status: true, websiteId: true, title: true, issueId: true },
   });
+  const refuse = (outcome: StatusChangeOutcome) => {
+    log.warn("recommendation_status_refused", {
+      organizationId: ctx.organization.id,
+      recommendationId,
+      reason: outcome.kind,
+      from: current?.status ?? null,
+      to: status,
+    });
+    refresh(orgSlug);
+    return statusChangeFeedback(outcome);
+  };
+  if (!current) return refuse({ kind: "missing" });
+  if (shown.success && shown.data !== current.status)
+    return refuse({ kind: "stale", now: current.status });
+  if (!canTransition(current.status, status))
+    return refuse({ kind: "unsupported", from: current.status });
+  // The change and its history row (with this person as actor) are one
+  // transaction, applied only if the status is still the one checked.
+  const changed = await changeStatus(ctx.db, {
+    id: recommendationId,
+    organizationId: ctx.organization.id,
+    websiteId: current.websiteId,
+    from: current.status,
+    to: status,
+    actorUserId: ctx.user.id,
+    history: await historyAvailable(db()),
+  });
+  if (!changed) {
+    const now = await ctx.db.recommendation.findFirst({
+      where: { id: recommendationId },
+      select: { status: true },
+    });
+    return refuse(
+      now ? { kind: "stale", now: now.status } : { kind: "missing" },
+    );
+  }
   refresh(orgSlug);
+  const feedback = statusChangeFeedback({
+    kind: "changed",
+    from: current.status,
+    to: status,
+  });
+  if (
+    status !== "COMPLETED" ||
+    !verifiedByCrawl(current) ||
+    !("ok" in feedback)
+  )
+    return feedback;
+  // Work only a crawl can confirm: AUTOMATIC websites get a verification
+  // crawl (at most one a day); the sync decides from its results, never
+  // from the queueing. A failure here never undoes the status change.
+  const site = await ctx.db.website.findFirst({
+    where: { id: current.websiteId },
+    select: { crawlMode: true },
+  });
+  const mode = site?.crawlMode ?? "MANUAL";
+  let outcome: QueueOutcome | "failed" | null = null;
+  if (mode === "AUTOMATIC") {
+    try {
+      outcome = await queueAutomaticCrawl(
+        db(),
+        {
+          websiteId: current.websiteId,
+          organizationId: ctx.organization.id,
+        },
+        "VERIFICATION",
+      );
+    } catch (error) {
+      outcome = "failed";
+      log.error(
+        "verification_crawl_failed",
+        {
+          organizationId: ctx.organization.id,
+          websiteId: current.websiteId,
+          recommendationId,
+        },
+        error,
+      );
+    }
+    if (outcome === "queued")
+      after(() =>
+        runBackground(
+          "verification_crawl_kickoff",
+          { websiteId: current.websiteId },
+          () =>
+            processCrawls(db(), {
+              deadline: Date.now() + 50_000,
+              afterAnalysis: refreshActionPlan(db()),
+            }),
+        ),
+      );
+  }
+  return { ok: `${feedback.ok} ${verificationNote(mode, outcome)}` };
 }
 
 // ─── AI Search ──────────────────────────────────────────────────────────────

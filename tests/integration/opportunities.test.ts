@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { createSessionRecord } from "@/lib/auth/session-store";
 import { recommendationVisibility } from "@/lib/business/visibility";
-import { processCrawls, startCrawl } from "@/lib/crawler/engine";
+import { startCrawl } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
 import type { NetPolicy } from "@/lib/net/ssrf";
 import { cronStages } from "@/lib/cron/work";
 import { websitesNeedingSync } from "@/lib/recommendations/after-crawl";
@@ -19,6 +20,7 @@ import { loadPlan } from "@/lib/workflow/plan";
 import { taskActivity } from "@/lib/workflow/progress";
 import { loadReport } from "@/lib/workflow/report";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
+import { supportsLockContention } from "./test-db-guard";
 
 /**
  * Page opportunities end to end on the local database: a Moh Maya-like
@@ -283,6 +285,43 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       await decide(slug, site.id, ACC, undefined, form("restore"));
       expect((await tasks())[ACC]).toBe("PROPOSED");
+      // History: the sync created ACC (no actor); the person created FOOD by
+      // accepting it, then dismissed and restored ACC (with an actor).
+      const history = async () =>
+        (
+          await db.recommendationEvent.findMany({
+            where: { websiteId: site.id },
+            orderBy: { createdAt: "asc" },
+            include: { recommendation: { select: { title: true } } },
+          })
+        ).map((e) => [
+          e.recommendation.title,
+          e.type,
+          e.fromStatus,
+          e.toStatus,
+          e.actorUserId ? "person" : "UpSiteHealth",
+        ]);
+      const decided = await history();
+      expect(decided).toContainEqual([
+        ACC,
+        "CREATED",
+        null,
+        "PROPOSED",
+        "UpSiteHealth",
+      ]);
+      expect(decided).toContainEqual([
+        FOOD,
+        "CREATED",
+        null,
+        "PROPOSED",
+        "person",
+      ]);
+      expect(decided.filter((e) => e[0] === ACC && e[1] !== "CREATED")).toEqual(
+        [
+          [ACC, "STATUS_CHANGED", "PROPOSED", "DISMISSED", "person"],
+          [ACC, "STATUS_CHANGED", "DISMISSED", "PROPOSED", "person"],
+        ],
+      );
       // A title that is not a current opportunity is refused, visibly.
       expect(
         await decide(
@@ -323,6 +362,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
         decide(other.slug, site.id, FOOD, undefined, form("dismiss")),
       ).rejects.toBeInstanceOf(ForbiddenError);
       expect((await tasks())[FOOD]).toBe("PROPOSED");
+      // Refused decisions recorded nothing (the CONTACT completion above was
+      // a direct test update, not a workflow, so it has no event either).
+      expect(await history()).toEqual(decided);
       state.token = null;
     });
 
@@ -502,6 +544,16 @@ describe.skipIf(!TEST_DATABASE_URL)(
     });
 
     test("real contention: a sync re-keying a task and an Accept on two connections leave one task per title", async (ctx) => {
+      // prisma dev (WebAssembly PostgreSQL) accepts a second connection but
+      // runs one session at a time, so it can never show lock contention.
+      // Decided first, before any client, row or transaction exists.
+      const [server] = await db.$queryRaw<
+        Array<{ version: string }>
+      >`SELECT version() AS version`;
+      if (!supportsLockContention(server.version)) {
+        ctx.skip();
+        return;
+      }
       cottagesWords = null;
       const { crawl, website, scope, site, org } = await setup("rekey-race");
       await crawl();
@@ -541,9 +593,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       let release = () => {};
       const barrier = new Promise<void>((r) => (release = r));
       try {
-        // A single-connection server (prisma dev) cannot run this test: a
-        // second connection would wait for the first. Skip, never fake it.
-        const probe = await within(accepter.$queryRaw`SELECT 1`, 3_000);
+        // A server that serves one connection at a time cannot run this
+        // test either: a second connection would wait for the first. Skip,
+        // never fake it. A new connection to a hosted database takes
+        // seconds, so the probe allows 20 s.
+        const probe = await within(accepter.$queryRaw`SELECT 1`, 20_000);
         if (!probe.ok) {
           ctx.skip();
           return;
@@ -557,7 +611,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
             locked();
             await barrier;
           },
-          { timeout: 30_000 },
+          { timeout: 300_000 },
         );
         await isLocked;
         // 2. Start the re-key (inside the sync) and the Accept: both must
@@ -566,9 +620,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
           syncRecommendations(syncer, website),
           createRecommendationOnce(accepter, scope, draft),
         ]);
-        // 3. Wait until both are really waiting for a lock.
+        // 3. Wait until both are really waiting for a lock (each poll is a
+        //    round trip, and the sync runs many queries before it locks).
         let waiting = 0;
-        for (let i = 0; i < 100 && waiting < 2; i++) {
+        const deadline = Date.now() + 240_000;
+        while (Date.now() < deadline && waiting < 2) {
           await new Promise((r) => setTimeout(r, 100));
           const [row] = await db.$queryRaw<Array<{ n: number }>>`
             SELECT count(*)::int AS n FROM pg_stat_activity
@@ -612,7 +668,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           holder.$disconnect(),
         ]);
       }
-    }, 60_000);
+    });
 
     test("a paused website's explicitly requested crawl still reaches the plan", async () => {
       cottagesWords = null;
@@ -647,6 +703,270 @@ describe.skipIf(!TEST_DATABASE_URL)(
           'ALTER TABLE "business_facts_hidden" RENAME TO "business_facts"',
         );
       }
+    });
+
+    // ─── Stage 2 decisions, before the implementation ───────────────────
+    // `test` holds today and after; "today:" pins what the approved design
+    // changes; `test.fails` is the approved behaviour (passes now because it
+    // is not implemented, and becomes `test` when it lands).
+
+    describe("D2-b: Moh Maya, “hospitality” approved after the combined page was accepted", () => {
+      const COMBINED = "Add a page for “Cottages and Cafe” (BIZ_SERVICE_PAGE)";
+      async function approvedLater(label: string) {
+        cottagesWords = null;
+        const s = await setup(label);
+        const type = await db.businessFact.findFirstOrThrow({
+          where: { websiteId: s.site.id, kind: "BUSINESS_TYPE" },
+        });
+        await db.businessFact.update({
+          where: { id: type.id },
+          data: { status: "PENDING", reviewedAt: null },
+        });
+        await s.crawl();
+        await syncRecommendations(db, s.website);
+        // A person accepted the combined page while the type was pending.
+        const combined = await createRecommendationOnce(db, s.scope, {
+          title: COMBINED,
+          explanation: "x",
+          priority: "MEDIUM",
+          expectedImpact: "z",
+          recommendedAction: "y",
+          issueId: null,
+          status: "IN_PROGRESS",
+        });
+        await db.businessFact.update({
+          where: { id: type.id },
+          data: { status: "APPROVED", reviewedAt: new Date() },
+        });
+        await syncRecommendations(db, s.website);
+        await syncRecommendations(db, s.website);
+        const offering = await db.recommendation.findMany({
+          where: {
+            websiteId: s.site.id,
+            status: { in: ["PROPOSED", "IN_PROGRESS", "DISMISSED"] },
+            OR: [
+              { title: { contains: "(BIZ_ACCOMMODATION_PAGE)" } },
+              { title: { contains: "(BIZ_SERVICE_PAGE)" } },
+              { title: { contains: "(BIZ_FOOD_PAGE)" } },
+            ],
+          },
+          select: { id: true, title: true, status: true },
+        });
+        return { combined, offering };
+      }
+
+      test("today: the combined task is moved to the accommodation page automatically (same row)", async () => {
+        const { combined, offering } = await approvedLater("d2b-today");
+        expect(offering).toEqual([
+          { id: combined.id, title: ACC, status: "IN_PROGRESS" },
+        ]);
+      });
+
+      test.fails(
+        "D2-b: the combined task is held for review unchanged, and no second task is created",
+        async () => {
+          const { combined, offering } = await approvedLater("d2b-new");
+          expect(offering).toEqual([
+            { id: combined.id, title: COMBINED, status: "IN_PROGRESS" },
+          ]);
+        },
+      );
+    });
+
+    describe("D2: a service fact deleted, withdrawn or re-created, across several syncs", () => {
+      const svc = (v: string) => `Add a page for “${v}” (BIZ_SERVICE_PAGE)`;
+      async function withService(label: string) {
+        cottagesWords = null;
+        const s = await setup(label);
+        await s.crawl();
+        const add = (
+          value: string,
+          status: "APPROVED" | "PENDING" = "APPROVED",
+        ) =>
+          db.businessFact.create({
+            data: {
+              organizationId: s.org.id,
+              websiteId: s.site.id,
+              kind: "SERVICE",
+              value,
+              normalizedValue: value.toLowerCase(),
+              synonyms: [],
+              source: "CLIENT",
+              status,
+              reviewedAt: status === "APPROVED" ? new Date() : null,
+            },
+          });
+        const f = await add("Boiler repair");
+        const sync = () => syncRecommendations(db, s.website);
+        await sync();
+        const t = await db.recommendation.findFirstOrThrow({
+          where: { websiteId: s.site.id, title: svc("Boiler repair") },
+        });
+        const tasksFor = (word: string) =>
+          db.recommendation.findMany({
+            where: { websiteId: s.site.id, title: { contains: word } },
+            orderBy: { createdAt: "asc" },
+            select: { id: true, title: true, status: true },
+          });
+        const remove = async () => {
+          await db.businessFact.delete({ where: { id: f.id } });
+          await sync();
+        };
+        return { ...s, f, t, add, sync, remove, tasksFor };
+      }
+
+      test("E1: exact rename (deleted, synced, re-created approved): the same task moves", async () => {
+        const s = await withService("e1");
+        await s.remove();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+        await s.add("Boiler repairs");
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repairs"), status: "PROPOSED" },
+        ]);
+      });
+
+      test.fails(
+        "E1: the move records IDENTITY_CHANGED on the same task",
+        async () => {
+          const s = await withService("e1-event");
+          await s.remove();
+          await s.add("Boiler repairs");
+          await s.sync();
+          const types = (
+            await db.recommendationEvent.findMany({
+              where: { recommendationId: s.t.id },
+            })
+          ).map((e) => e.type as string);
+          expect(types).toContain("IDENTITY_CHANGED");
+        },
+      );
+
+      test("B3: re-created but pending for several syncs: held, never completed or duplicated; moves once approved", async () => {
+        const s = await withService("b3");
+        await s.remove();
+        const pending = await s.add("Boiler repairs", "PENDING");
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+        await db.businessFact.update({
+          where: { id: pending.id },
+          data: { status: "APPROVED", reviewedAt: new Date() },
+        });
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repairs"), status: "PROPOSED" },
+        ]);
+      });
+
+      test("today: narrower wording (score 1) moves the task automatically", async () => {
+        const s = await withService("e3-today");
+        await s.remove();
+        await s.add("Emergency boiler repair");
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          {
+            id: s.t.id,
+            title: svc("Emergency boiler repair"),
+            status: "PROPOSED",
+          },
+        ]);
+      });
+
+      test.fails(
+        "E3: narrower wording is held as a suggestion: the task is unchanged and no second task appears",
+        async () => {
+          const s = await withService("e3-new");
+          await s.remove();
+          await s.add("Emergency boiler repair");
+          await s.sync();
+          await s.sync();
+          expect(await s.tasksFor("oiler")).toEqual([
+            { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+          ]);
+        },
+      );
+
+      test("today: two plausible candidates: the task is held, and each candidate becomes its own task", async () => {
+        const s = await withService("e7-today");
+        await s.remove();
+        await s.add("Emergency boiler repair");
+        await s.add("Boiler repair and servicing");
+        await s.sync();
+        const rows = await s.tasksFor("oiler");
+        expect(rows).toHaveLength(3);
+        expect(rows[0]).toEqual({
+          id: s.t.id,
+          title: svc("Boiler repair"),
+          status: "PROPOSED",
+        });
+      });
+
+      test.fails(
+        "E7: two plausible candidates: the task is held for review and neither candidate becomes a second task meanwhile",
+        async () => {
+          const s = await withService("e7-new");
+          await s.remove();
+          await s.add("Emergency boiler repair");
+          await s.add("Boiler repair and servicing");
+          await s.sync();
+          expect(await s.tasksFor("oiler")).toHaveLength(1);
+        },
+      );
+
+      test("E5: a different service replaces it: the old task is held (not completed), the new one is its own task", async () => {
+        const s = await withService("e5");
+        await s.remove();
+        await s.add("Bathroom fitting");
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+        expect(await s.tasksFor("Bathroom fitting")).toEqual([
+          expect.objectContaining({ status: "PROPOSED" }),
+        ]);
+      });
+
+      test("E8: withdrawn to pending over several syncs, then re-approved: one task throughout, never completed", async () => {
+        const s = await withService("e8");
+        await db.businessFact.update({
+          where: { id: s.f.id },
+          data: { status: "PENDING", reviewedAt: null },
+        });
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+        await db.businessFact.update({
+          where: { id: s.f.id },
+          data: { status: "APPROVED", reviewedAt: new Date() },
+        });
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+      });
+
+      test("E9: deleted with no replacement: held over repeated syncs, never completed", async () => {
+        const s = await withService("e9");
+        await s.remove();
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+      });
+
+      test.todo(
+        "E14/B13: a confirm or re-key racing a sync on two connections leaves one task (needs the suggestion action; today's re-key race is covered by “real contention” above)",
+      );
     });
   },
 );

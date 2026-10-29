@@ -12,6 +12,7 @@ import {
   type Effort,
 } from "@/lib/knowledge/catalogue";
 import type { BenefitCategory } from "./benefits";
+import type { Provenance } from "./provenance";
 
 /**
  * Evidence-based metadata shown with every recommendation. Everything here
@@ -41,6 +42,12 @@ export type RecommendationMeta = {
   limits: string[];
   /** Catalogue version behind SEO rule knowledge; null for other kinds. */
   knowledgeVersion: string | null;
+  /**
+   * Where the evidence comes from, how it was obtained, when, and whether it
+   * is still current (provenance.ts). Set by recommendationMeta; absent on
+   * metadata built elsewhere.
+   */
+  provenance?: Provenance;
   /** For a new-page opportunity: what the page is for (all proposals). */
   proposal?: {
     name: string;
@@ -208,34 +215,59 @@ export function performanceMeta(p: {
   score: number | null;
   lcpMs: number | null;
   clsScore: number | null;
+  strategy?: "MOBILE" | "DESKTOP";
+  devices?: Array<{
+    strategy: "MOBILE" | "DESKTOP";
+    score: number;
+    lcpMs: number | null;
+    clsScore: number | null;
+    measuredAt: Date;
+  }>;
 }): RecommendationMeta {
+  const label = { MOBILE: "Mobile", DESKTOP: "Desktop" } as const;
+  const metrics = (d: { lcpMs: number | null; clsScore: number | null }) => [
+    d.lcpMs !== null
+      ? `Largest Contentful Paint ${(d.lcpMs / 1000).toFixed(1)} s`
+      : "LCP not measured",
+    d.clsScore !== null
+      ? `Cumulative Layout Shift ${d.clsScore}`
+      : "CLS not measured",
+  ];
+  const devices = p.devices ?? [];
+  const lead = p.strategy ? `${label[p.strategy].toLowerCase()} ` : "";
   return {
-    detected: `The latest PageSpeed lab score is ${p.score ?? "not measured"}/100.`,
+    detected: devices.length
+      ? `The latest PageSpeed lab scores: ${devices.map((d) => `${label[d.strategy].toLowerCase()} ${d.score}/100`).join(", ")}.`
+      : `The latest PageSpeed lab score is ${p.score ?? "not measured"}/100.`,
     benefit: "user-experience",
     confidence: "medium",
     confidenceReason:
-      "Based on a single PageSpeed lab test; real visitors' experience can differ.",
+      "Based on PageSpeed lab tests; real visitors' experience can differ.",
     effort: "medium",
     effortReason: "Usually several changes (images, scripts, layout).",
     priorityRationale:
       p.score !== null && p.score < 50
-        ? `PageSpeed score ${p.score}/100 is below 50.`
-        : `PageSpeed score ${p.score}/100 is below 90.`,
-    evidence: [
-      `Score ${p.score ?? "not measured"}/100`,
-      p.lcpMs !== null
-        ? `Largest Contentful Paint ${(p.lcpMs / 1000).toFixed(1)} s`
-        : "LCP not measured",
-      p.clsScore !== null
-        ? `Cumulative Layout Shift ${p.clsScore}`
-        : "CLS not measured",
-    ],
+        ? `The ${lead}PageSpeed score ${p.score}/100 is below 50.`
+        : `The ${lead}PageSpeed score ${p.score}/100 is below 90.`,
+    evidence: devices.length
+      ? devices.map(
+          (d) =>
+            `${label[d.strategy]}: score ${d.score}/100, ${metrics(d).join(", ")} (tested ${d.measuredAt.toISOString().slice(0, 10)})`,
+        )
+      : [`Score ${p.score ?? "not measured"}/100`, ...metrics(p)],
     urls: [],
     coverage: null,
     likelyTemplate: false,
-    verification: "Confirmed when a later PageSpeed test scores 90 or more.",
+    verification: devices.length
+      ? "Confirmed when later PageSpeed tests score 90 or more on every device tested."
+      : "Confirmed when a later PageSpeed test scores 90 or more.",
     limits: [
       "A lab test of one URL; it does not measure real visitors (field data).",
+      ...(devices.length === 1
+        ? [
+            `Only ${label[devices[0].strategy].toLowerCase()} was tested recently; test the other device too.`,
+          ]
+        : []),
     ],
     knowledgeVersion: null,
   };

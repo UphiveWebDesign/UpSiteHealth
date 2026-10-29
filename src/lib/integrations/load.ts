@@ -4,7 +4,7 @@ import { isProbeResult, PROBE_CHECK_TYPE } from "./probe";
 
 type Scope = { websiteId: string; organizationId: string };
 
-const PAGE_SELECT = {
+export const PAGE_SELECT = {
   url: true,
   status: true,
   httpStatus: true,
@@ -59,6 +59,7 @@ export async function loadIntegrationEvidence(
     websiteUrl: website.url,
     crawl: run
       ? {
+          id: run.id,
           status: run.status,
           analyzedAt: run.seoAnalyzedAt!,
           pages,
@@ -109,7 +110,12 @@ export async function loadEvidenceHistory(
     });
     out.push({
       websiteUrl: current.websiteUrl,
-      crawl: { status: run.status, analyzedAt: run.seoAnalyzedAt!, pages },
+      crawl: {
+        id: run.id,
+        status: run.status,
+        analyzedAt: run.seoAnalyzedAt!,
+        pages,
+      },
       probe: current.probe,
     });
   }

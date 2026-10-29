@@ -14,7 +14,7 @@ import {
 import { analyzePage, analyzeSite, SEO_RULE_IDS } from "@/lib/seo/rules";
 import { buildPlan, type PlanInput } from "@/lib/workflow/plan";
 import { FIXTURE_FACTS, FIXTURE_PAGES } from "./__fixtures__/rule-fixtures";
-import golden from "./__fixtures__/rule-outputs.k1.json";
+import golden from "./__fixtures__/rule-outputs.k3.json";
 import {
   KNOWLEDGE_VERSION,
   SEO_CATALOGUE,
@@ -42,10 +42,10 @@ describe("catalogue coverage and compatibility", () => {
     const emitted = new Set(drafts().map((d) => d.ruleId));
     expect([...emitted].sort()).toEqual(Object.keys(SEO_CATALOGUE).sort());
     expect(SEO_RULE_IDS).toEqual(Object.keys(SEO_CATALOGUE));
-    expect(KNOWLEDGE_VERSION).toBe("k1");
+    expect(KNOWLEDGE_VERSION).toBe("k3");
   });
 
-  test("rule outputs are byte-identical to the pre-catalogue rules (golden from commit ebe2332)", () => {
+  test("rule outputs match the golden file (k1 from commit ebe2332; k2 adds placeholder content and checks thin content on indexable pages only; k3 adds incomplete local business markup)", () => {
     // Severity, title, description and recommendation are stored on every
     // finding, and the title identifies its recommendation. Changing them
     // needs a data plan, not just a new golden file.

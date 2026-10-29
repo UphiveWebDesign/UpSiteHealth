@@ -7,16 +7,24 @@ import { Badge } from "@/components/ui/badge";
 import { Callout, EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
 import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
-import { SubmitButton } from "@/components/ui/submit-button";
 import { WebsiteNav } from "@/components/website-nav";
 import { formatRelative } from "@/lib/format";
+import { isContentRule } from "@/lib/knowledge/catalogue";
 import {
   describeEvidence,
   findingTarget,
   groupFindings,
 } from "@/lib/insights/seo";
 import { loadCrawlComparison } from "@/lib/seo/compare";
-import { describeGap, pageRecheckGap, siteRecheckGap } from "@/lib/seo/recheck";
+import {
+  describeGap,
+  evidenceTruncated,
+  findingPages,
+  pageRecheckGap,
+  siteRecheckGap,
+} from "@/lib/seo/recheck";
+import { sitePagesOfRuns } from "@/lib/seo/analyze";
+import { FindingStatusAction } from "@/components/finding-status-action";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { setFindingStatusAction, startCrawlAction } from "../../../actions";
@@ -71,6 +79,8 @@ export default async function SeoFindingsPage({
         scope: true,
         evidence: true,
         lastSeenAt: true,
+        fingerprint: true,
+        crawlRunId: true,
       },
     }),
     ctx.db.seoFinding.groupBy({
@@ -105,14 +115,28 @@ export default async function SeoFindingsPage({
       : [];
   const urlOf = (f: (typeof rows)[number]) =>
     (f.evidence as { url?: unknown } | null)?.url;
+  // Site findings: every page they cover, the same list resolution uses
+  // (evidence keeps 20; the rest comes from the crawl they were found in).
+  const foundIn = await sitePagesOfRuns(
+    ctx.db,
+    unconfirmed
+      .filter((f) => f.scope === "SITE" && evidenceTruncated(f.evidence))
+      .map((f) => f.crawlRunId),
+  );
+  const sitePagesOf = (f: (typeof rows)[number]) =>
+    findingPages(f.evidence, foundIn.get(f.crawlRunId)?.get(f.fingerprint));
   const recheckPages =
-    lastCrawl && unconfirmed.some((f) => f.scope === "PAGE")
+    lastCrawl && unconfirmed.length
       ? await ctx.db.crawlPage.findMany({
           where: {
             crawlRunId: lastCrawl.id,
             url: {
+              // Page findings' pages, and the pages site findings list.
               in: unconfirmed
-                .map(urlOf)
+                .flatMap((f) => [
+                  urlOf(f),
+                  ...(f.scope === "SITE" ? sitePagesOf(f).urls : []),
+                ])
                 .filter((u): u is string => typeof u === "string"),
             },
           },
@@ -137,7 +161,10 @@ export default async function SeoFindingsPage({
     const url = urlOf(f);
     const gap =
       f.scope === "SITE"
-        ? siteRecheckGap(f.ruleId, lastCrawl!)
+        ? siteRecheckGap(f.ruleId, lastCrawl!, {
+            ...sitePagesOf(f),
+            pageAt: (u) => pageByUrl.get(u),
+          })
         : pageRecheckGap(
             f.ruleId,
             typeof url === "string" ? pageByUrl.get(url) : undefined,
@@ -281,7 +308,13 @@ export default async function SeoFindingsPage({
                     />
                     <span className="text-sm tabular-nums text-ink-2">
                       {g.findings.length}{" "}
-                      {g.findings.length === 1 ? "page" : "pages"}
+                      {isContentRule(g.ruleId)
+                        ? g.findings.length === 1
+                          ? "gap"
+                          : "gaps"
+                        : g.findings.length === 1
+                          ? "page"
+                          : "pages"}
                     </span>
                     <span
                       aria-hidden
@@ -347,24 +380,16 @@ export default async function SeoFindingsPage({
                               )}
                             </div>
                             {editor && f.status !== "RESOLVED" && (
-                              <form
+                              <FindingStatusAction
+                                key={f.id}
                                 action={setFindingStatusAction.bind(
                                   null,
                                   orgSlug,
                                   f.id,
                                 )}
-                              >
-                                <input
-                                  type="hidden"
-                                  name="status"
-                                  value={
-                                    f.status === "OPEN" ? "IGNORED" : "OPEN"
-                                  }
-                                />
-                                <SubmitButton variant="ghost" size="sm">
-                                  {f.status === "OPEN" ? "Ignore" : "Reopen"}
-                                </SubmitButton>
-                              </form>
+                                status={f.status as SeoFindingStatus}
+                                title={f.title}
+                              />
                             )}
                           </li>
                         );

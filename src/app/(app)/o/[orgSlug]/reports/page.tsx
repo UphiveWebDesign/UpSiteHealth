@@ -10,8 +10,9 @@ import {
   Table,
   td,
 } from "@/components/ui/layout";
-import { formatMs } from "@/lib/format";
+import { formatDateTime, formatMs } from "@/lib/format";
 import { organizationReport } from "@/lib/reports/summary";
+import type { FreshnessState } from "@/lib/scoring/freshness";
 import { requireOrgContext } from "@/lib/tenancy/context";
 
 export const metadata: Metadata = { title: "Reports · UpSiteHealth" };
@@ -25,7 +26,17 @@ const EXPORTS = [
   ["seo-findings", "SEO findings"],
   ["alerts", "Alerts"],
   ["scores", "Score history"],
+  ["tasks", "Tasks (with evidence provenance)"],
 ] as const;
+
+/** Beside each score: how current its evidence is (scoring/freshness.ts). */
+const FRESHNESS_LABEL: Record<FreshnessState, string> = {
+  fresh: "Current",
+  stale: "Out of date",
+  incomplete: "Partial crawl",
+  unknown: "Age unknown",
+  missing: "No evidence",
+};
 
 export default async function ReportsPage({
   params,
@@ -94,10 +105,21 @@ export default async function ReportsPage({
                   <td className={`${td} tabular-nums`}>{r.incidents}</td>
                   <td className={`${td} tabular-nums`}>{r.openIssues}</td>
                   <td className={`${td} tabular-nums`}>{r.openSeoFindings}</td>
-                  <td
-                    className={`${td} tabular-nums font-semibold ${scoreTone(r.latestScore)}`}
-                  >
-                    {r.latestScore ?? "—"}
+                  <td className={td}>
+                    <span
+                      className={`tabular-nums font-semibold ${scoreTone(r.latestScore)}`}
+                    >
+                      {r.latestScore ?? "—"}
+                    </span>
+                    {r.latestScore !== null && (
+                      <div
+                        className={`text-xs ${r.scoreFreshness === "fresh" ? "text-muted" : "font-medium text-warning-700"}`}
+                      >
+                        {FRESHNESS_LABEL[r.scoreFreshness]}
+                        {r.scoreEvidenceAt &&
+                          ` · evidence from ${formatDateTime(r.scoreEvidenceAt)}`}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

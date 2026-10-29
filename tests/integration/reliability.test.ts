@@ -15,7 +15,7 @@ import type { ProbeDeps } from "@/lib/integrations/probe";
 import { StageIncompleteError } from "@/lib/cron/stages";
 import { AI_RUN_STALE_MS, recoverStaleAiRuns } from "@/lib/ai-search/runner";
 import { processDeliveryJobs } from "@/lib/alerts/delivery";
-import { finalizeCrawlRun } from "@/lib/crawler/engine";
+import { finalizeCrawlRun } from "@/lib/crawler/analysis";
 import {
   CRON_HEARTBEAT,
   heartbeatStatus,

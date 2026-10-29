@@ -56,14 +56,18 @@ export const BASELINE_CATEGORIES: BaselineCategory[] = [
   {
     key: "structured",
     label: "Structured data",
-    rules: ["TECH_STRUCTURED_DATA_INVALID"],
+    rules: ["TECH_STRUCTURED_DATA_INVALID", "TECH_LOCAL_BUSINESS_INCOMPLETE"],
   },
   {
     key: "images",
     label: "Images",
     rules: ["TECH_IMAGE_MISSING_ALT", "TECH_IMAGE_MISSING_DIMENSIONS"],
   },
-  { key: "content", label: "Content", rules: ["TECH_THIN_CONTENT"] },
+  {
+    key: "content",
+    label: "Content",
+    rules: ["TECH_THIN_CONTENT", "TECH_PLACEHOLDER_CONTENT"],
+  },
 ];
 
 /** Things the baseline cannot show, said plainly rather than shown as zero. */
@@ -164,6 +168,8 @@ export type Baseline =
       state: "none";
       /** Analysed crawls that did not complete, so cannot be a baseline. */
       incompleteRuns: number;
+      /** Completed crawls whose analysis has not committed (pending or failed). */
+      awaitingAnalysis: number;
     }
   | {
       state: "ready";
@@ -210,6 +216,9 @@ export async function loadBaseline(
           seoAnalyzedAt: { not: null },
           status: { not: "COMPLETED" },
         },
+      }),
+      awaitingAnalysis: await db.crawlRun.count({
+        where: { websiteId, status: "COMPLETED", seoAnalyzedAt: null },
       }),
     };
   }

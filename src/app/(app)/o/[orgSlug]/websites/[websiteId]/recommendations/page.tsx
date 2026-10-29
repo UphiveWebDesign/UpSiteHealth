@@ -5,6 +5,7 @@ import type {
   RecommendationPriority,
   RecommendationStatus,
 } from "@/generated/prisma/enums";
+import { CrawlWaitNotice } from "@/components/crawl-wait-notice";
 import { ProposalBlock, WorkTypeBadge } from "@/components/page-proposal";
 import { RecommendationDetails } from "@/components/recommendation-meta";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,10 @@ import { EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
 import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
+import { TaskStatusActions } from "@/components/task-status-actions";
+import { TaskHistory } from "@/components/task-history";
+import { historyAvailable } from "@/lib/recommendations/events";
+import { loadTaskHistory } from "@/lib/recommendations/history";
 import { WebsiteNav } from "@/components/website-nav";
 import { splitTitle, workType } from "@/lib/workflow/plan";
 import { recommendationVisibility } from "@/lib/business/visibility";
@@ -23,6 +28,7 @@ import {
   recommendationBasis,
   recommendationMeta,
   recommendationState,
+  verifiedByCrawl,
   type RecommendationBasis,
   type RecommendationState,
 } from "@/lib/recommendations/generate";
@@ -50,22 +56,6 @@ const PRIORITY_HEADING: Record<RecommendationPriority, string> = {
 };
 
 /** One-click status changes; each submits the existing status action. */
-const TRANSITIONS: Record<
-  RecommendationStatus,
-  Array<{ to: RecommendationStatus; label: string; primary?: boolean }>
-> = {
-  PROPOSED: [
-    { to: "IN_PROGRESS", label: "Start", primary: true },
-    { to: "COMPLETED", label: "Mark done" },
-    { to: "DISMISSED", label: "Dismiss" },
-  ],
-  IN_PROGRESS: [
-    { to: "COMPLETED", label: "Mark done", primary: true },
-    { to: "PROPOSED", label: "Stop" },
-  ],
-  COMPLETED: [{ to: "PROPOSED", label: "Reopen" }],
-  DISMISSED: [{ to: "PROPOSED", label: "Restore" }],
-};
 
 const SOURCE: Record<RecommendationBasis["kind"], string> = {
   issue: "monitoring check",
@@ -148,7 +138,7 @@ export default async function RecommendationsPage({
   const ctx = await requireOrgContext(orgSlug);
   const website = await ctx.db.website.findFirst({
     where: { id: websiteId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, crawlMode: true, monitoringEnabled: true },
   });
   if (!website) notFound();
 
@@ -175,6 +165,15 @@ export default async function RecommendationsPage({
   const openItems = withState.filter(isOpen);
   const closedItems = withState.filter((r) => !isOpen(r));
   const recommendations = view === "open" ? openItems : closedItems;
+  // History of the tasks shown (tenant-scoped); null where the database has
+  // no history table yet, which the page says rather than showing none.
+  const history = (await historyAvailable(db()))
+    ? await loadTaskHistory(
+        ctx.db,
+        websiteId,
+        recommendations.map((r) => r.id),
+      )
+    : null;
   const editor = can.editWebsites(ctx.role);
   const base = `/o/${orgSlug}/websites/${websiteId}`;
 
@@ -205,6 +204,16 @@ export default async function RecommendationsPage({
         }
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
+      <CrawlWaitNotice
+        crawlMode={website.crawlMode}
+        monitoringEnabled={website.monitoringEnabled}
+        waiting={
+          withState.filter(
+            (r) => r.state.kind === "awaiting-recheck" && verifiedByCrawl(r),
+          ).length
+        }
+        crawlsHref={`${base}/crawls`}
+      />
 
       <FilterTabs
         label="Recommendation status"
@@ -261,7 +270,8 @@ export default async function RecommendationsPage({
                   {items.map((r) => (
                     <li
                       key={r.id}
-                      className="rounded-xl border border-line bg-surface p-5 shadow-card"
+                      id={`task-${r.id}`}
+                      className="scroll-mt-4 rounded-xl border border-line bg-surface p-5 shadow-card target:ring-2 target:ring-brand-500"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -310,6 +320,9 @@ export default async function RecommendationsPage({
                         meta={r.meta}
                         fallbackBenefit={r.expectedImpact}
                       />
+                      <TaskHistory
+                        events={history ? (history.get(r.id) ?? []) : null}
+                      />
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                         <span className="text-xs text-muted">
                           Updated {formatRelative(r.updatedAt)}
@@ -326,30 +339,16 @@ export default async function RecommendationsPage({
                           )}
                         </span>
                         {editor && (
-                          <div className="flex flex-wrap gap-2">
-                            {TRANSITIONS[r.status].map((t) => (
-                              <form
-                                key={t.to}
-                                action={setRecommendationStatusAction.bind(
-                                  null,
-                                  orgSlug,
-                                  r.id,
-                                )}
-                              >
-                                <input
-                                  type="hidden"
-                                  name="status"
-                                  value={t.to}
-                                />
-                                <SubmitButton
-                                  variant={t.primary ? "primary" : "ghost"}
-                                  size="sm"
-                                >
-                                  {t.label}
-                                </SubmitButton>
-                              </form>
-                            ))}
-                          </div>
+                          <TaskStatusActions
+                            key={r.id}
+                            action={setRecommendationStatusAction.bind(
+                              null,
+                              orgSlug,
+                              r.id,
+                            )}
+                            status={r.status}
+                            title={r.title}
+                          />
                         )}
                       </div>
                     </li>

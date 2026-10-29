@@ -157,7 +157,11 @@ export async function loadReport(
 
   const gaps: string[] = [];
   if (baseline.state === "none")
-    gaps.push("No baseline: no crawl of this website has completed yet.");
+    gaps.push(
+      baseline.awaitingAnalysis > 0
+        ? "No baseline yet: a completed crawl has not been analysed yet."
+        : "No baseline: no crawl of this website has completed yet.",
+    );
   if (technical.state === "not-comparable")
     gaps.push(
       technical.reason === "no-start"

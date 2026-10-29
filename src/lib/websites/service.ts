@@ -13,6 +13,13 @@ export const websiteInputSchema = z.object({
     .optional()
     .transform((v) => v || null),
   monitoringEnabled: z.boolean().optional(),
+  /**
+   * Missing: MANUAL on create (only the onboarding form offers AUTOMATIC,
+   * preselected), unchanged on update.
+   */
+  crawlMode: z
+    .enum(["AUTOMATIC", "MANUAL"], { message: "Choose a crawl mode." })
+    .optional(),
 });
 
 export type WebsiteInput = z.input<typeof websiteInputSchema>;
@@ -75,6 +82,7 @@ export async function createWebsite(
           domain,
           clientId: data.clientId,
           monitoringEnabled: data.monitoringEnabled ?? true,
+          crawlMode: data.crawlMode ?? "MANUAL",
           nextCheckAt: now,
         },
       });
@@ -113,6 +121,7 @@ export async function updateWebsite(
         clientId: data.clientId,
         monitoringEnabled: enabled,
         ...(enabled ? {} : { status: "PAUSED" as const }),
+        ...(data.crawlMode ? { crawlMode: data.crawlMode } : {}),
       },
     });
   } catch (error) {

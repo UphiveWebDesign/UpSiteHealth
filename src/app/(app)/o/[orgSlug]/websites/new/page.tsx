@@ -20,7 +20,7 @@ export default async function NewWebsitePage({
     <>
       <PageHeader
         title="Add website"
-        subtitle="Uptime is checked every 5 minutes, DNS every 30 minutes and SSL every 6 hours."
+        subtitle="Uptime is checked every 5 minutes, DNS every 30 minutes and SSL every 6 hours. Choose whether UpSiteHealth crawls the site automatically."
       />
       <Card>
         <WebsiteForm

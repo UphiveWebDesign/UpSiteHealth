@@ -6,7 +6,8 @@ import {
 } from "@/lib/ai-search/runner";
 import type { SearchProvider } from "@/lib/ai-search/providers";
 import { processDeliveryJobs, type EmailSender } from "@/lib/alerts/delivery";
-import { processCrawls } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
+import { scheduleDueCrawls } from "@/lib/crawler/schedule";
 import { ProbeDeadlineError, type ProbeDeps } from "@/lib/integrations/probe";
 import {
   runIntegrationCheck,
@@ -57,6 +58,21 @@ export function cronStages(deps: CronDeps): Stage[] {
   return [
     { name: "schedule", until: 0.05, run: () => scheduleDueChecks(db) },
     {
+      // Routine crawls for AUTOMATIC websites (crawler/schedule.ts); the
+      // crawling stage below runs them with the usual limits.
+      name: "crawl-schedule",
+      until: 0.07,
+      run: async () => {
+        const result = await scheduleDueCrawls(db, { now: new Date(clock()) });
+        if (result.failed > 0)
+          throw new StageIncompleteError(
+            `${result.failed} scheduled crawl(s) could not be queued`,
+            result,
+          );
+        return result;
+      },
+    },
+    {
       name: "monitoring",
       until: 0.4,
       run: async ({ deadline }) => {
@@ -79,7 +95,11 @@ export function cronStages(deps: CronDeps): Stage[] {
       until: 0.7,
       run: async ({ deadline }) => {
         const stats = await processCrawls(db, { deadline });
-        if (stats.pageErrors > 0 || stats.runErrors > 0) {
+        if (
+          stats.pageErrors > 0 ||
+          stats.runErrors > 0 ||
+          stats.analysisErrors > 0
+        ) {
           throw new StageIncompleteError("Some crawl work errored", stats);
         }
         return stats;

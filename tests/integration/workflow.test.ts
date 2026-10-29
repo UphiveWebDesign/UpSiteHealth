@@ -2,7 +2,8 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { processCrawls, startCrawl } from "@/lib/crawler/engine";
+import { startCrawl } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
 import type { NetPolicy } from "@/lib/net/ssrf";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
@@ -91,6 +92,7 @@ describe.skipIf(!TEST_DATABASE_URL)("SEO workflow (local database)", () => {
     expect(await loadBaseline(tdb, site.id)).toEqual({
       state: "none",
       incompleteRuns: 0,
+      awaitingAnalysis: 0,
     });
 
     const partial = await crawl({ maxPages: 1 });
@@ -98,6 +100,7 @@ describe.skipIf(!TEST_DATABASE_URL)("SEO workflow (local database)", () => {
     expect(await loadBaseline(tdb, site.id)).toEqual({
       state: "none",
       incompleteRuns: 1,
+      awaitingAnalysis: 0,
     });
 
     const full = await crawl();

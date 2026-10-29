@@ -3,7 +3,8 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { recommendationVisibility } from "@/lib/business/visibility";
-import { processCrawls, startCrawl } from "@/lib/crawler/engine";
+import { startCrawl } from "@/lib/crawler/engine";
+import { processCrawls } from "@/lib/crawler/scheduler";
 import type { NetPolicy } from "@/lib/net/ssrf";
 import {
   buildRecommendations,

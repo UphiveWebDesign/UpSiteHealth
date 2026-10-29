@@ -126,21 +126,6 @@
     "crawlPageId": "bare"
   },
   {
-    "ruleId": "TECH_THIN_CONTENT",
-    "scope": "PAGE",
-    "severity": "INFO",
-    "title": "Thin content",
-    "description": "The page has very little text.",
-    "recommendation": "Consider adding substantive content (at least 200 words).",
-    "evidence": {
-      "url": "https://site.example/bare",
-      "wordCount": 12,
-      "minWords": 200
-    },
-    "fingerprint": "TECH_THIN_CONTENT::https://site.example/bare",
-    "crawlPageId": "bare"
-  },
-  {
     "ruleId": "TECH_TITLE_TOO_SHORT",
     "scope": "PAGE",
     "severity": "LOW",
@@ -215,6 +200,41 @@
     "crawlPageId": "long"
   },
   {
+    "ruleId": "TECH_THIN_CONTENT",
+    "scope": "PAGE",
+    "severity": "INFO",
+    "title": "Thin content",
+    "description": "The page has very little text.",
+    "recommendation": "Consider adding substantive content (at least 200 words).",
+    "evidence": {
+      "url": "https://site.example/thin",
+      "wordCount": 80,
+      "minWords": 200
+    },
+    "fingerprint": "TECH_THIN_CONTENT::https://site.example/thin",
+    "crawlPageId": "thin"
+  },
+  {
+    "ruleId": "TECH_PLACEHOLDER_CONTENT",
+    "scope": "PAGE",
+    "severity": "MEDIUM",
+    "title": "Default placeholder content is published",
+    "description": "An unedited default post or page (such as WordPress's “Hello world!” or “Sample Page”) is live and indexable.",
+    "recommendation": "Delete the placeholder post or page (or replace it with real content), and remove links to it.",
+    "evidence": {
+      "url": "https://site.example/hello-world/",
+      "placeholder": "WordPress “Hello world!” post",
+      "signals": [
+        "default body text",
+        "default URL /hello-world/",
+        "default title or H1"
+      ],
+      "mainWords": 400
+    },
+    "fingerprint": "TECH_PLACEHOLDER_CONTENT::https://site.example/hello-world/",
+    "crawlPageId": "hello"
+  },
+  {
     "ruleId": "TECH_DUPLICATE_TITLE",
     "scope": "SITE",
     "severity": "MEDIUM",
@@ -242,6 +262,24 @@
       "urls": ["https://site.example/dup1", "https://site.example/dup2"]
     },
     "fingerprint": "TECH_DUPLICATE_META_DESCRIPTION::site:e1f522ebf9d1774d",
+    "crawlPageId": null
+  },
+  {
+    "ruleId": "TECH_LOCAL_BUSINESS_INCOMPLETE",
+    "scope": "SITE",
+    "severity": "LOW",
+    "title": "Business structured data is incomplete",
+    "description": "The site's local business markup (such as Hotel or LocalBusiness) leaves out its address, or a telephone number the page shows.",
+    "recommendation": "Add the business's real address and telephone to its structured data, exactly as published on the site; never add details the business has not confirmed.",
+    "evidence": {
+      "entity": "Valley Stay",
+      "types": ["Hotel", "Organization"],
+      "missing": ["address", "telephone"],
+      "telephoneLinksOnPage": 2,
+      "count": 1,
+      "urls": ["https://site.example/stay"]
+    },
+    "fingerprint": "TECH_LOCAL_BUSINESS_INCOMPLETE::site:daeb3d733caf16da",
     "crawlPageId": null
   },
   {

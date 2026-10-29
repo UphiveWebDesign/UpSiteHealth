@@ -5,6 +5,7 @@ import type {
 } from "@/lib/crawler/html";
 import type { EvidencePage } from "@/lib/integrations/evaluate";
 import type { PageType } from "@/lib/knowledge/catalogue";
+import { LEGAL_SEGMENT, legalSignals } from "@/lib/seo/legal";
 
 /**
  * Deterministic page understanding from what the crawler stores: URL,
@@ -183,10 +184,7 @@ const SEGMENT: Array<[RegExp, PageType]> = [
   ],
   [/^(products?|shop|item)$/, "product"],
   [/^(categor(y|ies)|collections?|range)$/, "category"],
-  [
-    /^(privacy|privacy-policy|terms|terms-and-conditions|terms-of-service|cookies?|cookie-policy|legal|imprint|disclaimer|refund-policy)$/,
-    "legal",
-  ],
+  [LEGAL_SEGMENT, "legal"],
 ];
 
 type Score = Partial<Record<PageType, { points: number; why: string[] }>>;
@@ -215,9 +213,22 @@ export function classify(
       candidate: null,
     };
   const score: Score = {};
+  // SEO plugins (Yoast, Rank Math) mark every page as a generic Article. When
+  // the URL and the title or H1 both say "legal page", that generic markup
+  // counts for little, so it cannot outweigh them.
+  const legal = legalSignals(p);
+  const legalEvidence = legal.url && legal.heading;
   for (const t of new Set(p.schemaTypes)) {
     const type = SCHEMA_TYPE[t];
-    if (type) add(score, type, 3, `Structured data says ${t}`);
+    if (!type) continue;
+    if (t === "Article" && legalEvidence)
+      add(
+        score,
+        type,
+        1,
+        "Structured data says Article (generic markup; the URL and title say legal page)",
+      );
+    else add(score, type, 3, `Structured data says ${t}`);
   }
   const segments = p.path.split("/").filter(Boolean);
   segments.forEach((seg, i) => {
@@ -239,12 +250,7 @@ export function classify(
     add(score, "contact", 1, "Title or heading says contact");
   if (/\babout( us)?\b|\bour story\b|\bwho we are\b/.test(heading))
     add(score, "about", 1, "Title or heading says about");
-  if (
-    /\bprivacy policy\b|\bterms (and|&) conditions\b|\bcookie policy\b/.test(
-      heading,
-    )
-  )
-    add(score, "legal", 1, "Title or heading names a policy");
+  if (legal.heading) add(score, "legal", 1, "Title or heading names a policy");
   if (terms.service)
     add(score, "service", 2, "Title or H1 names an approved service");
   if (terms.location && !terms.service)

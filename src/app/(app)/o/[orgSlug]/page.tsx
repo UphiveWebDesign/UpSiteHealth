@@ -1,10 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { NextStepList } from "@/components/next-steps";
+import {
+  PortfolioAttentionCard,
+  PortfolioAttentionLoading,
+} from "@/components/portfolio-attention";
 import { ScoreValue } from "@/components/score";
 import { Badge, StatusDot } from "@/components/ui/badge";
-import { Callout, EmptyState } from "@/components/ui/feedback";
-import { CheckIcon, PulseIcon } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/feedback";
+import { PulseIcon } from "@/components/ui/icons";
 import {
   Card,
   LinkButton,
@@ -13,10 +18,20 @@ import {
   td,
 } from "@/components/ui/layout";
 import { MetricValue, Stat } from "@/components/ui/metric";
+import { db } from "@/lib/db";
 import { formatMs, formatRelative } from "@/lib/format";
+import {
+  isAttentionCategory,
+  loadPortfolioAttention,
+  portfolioAttention,
+  type AttentionCategory,
+} from "@/lib/insights/attention";
 import { nextSteps, rankSteps } from "@/lib/insights/next-steps";
-import { loadWebsiteSummaries } from "@/lib/insights/signals";
-import { requireOrgContext } from "@/lib/tenancy/context";
+import {
+  loadWebsiteSummaries,
+  type WebsiteSummary,
+} from "@/lib/insights/signals";
+import { requireOrgContext, type OrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 
 export const metadata: Metadata = { title: "Overview · UpSiteHealth" };
@@ -29,15 +44,66 @@ const STATUS_ORDER = [
   "PAUSED",
 ] as const;
 
+/** Steps the attention list shows as site health problems. */
+const ATTENTION_STEPS = new Set([
+  "down",
+  "ssl-broken",
+  "dns-missing",
+  "ssl-expiring",
+  "issues",
+]);
+
+/** Evaluates each website's tasks and latest crawls, so it streams in. */
+async function AttentionSection({
+  ctx,
+  sites,
+  base,
+  only,
+  clientId,
+  clients,
+  showAll,
+}: {
+  ctx: OrgContext;
+  sites: WebsiteSummary[];
+  base: string;
+  only: AttentionCategory | null;
+  clientId: string | null;
+  clients: Array<{ id: string; name: string }>;
+  showAll: boolean;
+}) {
+  const now = new Date();
+  const inputs = await loadPortfolioAttention(
+    ctx.db,
+    db(),
+    { organizationId: ctx.organization.id, role: ctx.role },
+    clientId ? sites.filter((s) => s.clientId === clientId) : sites,
+    base,
+    now,
+  );
+  return (
+    <PortfolioAttentionCard
+      attention={portfolioAttention(inputs, base, { now, only })}
+      base={base}
+      only={only}
+      clientId={clientId}
+      clients={clients}
+      showAll={showAll}
+    />
+  );
+}
+
 export default async function OverviewPage({
   params,
+  searchParams,
 }: PageProps<"/o/[orgSlug]">) {
   const { orgSlug } = await params;
+  const { attention: category, client, all } = await searchParams;
+  const only = isAttentionCategory(category) ? category : null;
   const ctx = await requireOrgContext(orgSlug);
   const base = `/o/${orgSlug}`;
   const editor = can.editWebsites(ctx.role);
 
-  const [sites, recentAlerts] = await Promise.all([
+  const [sites, recentAlerts, clients] = await Promise.all([
     loadWebsiteSummaries(ctx.db),
     ctx.db.alertEvent.findMany({
       orderBy: { createdAt: "desc" },
@@ -51,7 +117,13 @@ export default async function OverviewPage({
         website: { select: { id: true, name: true } },
       },
     }),
+    ctx.db.client.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
   ]);
+  // Only this organization's clients (tenant-scoped); anything else is ignored.
+  const clientId = clients.find((c) => c.id === client)?.id ?? null;
 
   if (sites.length === 0) {
     return (
@@ -93,13 +165,13 @@ export default async function OverviewPage({
     );
   }
 
+  // Site health problems are in the attention list; the rest are suggestions.
   const steps = rankSteps(
-    sites.flatMap((s) => nextSteps(s, base)),
+    sites.flatMap((s) =>
+      nextSteps(s, base).filter((step) => !ATTENTION_STEPS.has(step.id)),
+    ),
     6,
   );
-  const urgent = steps.filter(
-    (s) => s.tone === "danger" || s.tone === "warning",
-  ).length;
   const byStatus = Object.fromEntries(
     STATUS_ORDER.map((st) => [st, sites.filter((s) => s.status === st).length]),
   );
@@ -145,14 +217,14 @@ export default async function OverviewPage({
 
       <dl className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
-          label="Need attention"
+          label="Critical or warning"
           value={attention}
           tone={
             byStatus.CRITICAL ? "danger" : attention ? "warning" : "success"
           }
           hint={
             attention
-              ? `${byStatus.CRITICAL} critical · ${byStatus.WARNING} warning`
+              ? `${byStatus.CRITICAL} critical · ${byStatus.WARNING} warning websites`
               : "All websites are healthy"
           }
           href={`${base}/websites`}
@@ -187,32 +259,31 @@ export default async function OverviewPage({
       </dl>
 
       <div className="mb-6 grid gap-6 lg:grid-cols-3">
-        <Card
-          className="lg:col-span-2"
-          title="Needs attention"
-          description="Ranked by urgency and impact across all websites"
-          padded={false}
-        >
-          {steps.length === 0 ? (
-            <div className="p-5">
-              <Callout tone="success" title="Nothing needs your attention">
-                Every website is measured and healthy. We will alert you if that
-                changes.
-              </Callout>
-            </div>
-          ) : (
-            <>
-              {urgent === 0 && (
-                <div className="border-b border-line px-5 py-3 text-sm text-success-700">
-                  <CheckIcon className="mr-1.5 inline h-4 w-4" />
-                  No urgent problems. These steps will improve coverage and
-                  scores.
-                </div>
-              )}
+        <div className="flex flex-col gap-6 lg:col-span-2">
+          <Suspense
+            key={`${only}-${clientId}-${all}`}
+            fallback={<PortfolioAttentionLoading />}
+          >
+            <AttentionSection
+              ctx={ctx}
+              sites={sites}
+              base={base}
+              only={only}
+              clientId={clientId}
+              clients={clients}
+              showAll={all === "1"}
+            />
+          </Suspense>
+          {steps.length > 0 && (
+            <Card
+              title="Suggestions"
+              description="Setup and improvements across all websites"
+              padded={false}
+            >
               <NextStepList steps={steps} showWebsite />
-            </>
+            </Card>
           )}
-        </Card>
+        </div>
 
         <div className="flex flex-col gap-6">
           <Card title="Website status">
@@ -310,6 +381,7 @@ export default async function OverviewPage({
                 <td className={td}>
                   <ScoreValue
                     score={s.latestScore?.score}
+                    freshness={s.latestScore?.freshness}
                     coverage={s.latestScore?.measuredWeight}
                   />
                 </td>

@@ -12,9 +12,23 @@ type Props = {
     url: string;
     clientId: string | null;
     monitoringEnabled: boolean;
+    crawlMode: "AUTOMATIC" | "MANUAL";
   };
   submitLabel: string;
 };
+
+const CRAWL_MODES = [
+  {
+    value: "AUTOMATIC",
+    label: "Automatic",
+    help: "UpSiteHealth crawls the site every week, and soon after work that needs a crawl to confirm it is marked done (at most one such crawl a day).",
+  },
+  {
+    value: "MANUAL",
+    label: "Manual",
+    help: "Crawls run only when someone starts one. Work marked done is confirmed by the next crawl you start.",
+  },
+] as const;
 
 export function WebsiteForm({ action, clients, defaults, submitLabel }: Props) {
   const [state, formAction, pending] = useActionState(action, undefined);
@@ -64,6 +78,29 @@ export function WebsiteForm({ action, clients, defaults, submitLabel }: Props) {
           </p>
         )}
       </div>
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1 text-sm font-medium">Crawling</legend>
+        {CRAWL_MODES.map((m) => (
+          <label key={m.value} className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name="crawlMode"
+              value={m.value}
+              required
+              defaultChecked={(defaults?.crawlMode ?? "AUTOMATIC") === m.value}
+              className="mt-1"
+            />
+            <span>
+              <span className="font-medium text-ink">{m.label}</span>
+              <span className="block text-xs text-muted">{m.help}</span>
+            </span>
+          </label>
+        ))}
+        <p className="text-xs text-muted">
+          Each crawl visits up to 100 pages. Uptime, SSL and DNS monitoring runs
+          either way.
+        </p>
+      </fieldset>
       {defaults && (
         <label className="flex items-center gap-2 text-sm">
           <input

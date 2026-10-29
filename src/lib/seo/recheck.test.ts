@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
   describeGap,
+  evidenceTruncated,
+  evidenceUrls,
+  findingPages,
   pageRecheckGap,
   siteRecheckGap,
   type RecheckPage,
@@ -106,6 +109,90 @@ describe("siteRecheckGap", () => {
   });
 });
 
+describe("site findings that list their pages", () => {
+  const run = {
+    status: "COMPLETED" as const,
+    robotsTxtStatus: "found",
+    sitemapUrlsDiscovered: 3,
+  };
+  const A = "https://site.example/";
+  const B = "https://site.example/contact";
+  const pages = (byUrl: Record<string, RecheckPage | undefined>) => ({
+    urls: [A, B],
+    pageAt: (u: string) => byUrl[u],
+  });
+
+  test("gone only when every listed page was re-analysed in a completed crawl", () => {
+    expect(
+      siteRecheckGap(
+        "TECH_LOCAL_BUSINESS_INCOMPLETE",
+        run,
+        pages({ [A]: ok, [B]: ok }),
+      ),
+    ).toBeNull();
+  });
+
+  test("a listed page that failed, errored, was skipped or lacks the data keeps it open", () => {
+    const cases: Array<[RecheckPage | undefined, string]> = [
+      [
+        { ...ok, status: "FAILED", httpStatus: null, result: null },
+        "fetch-failed",
+      ],
+      [{ ...ok, httpStatus: 500, result: null }, "http-error"],
+      [
+        {
+          ...ok,
+          status: "SKIPPED",
+          skipReason: "BUDGET_EXCEEDED",
+          result: null,
+        },
+        "not-crawled",
+      ],
+      [undefined, "not-crawled"],
+      [{ ...ok, result: { images: [] } }, "missing-data"], // no structured data stored
+    ];
+    for (const [page, kind] of cases)
+      expect(
+        siteRecheckGap(
+          "TECH_LOCAL_BUSINESS_INCOMPLETE",
+          run,
+          pages({ [A]: ok, [B]: page }),
+        ),
+        kind,
+      ).toMatchObject({ kind });
+    // Duplicate titles too: a listed page that did not load cannot confirm it.
+    expect(
+      siteRecheckGap(
+        "TECH_DUPLICATE_TITLE",
+        run,
+        pages({ [A]: ok, [B]: { ...ok, httpStatus: 503, result: null } }),
+      ),
+    ).toMatchObject({ kind: "http-error" });
+  });
+
+  test("an incomplete run is still a gap first; without listed pages the run decides", () => {
+    expect(
+      siteRecheckGap(
+        "TECH_LOCAL_BUSINESS_INCOMPLETE",
+        { ...run, status: "PARTIAL" },
+        pages({ [A]: ok, [B]: ok }),
+      ),
+    ).toEqual({ kind: "incomplete-run", runStatus: "PARTIAL" });
+    expect(
+      siteRecheckGap("TECH_SITEMAP_MISSING", run, {
+        urls: [],
+        pageAt: () => undefined,
+      }),
+    ).toBeNull();
+  });
+
+  test("evidenceUrls reads only string URLs from evidence.urls", () => {
+    expect(evidenceUrls({ urls: [A, 3, null, B] })).toEqual([A, B]);
+    expect(evidenceUrls({ url: A })).toEqual([]);
+    expect(evidenceUrls(null)).toEqual([]);
+  });
+});
+
 test("describeGap explains each gap in plain language", () => {
   expect(describeGap({ kind: "http-error", httpStatus: 503 })).toBe(
     "Not rechecked: the page returned HTTP 503, so its content could not be checked.",
@@ -118,4 +205,56 @@ test("describeGap explains each gap in plain language", () => {
   expect(
     describeGap({ kind: "incomplete-run", runStatus: "CANCELLED" }),
   ).toContain("the latest one is cancelled");
+});
+
+describe("site findings with more pages than their evidence lists", () => {
+  const run = {
+    status: "COMPLETED" as const,
+    robotsTxtStatus: "found",
+    sitemapUrlsDiscovered: 3,
+  };
+  const urls = Array.from(
+    { length: 25 },
+    (_, i) => `https://site.example/p${i}`,
+  );
+  const evidence = { title: "Same", count: 25, urls: urls.slice(0, 20) };
+
+  test("the stored sample is not enough; the full list from the found-in crawl is", () => {
+    expect(evidenceTruncated(evidence)).toBe(true);
+    expect(findingPages(evidence)).toEqual({
+      urls: urls.slice(0, 20),
+      complete: false,
+    });
+    expect(findingPages(evidence, urls)).toEqual({ urls, complete: true });
+    // A short list cannot stand in for the full one.
+    expect(findingPages(evidence, urls.slice(0, 22)).complete).toBe(false);
+    // Untruncated evidence needs nothing more.
+    expect(findingPages({ count: 2, urls: urls.slice(0, 2) })).toEqual({
+      urls: urls.slice(0, 2),
+      complete: true,
+    });
+  });
+
+  test("incomplete lists are a gap; a failed 21st page keeps it open; all rechecked resolves", () => {
+    const pageAt = (bad?: string) => (u: string) =>
+      u === bad ? { ...ok, httpStatus: 500, result: null } : ok;
+    expect(
+      siteRecheckGap("TECH_DUPLICATE_TITLE", run, {
+        ...findingPages(evidence),
+        pageAt: pageAt(),
+      }),
+    ).toEqual({ kind: "missing-data" });
+    expect(
+      siteRecheckGap("TECH_DUPLICATE_TITLE", run, {
+        ...findingPages(evidence, urls),
+        pageAt: pageAt(urls[22]),
+      }),
+    ).toMatchObject({ kind: "http-error" });
+    expect(
+      siteRecheckGap("TECH_DUPLICATE_TITLE", run, {
+        ...findingPages(evidence, urls),
+        pageAt: pageAt(),
+      }),
+    ).toBeNull();
+  });
 });

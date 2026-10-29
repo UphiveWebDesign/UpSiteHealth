@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { FreshnessState } from "@/lib/scoring/freshness";
 import { humanize } from "@/lib/format";
 import { healthLabel, MEASURE_HINT } from "@/lib/insights/next-steps";
 import type { Dimension } from "@/lib/scoring/score";
@@ -20,13 +21,22 @@ function meterTone(score: number): "success" | "brand" | "warning" | "danger" {
 }
 
 /** Compact score + label for tables. Unscored is explicit, never "0". */
+const FRESHNESS_NOTE: Partial<Record<FreshnessState, string>> = {
+  stale: "out of date",
+  unknown: "age unknown",
+  incomplete: "partial crawl",
+};
+
 export function ScoreValue({
   score,
   coverage,
+  freshness,
 }: {
   score: number | null | undefined;
   /** Measured weight 0–100, shown as coverage. */
   coverage?: number | null;
+  /** How current the evidence is; anything but fresh is said next to it. */
+  freshness?: FreshnessState;
 }) {
   if (score === null || score === undefined) {
     return <span className="text-sm text-muted">Not scored yet</span>;
@@ -44,6 +54,11 @@ export function ScoreValue({
           ? ` · ${coverage}% measured`
           : ""}
       </span>
+      {freshness && FRESHNESS_NOTE[freshness] && (
+        <span className="text-xs font-medium text-warning-700">
+          · {FRESHNESS_NOTE[freshness]}
+        </span>
+      )}
     </span>
   );
 }
@@ -110,6 +125,8 @@ type DimensionView = {
   measured: boolean;
   coverage: string;
   summary: string;
+  /** How current this input's evidence is (scoring/freshness.ts). */
+  freshness?: { state: FreshnessState; reason: string };
 };
 
 /**
@@ -163,6 +180,13 @@ export function DimensionList({
                   {d.summary}
                   {d.coverage === "LOW" && " · limited data so far"}
                 </p>
+                {d.freshness &&
+                  d.freshness.state !== "fresh" &&
+                  d.freshness.state !== "missing" && (
+                    <p className="text-xs font-medium text-warning-700">
+                      {d.freshness.reason}
+                    </p>
+                  )}
               </>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-2">

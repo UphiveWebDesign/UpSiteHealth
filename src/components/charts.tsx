@@ -309,7 +309,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 const REASON_TEXT = {
   "not-completed": "No: did not complete",
-  "not-analysed": "No: not analysed",
+  "not-analysed": "No: analysis pending",
   "different-limits": "No: different crawl limits",
   "before-baseline": "Before the baseline",
 } as const;

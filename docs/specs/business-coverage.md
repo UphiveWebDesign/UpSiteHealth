@@ -153,3 +153,124 @@ access exists.
   (`withWebsiteLock`); inside it a move is re-checked (target title still
   free, task unchanged, not completed). Moves are logged
   (`recommendation_rekeyed`) as there is no task history table yet.
+
+## Fact provenance: confirmed facts versus our understanding
+
+Approval says a person reviewed a fact; it does not say the client confirmed
+it. Only facts with source CLIENT count as confirmed by the client
+(`clientConfirmed` in `lib/business/facts.ts`). TEAM, IMPORT and (future)
+INFERENCE facts are our understanding of the business, even once approved.
+
+- Every opportunity and coverage check names each fact with its source, for
+  example “Cottages” (from the client) or “Manali” (imported, not confirmed by
+  the client), in "Approved facts behind it" and in the priority rationale.
+- When any fact behind it was not supplied by the client, the first item to
+  confirm before writing (and the first limit shown with the plan task) is:
+  "Not confirmed by the client: … Check with the client that this is accurate
+  before publishing anything based on it."
+- Provenance never changes whether a gap exists, the task's priority or its
+  identity: the crawl evidence decides that. Stored recommendation rows are
+  unchanged; the note is computed when the task is shown.
+
+## Superseded page needs never complete a task
+
+Service, location and contact page needs are replaced by page opportunities
+(`PAGE_NEEDS`) and never create tasks. `heldReason` now ignores them too. Before
+this, a task whose opportunity was renamed or split while its re-key was
+skipped (an Accept created the new title first) could match only a stale page
+need, for example the old “Cottages and Cafe” service page "covered" by the
+home page title, and the sync marked it COMPLETED. It is now held for review
+("no longer applies"), as the identity rules above intend. Found by the
+two-connection race test (it skips on single-connection `prisma dev`).
+On real PostgreSQL (the isolated `itest-ci` database) it ran and passed
+five independent times on 2026-10-26 (docs/operations/testing.md).
+
+## Workflow stages today
+
+| Stage                | Where it lives now                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| Observed issue       | Coverage needs and page opportunities (calculated from facts and the latest crawl) |
+| Proposed improvement | A `BIZ_` recommendation with status PROPOSED                                       |
+| Approved task        | Accepted: status IN_PROGRESS (accept, dismiss and restore are explicit actions)    |
+| Completed change     | Status COMPLETED, set by a person or by the sync after a confirming crawl          |
+| Verified outcome     | Derived, not stored: a crawl after completion shows the need covered               |
+
+## Smallest missing pieces (not built)
+
+1. **Task history.** `recommendation_events` plus `reportedDoneAt` and
+   `verifiedAt` ([seo-engagement-workflow.md](seo-engagement-workflow.md)), so
+   "a person marked it done" and "a crawl verified it" are recorded with dates
+   and actors instead of inferred. Needs a migration.
+2. **Awaiting client.** The proposed `AWAITING_CLIENT` status, so a task that
+   rests on an unconfirmed fact can wait for the client's answer without being
+   accepted or dismissed. Needs the same migration.
+3. **Per-client access** ([client-access.md](client-access.md)) before
+   clients see business tasks themselves.
+
+## Known limitations for the pilot sites
+
+- **WordPress archives.** Category, tag and author archives ("… Archives")
+  are not recognised as listings; one whose title names an offering may be
+  taken as the page about it. Crawl the pilots and review the "Existing pages
+  considered" list before relying on a "covered" verdict; add a rule only from
+  what real crawls show.
+- **Products.** There is no product fact kind: products and product
+  categories are entered as "Services and products" facts, with the business
+  type "Online shop" for WooCommerce.
+- **Staging sites.** A staging copy is usually noindex or password-protected;
+  noindex pages count one level lower and protected pages are not crawled.
+  Judge a redesign on the live site, or after launch.
+- **Evidence.** Only crawl data and approved facts are used. There is no
+  search-demand data (Search Console queries are not connected), so a
+  recommendation never claims people search for something.
+
+## SEO accuracy sprint (Moh Maya assessment)
+
+- **Sitemaps (discovery evidence v2).** Sitemap index files have their own
+  budget (3) and no longer use up the budget of sitemaps with page URLs (10);
+  at most 13 fetches are attempted in all, failures included. Taxonomy and
+  author archive sitemaps (`category-`, `post_tag-`, `author-`,
+  `post_format-sitemap.xml` and the WordPress core equivalents; never
+  `product_cat`) are skipped on purpose and do not make a crawl incomplete.
+  A listed sitemap that fails is recorded as failed and does. Sitemap files
+  and page URLs are read once each. The seed page's `result.discovery.sitemaps`
+  records discovered, index, processed, skipped, failed and unprocessed
+  sitemaps (counts, and up to 20 URLs each). Before this, Moh Maya's
+  `category-sitemap.xml` (one archive URL) made every crawl incomplete.
+- **Legal pages.** A page is legal when a path segment names a legal page and
+  its title or H1 uses policy wording (`lib/seo/legal.ts`). Generic `Article`
+  markup then counts 1 point instead of 3, so SEO-plugin markup cannot
+  outweigh both signals. A legal page that names an offering or place is a
+  mention (medium), never the page about it.
+- **Content and recommendations** (knowledge catalogue `k2`): thin content
+  uses main-content words when stored and skips noindex pages;
+  `TECH_PLACEHOLDER_CONTENT` finds WordPress's default post and sample page
+  by their default text, or by default URL and title together. Meta
+  description findings on legal pages are marked `pageKind: "legal"` (stored
+  severity unchanged) and, when they are a rule's only findings, rank as INFO
+  (no task of their own below 5). PageSpeed recommendations use the latest
+  valid mobile and desktop results together (within 30 days of each other),
+  led by the worse device, mobile on a tie.
+
+## Coverage accuracy sprint
+
+- **Brand names.** The site name is removed from every heading, description
+  and link text before matching (titles already dropped it), so "Contact MOH
+  MAYA Cottages & Cafe" names neither cottages nor a cafe.
+- **Body text, as evidence only.** Page opportunities and service checks also
+  look in the main content, where a mention is only ever weak: it turns a
+  confirmed gap into a decision to review, and never makes a page "about" an
+  offering. A location named only in body text is "weak" (no task, never
+  "covered"), so a keyword in the body can never complete a task. Legal pages'
+  body text is ignored. Matching uses only the approved wordings (value and
+  other wordings entered); there is no fuzzy matching.
+- **Experiences and facilities.** For hospitality, offerings named as events,
+  activities or attractions (party, celebration, DJ, music, photography,
+  trekking, tour …) are experiences: LOW priority and never a confirmed gap,
+  so never a task on their own. Their task title keeps the `BIZ_SERVICE_PAGE`
+  form, so existing tasks keep their identity, history and status. A
+  facilities page is never a confirmed gap either.
+- **Local business structured data** (`TECH_LOCAL_BUSINESS_INCOMPLETE`,
+  knowledge `k3`): valid JSON-LD of a local business type without an address,
+  or without a telephone when the page has phone links. One site finding per
+  entity, however many pages repeat it; values are never suggested.

@@ -13,6 +13,7 @@ import {
 } from "./analyze";
 import {
   describeGap,
+  findingPages,
   pageRecheckGap,
   siteRecheckGap,
   type RecheckRun,
@@ -53,6 +54,8 @@ export type CrawlSide = {
   run: RecheckRun;
   drafts: SeoFindingDraft[];
   byUrl: Map<string, StoredCrawlPage>;
+  /** Every page each site-wide finding covers (see analyzeCrawl). */
+  sitePages?: Map<string, string[]>;
 };
 
 export type StoredFinding = {
@@ -78,8 +81,13 @@ export type ChangeItem = {
   previouslyUnchecked: boolean;
 };
 
-function gapOn(side: CrawlSide, d: SeoFindingDraft) {
-  if (d.scope === "SITE") return siteRecheckGap(d.ruleId, side.run);
+/** Why `side` cannot recheck `d`; `from` is the crawl `d` was found in. */
+function gapOn(side: CrawlSide, d: SeoFindingDraft, from: CrawlSide) {
+  if (d.scope === "SITE")
+    return siteRecheckGap(d.ruleId, side.run, {
+      ...findingPages(d.evidence, from.sitePages?.get(d.fingerprint)),
+      pageAt: (u) => side.byUrl.get(u),
+    });
   const url = d.evidence.url;
   return pageRecheckGap(
     d.ruleId,
@@ -122,7 +130,7 @@ export function classifyChanges(
       items.push(item(d, "unchanged"));
       continue;
     }
-    const prevGap = gapOn(previous, d);
+    const prevGap = gapOn(previous, d, current);
     const firstSeen = stored.get(d.fingerprint)?.firstSeenAt;
     const seenBefore = !!firstSeen && firstSeen < previous.analyzedAt;
     if (seenBefore) {
@@ -137,7 +145,7 @@ export function classifyChanges(
   }
   for (const d of prev.values()) {
     if (cur.has(d.fingerprint)) continue;
-    const gap = gapOn(current, d);
+    const gap = gapOn(current, d, previous);
     items.push(
       gap
         ? item(d, "not-rechecked", { reason: describeGap(gap) })

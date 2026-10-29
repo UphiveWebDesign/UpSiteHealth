@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { factLabel, GOAL_LABEL } from "@/lib/business/facts";
+import { factWithSource, GOAL_LABEL } from "@/lib/business/facts";
 import type {
   OpportunityCategory,
   OpportunityState,
@@ -21,6 +21,7 @@ const CATEGORY: Record<OpportunityCategory, string> = {
   accommodation: "Accommodation page",
   food: "Food and drink page",
   facilities: "Facilities page",
+  experience: "Experience or event page",
   service: "Service page",
   product: "Product or category page",
   location: "Location page",
@@ -118,7 +119,7 @@ export function OpportunityCard({
             Approved facts behind it
           </dt>
           <dd className="text-ink-2">
-            {o.facts.map((f) => factLabel(f)).join("; ")}
+            {o.facts.map(factWithSource).join("; ")}
           </dd>
         </div>
         <div>

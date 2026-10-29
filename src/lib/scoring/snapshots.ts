@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { IssueSeverity } from "@/generated/prisma/enums";
+import { CONTENT_RULE_IDS } from "@/lib/knowledge/catalogue";
 import { log } from "@/lib/log";
 import { computeHealthScore, type HealthScore } from "./score";
 
@@ -33,7 +34,7 @@ export async function recordScoreSnapshot(
     db.crawlRun.findFirst({
       where: { ...scope, seoAnalyzedAt: { not: null } },
       orderBy: { seoAnalyzedAt: "desc" },
-      select: { id: true, seoAnalyzedAt: true },
+      select: { id: true, seoAnalyzedAt: true, status: true },
     }),
     db.performanceObservation.findFirst({
       where: { ...scope, strategy: "MOBILE" },
@@ -64,7 +65,12 @@ export async function recordScoreSnapshot(
         }),
         db.seoFinding.groupBy({
           by: ["severity"],
-          where: { ...scope, status: "OPEN" },
+          // Content coverage findings stay out of the health score.
+          where: {
+            ...scope,
+            status: "OPEN",
+            ruleId: { notIn: CONTENT_RULE_IDS },
+          },
           _count: true,
         }),
       ])
@@ -81,6 +87,7 @@ export async function recordScoreSnapshot(
       seo: {
         crawlRunId: seoRun?.id ?? null,
         analyzedAt: seoRun?.seoAnalyzedAt ?? null,
+        crawlStatus: seoRun?.status ?? null,
         pagesAnalyzed,
         openFindings: Object.fromEntries(
           findingGroups.map((g) => [g.severity, g._count]),

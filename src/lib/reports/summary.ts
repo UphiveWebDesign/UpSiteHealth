@@ -1,3 +1,4 @@
+import { scoreFreshness, type FreshnessState } from "@/lib/scoring/freshness";
 import type { TenantDb } from "@/lib/tenancy/scope";
 
 export type WebsiteReportRow = {
@@ -12,7 +13,31 @@ export type WebsiteReportRow = {
   openIssues: number;
   openSeoFindings: number;
   latestScore: number | null;
+  /** How current the score's evidence is (scoring/freshness.ts). */
+  scoreFreshness: FreshnessState;
+  /** The oldest dated evidence the score rests on; null when unknown. */
+  scoreEvidenceAt: Date | null;
 };
+
+/**
+ * The latest score with its freshness at `now`, judged from the stored
+ * snapshot as the dashboard does. The score value is never changed, and no
+ * date is given when the evidence has none (missing, unknown or future).
+ */
+export function reportScore(
+  snapshot: { score: number | null; dimensions: unknown } | null | undefined,
+  now: Date,
+): Pick<
+  WebsiteReportRow,
+  "latestScore" | "scoreFreshness" | "scoreEvidenceAt"
+> {
+  const freshness = scoreFreshness(snapshot, now);
+  return {
+    latestScore: snapshot?.score ?? null,
+    scoreFreshness: freshness.state,
+    scoreEvidenceAt: freshness.oldestObservedAt,
+  };
+}
 
 const INCONCLUSIVE = ["BLOCKED", "INVALID_URL"] as const;
 
@@ -21,7 +46,8 @@ export async function organizationReport(
   db: TenantDb,
   days: number,
 ): Promise<WebsiteReportRow[]> {
-  const since = new Date(Date.now() - days * 86_400_000);
+  const now = new Date();
+  const since = new Date(now.getTime() - days * 86_400_000);
   const [websites, outcomes, response, incidents, issues, findings, scores] =
     await Promise.all([
       db.website.findMany({
@@ -66,7 +92,7 @@ export async function organizationReport(
         where: { category: "OVERALL" },
         orderBy: { calculatedAt: "desc" },
         distinct: ["websiteId"],
-        select: { websiteId: true, score: true },
+        select: { websiteId: true, score: true, dimensions: true },
       }),
     ]);
 
@@ -90,7 +116,10 @@ export async function organizationReport(
       incidents: incidents.find((i) => i.websiteId === w.id)?._count ?? 0,
       openIssues: issues.find((i) => i.websiteId === w.id)?._count ?? 0,
       openSeoFindings: findings.find((f) => f.websiteId === w.id)?._count ?? 0,
-      latestScore: scores.find((s) => s.websiteId === w.id)?.score ?? null,
+      ...reportScore(
+        scores.find((s) => s.websiteId === w.id),
+        now,
+      ),
     };
   });
 }

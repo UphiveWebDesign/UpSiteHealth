@@ -1,5 +1,6 @@
 import { Prisma } from "@/generated/prisma/client";
 import { log } from "@/lib/log";
+import type { TenantDb } from "@/lib/tenancy/scope";
 
 /**
  * Business facts live in a table added by prisma/migrations/1_business_facts.
@@ -18,6 +19,28 @@ export function isMissingFactsTable(error: unknown): boolean {
     error.code === "P2021" &&
     (error.meta?.modelName === "BusinessFact" ||
       String(error.message).includes("business_facts"))
+  );
+}
+
+/**
+ * One website's facts through the tenant client, oldest first, with the
+ * review time; null when the facts table does not exist.
+ */
+export function readWebsiteFacts(db: TenantDb, websiteId: string) {
+  return readFacts(() =>
+    db.businessFact.findMany({
+      where: { websiteId },
+      select: {
+        id: true,
+        kind: true,
+        value: true,
+        synonyms: true,
+        source: true,
+        status: true,
+        reviewedAt: true,
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
   );
 }
 

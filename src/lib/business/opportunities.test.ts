@@ -43,6 +43,12 @@ type Spec = {
   skip?: EvidencePage["skipReason"];
   /** Main-content text (defaults to the headings plus filler words). */
   main?: string;
+  /** Main-content passages, one block each (overrides `main`). */
+  blocks?: string[];
+  /** JSON-LD blocks (valid). */
+  schema?: unknown[];
+  /** Meta description. */
+  meta?: string;
   /** Contact signals on the page (defaults to none). */
   contact?: Partial<{
     tel: number;
@@ -64,7 +70,7 @@ const page = (p: Spec): EvidencePage => ({
   depth: 1,
   skipReason: p.skip ?? null,
   title: p.title ?? null,
-  metaDescription: null,
+  metaDescription: p.meta ?? null,
   wordCount: p.words === undefined ? 400 : p.words,
   result: p.skip
     ? null
@@ -75,7 +81,11 @@ const page = (p: Spec): EvidencePage => ({
           anchorText: l.text,
           type: "internal",
         })),
-        structuredData: [],
+        structuredData: (p.schema ?? []).map((data) => ({
+          valid: true,
+          data,
+          error: null,
+        })),
         ...(p.legacy ? {} : newEvidence(p)),
       },
 });
@@ -91,12 +101,14 @@ function newEvidence(p: Spec) {
       source: "main",
       words,
       // Headings, then a body sentence about the page's topic.
-      blocks: [
-        { t: text, w: Math.min(words, text.split(" ").length) },
-        ...(p.main === undefined && p.title
-          ? [{ t: `More about ${p.title} for our guests.`, w: 6 }]
-          : []),
-      ],
+      blocks: p.blocks
+        ? p.blocks.map((t) => ({ t, w: t.split(" ").length }))
+        : [
+            { t: text, w: Math.min(words, text.split(" ").length) },
+            ...(p.main === undefined && p.title
+              ? [{ t: `More about ${p.title} for our guests.`, w: 6 }]
+              : []),
+          ],
     },
     contact: { tel: 0, mailto: 0, whatsapp: 0, forms: 0, ...p.contact },
   };
@@ -476,7 +488,7 @@ describe("business types and safeguards", () => {
       ]).offerings,
     ).toHaveLength(1);
   });
-  test("facilities are grouped into one page; one facility alone needs review", () => {
+  test("facilities are grouped into one page, and it is never a confirmed gap", () => {
     const base = [
       fact({ kind: "BUSINESS_TYPE", value: "hospitality" }),
       fact({ kind: "SERVICE", value: "Rooms" }),
@@ -490,7 +502,14 @@ describe("business types and safeguards", () => {
       ],
     );
     expect(byKey(two, "BIZ_FACILITIES_PAGE")).toHaveLength(1);
-    expect(one(two, "BIZ_FACILITIES_PAGE").state).toBe("confirmed");
+    // Two or more facilities: a decision for a person, not an automatic task.
+    expect(one(two, "BIZ_FACILITIES_PAGE")).toMatchObject({
+      state: "review",
+      recommend: false,
+    });
+    expect(one(two, "BIZ_FACILITIES_PAGE").stateReason).toMatch(
+      /Facilities usually belong on the accommodation page/,
+    );
     const single = cover(
       [HOME],
       [...base, fact({ kind: "SERVICE", value: "Bonfire" })],
@@ -1025,6 +1044,26 @@ describe("stable identity when facts or the business type change (audit M3)", ()
     ]);
   });
 
+  // Stage 2, D2-b (approved): a split is automatic only when exactly one part
+  // shares the task's category. A service task splitting into accommodation
+  // and food has none, so it is held for a person to choose. The test above
+  // pins today's tie-break and is replaced when this lands.
+  test.fails(
+    "D2-b: approving “hospitality” holds the combined task for review, listing both parts",
+    () => {
+      const c = cover([HOME], services(true));
+      const plan = rekeyTasks([task(COMBINED)], c);
+      expect(plan.moves).toEqual([]);
+      expect(plan.ambiguous).toEqual([
+        {
+          id: COMBINED,
+          title: COMBINED,
+          candidates: expect.arrayContaining([ACC, FOOD]),
+        },
+      ]);
+    },
+  );
+
   test("withdrawing “hospitality”: the accommodation task takes the combined page when it is planned", () => {
     // No page names the offering, so the combined page is a confirmed gap.
     const c = cover(
@@ -1039,6 +1078,23 @@ describe("stable identity when facts or the business type change (audit M3)", ()
       { id: ACC, from: ACC, to: COMBINED },
     ]);
   });
+
+  // Stage 2, D2-b (approved): a merge is automatic only when exactly one part
+  // task competes for the whole. Two do here, so both are held and listed.
+  test.fails(
+    "D2-b: withdrawing “hospitality” with two part tasks holds both for review",
+    () => {
+      const c = cover(
+        [{ ...HOME, title: "Welcome", h1: ["Welcome"] }],
+        services(false),
+      );
+      const plan = rekeyTasks([task(FOOD), task(ACC)], c);
+      expect(plan.moves).toEqual([]);
+      expect(plan.ambiguous.map((a) => a.id).sort()).toEqual(
+        [ACC, FOOD].sort(),
+      );
+    },
+  );
 
   test("a partial match never quietly accepts an opportunity awaiting review; the task waits instead", () => {
     const c = cover([HOME], services(false)); // the home page names it: review
@@ -1057,6 +1113,17 @@ describe("stable identity when facts or the business type change (audit M3)", ()
     ]);
     expect(movesOf([task(COMBINED, "COMPLETED")], c)).toEqual([]);
   });
+
+  // Stage 2, D2-b (approved): the same split held for review applies to a
+  // dismissed task; completed work is still never moved.
+  test.fails(
+    "D2-b: a dismissed combined task is held for review on a split, not moved",
+    () => {
+      const c = cover([HOME], services(true));
+      expect(movesOf([task(COMBINED, "DISMISSED")], c)).toEqual([]);
+      expect(movesOf([task(COMBINED, "COMPLETED")], c)).toEqual([]);
+    },
+  );
 
   test("never two tasks for one purpose: an opportunity that already has a task is not claimed", () => {
     const c = cover([HOME], services(true));
@@ -1158,6 +1225,31 @@ describe("re-keying is conservative and explainable (sprint 3)", () => {
       [svc("Emergency boiler repair")],
     );
     expect(movesOf([task(key("Boiler repair"))], review)).toEqual([]);
+  });
+
+  // Stage 2, D2 (approved): a partial (score 1) match never moves a task by
+  // itself; it becomes a suggestion a person confirms. The test above pins
+  // today's automatic move and is replaced when this lands.
+  test.fails(
+    "D2: a narrower or broader wording (score 1) is a suggestion, not a move",
+    () => {
+      const c = cover(blank, [svc("Emergency boiler repair")]);
+      const plan = rekeyTasks([task(key("Boiler repair"))], c) as ReturnType<
+        typeof rekeyTasks
+      > & { suggestions?: Array<{ id: string; to: string }> };
+      expect(plan.moves).toEqual([]);
+      expect(plan.suggestions).toEqual([
+        { id: key("Boiler repair"), to: key("Emergency boiler repair") },
+      ]);
+    },
+  );
+
+  test("D2: the reverse wording (broader) is also never a silent move onto an opportunity awaiting review", () => {
+    const review = cover(
+      [HOME, { path: "/x/", h2: ["Boiler repair"] }],
+      [svc("Boiler repair")],
+    );
+    expect(movesOf([task(key("Emergency boiler repair"))], review)).toEqual([]);
   });
 
   test("several equally good targets: left alone and reported as ambiguous", () => {
@@ -1273,6 +1365,73 @@ describe("discovery truncation and coverage (sprint 3)", () => {
   });
 });
 
+describe("sitemap ledger (v2) and coverage", () => {
+  const ACC = "BIZ_ACCOMMODATION_PAGE";
+  const seed = (discovery: object): EvidencePage => {
+    const p = page(HOME);
+    return {
+      ...p,
+      discoverySource: "SEED",
+      result: { ...(p.result as object), discovery },
+    };
+  };
+  const run = (discovery: object) =>
+    analyzeCoverage({
+      websiteUrl: SITE,
+      crawl: {
+        status: "COMPLETED",
+        analyzedAt: RECENT,
+        pages: [seed(discovery), page(PRIVACY)],
+        maxDiscoveredUrls: 2000,
+      },
+      facts: MOH_MAYA(),
+      now: NOW,
+    });
+  const list = (urls: string[]) => ({ count: urls.length, urls });
+  const ledger = (o: {
+    skipped?: string[];
+    failed?: string[];
+    unprocessed?: string[];
+  }) => {
+    const failed = o.failed ?? [];
+    const unprocessed = o.unprocessed ?? [];
+    return {
+      v: 2,
+      sitemapFilesOmitted: failed.length + unprocessed.length,
+      sitemapUrlsCapped: false,
+      sitemaps: {
+        discovered: 3,
+        indexes: 1,
+        processed: 2,
+        skipped: list(o.skipped ?? []),
+        failed: list(failed),
+        unprocessed: list(unprocessed),
+      },
+    };
+  };
+
+  test("only an archive sitemap skipped on purpose: the crawl is complete (Moh Maya)", () => {
+    const c = run(
+      ledger({ skipped: ["https://mohmaya.example/category-sitemap.xml"] }),
+    );
+    expect(c.crawl).toMatchObject({ complete: true, limits: [] });
+    expect(one(c, ACC).state).toBe("confirmed");
+  });
+
+  test("failed or unread sitemaps: incomplete, with what happened", () => {
+    const c = run(
+      ledger({
+        failed: ["https://mohmaya.example/page-sitemap.xml"],
+        unprocessed: ["https://mohmaya.example/x-sitemap.xml"],
+      }),
+    );
+    expect(c.crawl!.limits).toContain(
+      "2 sitemap files listed by the site could not be read (1 failed, 1 beyond the crawl's limits), so pages listed only there were not checked.",
+    );
+    expect(one(c, ACC).state).toBe("incomplete");
+  });
+});
+
 describe("final correctness pass (sprint 4)", () => {
   test("“not offered” matches an offering's approved other wordings; unrelated offerings are unaffected", () => {
     const c = cover(
@@ -1375,5 +1534,355 @@ describe("final correctness pass (sprint 4)", () => {
       }).pages[1];
     expect(read(at(`${SITE}cottages/`)).canonicalElsewhere).toBe(false);
     expect(read(at(`${SITE}rooms/`)).canonicalElsewhere).toBe(true);
+  });
+});
+
+describe("fact provenance: what the client confirmed versus our understanding", () => {
+  const pages = [HOME, PRIVACY];
+  const ACCOMMODATION =
+    "Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)";
+  const withSource = (source: Fact["source"]) =>
+    MOH_MAYA().map((f) => (f.kind === "SERVICE" ? { ...f, source } : f));
+
+  test("facts the client supplied need no confirmation note", () => {
+    const c = cover(pages, MOH_MAYA());
+    const o = one(c, "BIZ_ACCOMMODATION_PAGE");
+    expect(o.assumptions.join(" ")).not.toMatch(/Not confirmed by the client/);
+    const m = coverageMeta(ACCOMMODATION, c)!;
+    expect(m.priorityRationale).toMatch(
+      /“Cottages and Cafe” \(from the client\)/,
+    );
+    expect(m.limits.join(" ")).not.toMatch(/Not confirmed by the client/);
+  });
+
+  test("a fact our team entered is flagged first, but the gap itself is unchanged", () => {
+    const c = cover(pages, withSource("TEAM"));
+    const o = one(c, "BIZ_ACCOMMODATION_PAGE");
+    // Provenance does not change what the crawl shows: still recommended.
+    expect(o).toMatchObject({ state: "confirmed", recommend: true });
+    expect(o.assumptions[0]).toBe(
+      "Not confirmed by the client: “Cottages and Cafe” (entered by our team, not confirmed by the client). Check with the client that this is accurate before publishing anything based on it.",
+    );
+    const m = coverageMeta(ACCOMMODATION, c)!;
+    expect(m.priorityRationale).toMatch(
+      /“Cottages and Cafe” \(entered by our team, not confirmed by the client\)/,
+    );
+    expect(m.limits[0]).toMatch(/^Not confirmed by the client/);
+    // Opportunities resting only on client-supplied facts are not flagged.
+    const contact = one(c, "BIZ_CONTACT_PATH");
+    expect(contact.assumptions.join(" ")).not.toMatch(
+      /Not confirmed by the client/,
+    );
+  });
+
+  test("imported facts are not treated as confirmed either", () => {
+    const o = one(cover(pages, withSource("IMPORT")), "BIZ_ACCOMMODATION_PAGE");
+    expect(o.assumptions[0]).toMatch(
+      /“Cottages and Cafe” \(imported, not confirmed by the client\)/,
+    );
+  });
+
+  test("coverage checks carry the note in their recommendation limits", () => {
+    const facts = [
+      ...MOH_MAYA(),
+      fact({ kind: "SERVICE_AREA", value: "Manali", source: "IMPORT" }),
+    ];
+    const c = cover(pages, facts);
+    const need = c.needs.find((x) => x.kind === "service-areas");
+    expect(need?.recommend).toBe(true);
+    const m = coverageMeta(need!.key, c)!;
+    expect(m.priorityRationale).toMatch(
+      /“Manali” \(imported, not confirmed by the client\)/,
+    );
+    expect(m.limits[0]).toMatch(
+      /^Not confirmed by the client: “Manali” \(imported/,
+    );
+  });
+});
+
+describe("a task whose opportunity was replaced is held, never completed", () => {
+  // "hospitality" splits “Cottages and Cafe” into accommodation and food
+  // pages. If the re-key of the old task was skipped (an Accept created the
+  // new title first), the old task matches no opportunity. A stale
+  // service-page need for the old title is "covered" by the home page title,
+  // but page needs never decide completion.
+  const OLD = "Add a page for “Cottages and Cafe” (BIZ_SERVICE_PAGE)";
+  const ACC_KEY =
+    "Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)";
+  const c = cover([HOME, PRIVACY], MOH_MAYA(), {
+    existing: new Map([[OLD, "IN_PROGRESS"]]),
+  });
+
+  test("the old title has no opportunity, only a page need the home page covers", () => {
+    expect(c.opportunities.find((o) => o.key === OLD)).toBeUndefined();
+    expect(c.needs.find((n) => n.key === OLD)).toMatchObject({
+      kind: "service-page",
+      status: "covered",
+    });
+  });
+
+  test("heldReason holds it for review instead of completing it", () => {
+    const ctx = { issues: new Map(), remainingRules: new Map(), coverage: c };
+    expect(heldReason({ title: OLD, issueId: null }, ctx)).toBe("ignored");
+    // Tasks with a live opportunity or a non-page need are unaffected.
+    expect(heldReason({ title: ACC_KEY, issueId: null }, ctx)).toBe(
+      "unverified",
+    );
+  });
+});
+
+describe("business coverage accuracy: Moh Maya's real page shapes", () => {
+  const BRAND = "MOH MAYA COTTAGES & CAFE";
+  const MM_HOME: Spec = {
+    path: "/",
+    title: "Cottages Near Kasol | MOH MAYA Cottages & Cafe",
+    h1: ["Cottages Near Kasol for a Peaceful Mountain Stay"],
+    h2: [
+      "Explore Our Cottages Near Kasol",
+      "Camping Stays",
+      "Birthday Celebrations",
+      "Weekend DJ Nights",
+      "A Little Cafe Time in the Mountains",
+    ],
+    words: 514,
+    blocks: [
+      "Looking for cottages near Kasol? MOH MAYA Cottages & Cafe offers a peaceful mountain stay in Sosan.",
+      "8 Cottages 4 Camping Tents Cafe & Restaurant",
+      "Mountain Cottages: unwind in a cozy private room after a day exploring.",
+      "Enquire About Cottages",
+      "Camping Stays: enjoy an outdoor escape with mountain scenery and fresh air.",
+      "Enquire About Camping",
+      "Birthday Celebrations",
+      "Ask about private group arrangements for your occasion.",
+      "Weekend DJ Nights. Ask us about upcoming music nights and availability.",
+      "Cafe & Restaurant. Breakfast package. Group dinner.",
+    ],
+    contact: { tel: 4, whatsapp: 11 },
+    meta: "Discover cottages near Kasol at MOH MAYA Cottages & Cafe in Sosan, Himachal Pradesh. Enjoy mountain views, camping, bonfires and cafe dining.",
+  };
+  const MM_PRIVACY: Spec = {
+    path: "/privacy-policy/",
+    title: `Privacy Policy - ${BRAND}`,
+    h1: ["Privacy Policy"],
+    h2: ["3. WhatsApp and Telephone Enquiries", `13. Contact ${BRAND}`],
+    words: 1266,
+    blocks: [
+      "We use your details to answer enquiries about cottages, camping and the cafe.",
+    ],
+  };
+  const MM_HELLO: Spec = {
+    path: "/hello-world/",
+    title: `Hello world! - ${BRAND}`,
+    h1: ["Hello world!"],
+    words: 52,
+    schema: [{ "@type": "BlogPosting", headline: "Hello world!" }],
+    blocks: [
+      "Welcome to WordPress. This is your first post. Edit or delete it, then start writing!",
+    ],
+  };
+  const PAGES = [MM_HOME, MM_HELLO, MM_PRIVACY];
+  const base = (groupSynonyms: string[] = []) => [
+    fact({ kind: "BUSINESS_TYPE", value: "hospitality" }),
+    fact({
+      kind: "SERVICE",
+      value: "Cottages",
+      synonyms: ["Mountain cottages"],
+    }),
+    fact({ kind: "SERVICE", value: "Camping", synonyms: ["Camping stays"] }),
+    fact({ kind: "SERVICE", value: "Cafe", synonyms: ["Restaurant"] }),
+    fact({
+      kind: "SERVICE",
+      value: "Private group parties",
+      synonyms: groupSynonyms,
+    }),
+    fact({ kind: "SERVICE", value: "Mountain photography spot" }),
+    fact({ kind: "SERVICE", value: "Birthday celebrations" }),
+    fact({
+      kind: "SERVICE",
+      value: "Weekend DJ nights",
+      synonyms: ["DJ nights"],
+    }),
+    fact({
+      kind: "LOCATION",
+      value: "Sosan, Himachal Pradesh 175105",
+      synonyms: ["Sosan"],
+    }),
+    fact({ kind: "GOAL", value: "bookings" }),
+    fact({ kind: "GOAL", value: "calls" }),
+  ];
+  const PARTIES = "Add a page for “Private group parties” (BIZ_SERVICE_PAGE)";
+  const PHOTO = "Add a page for “Mountain photography spot” (BIZ_SERVICE_PAGE)";
+  const opp = (c: CoverageResult, key: string) =>
+    c.opportunities.find((o) => o.key === key)!;
+  const verdict = (o: PageOpportunity, path: string) =>
+    o.considered.find((p) => new URL(p.url).pathname === path)?.verdict;
+
+  test("1. private group arrangements on the home page: a mention to review, not a gap", () => {
+    // With the alternate name configured, the home page's body mention is evidence.
+    const c = cover(PAGES, base(["Private group arrangements"]));
+    expect(opp(c, PARTIES)).toMatchObject({
+      category: "experience",
+      state: "review",
+      recommend: false,
+    });
+    const need = c.needs.find((n) => n.key === PARTIES)!;
+    expect(need.status).toBe("weak");
+    expect(need.matches[0]).toMatchObject({
+      strength: "weak",
+      where: ["main content"],
+    });
+    // Without it, no fuzzy match ("parties" ≠ "arrangements"), but an
+    // event is never a confirmed standalone-page gap either.
+    const plain = opp(cover(PAGES, base()), PARTIES);
+    expect(plain).toMatchObject({ state: "review", recommend: false });
+    expect(plain.stateReason).toMatch(/It is an experience or event/);
+  });
+
+  test("2. a photography spot is an experience: optional, LOW, never automatic", () => {
+    const o = opp(cover(PAGES, base()), PHOTO);
+    expect(o).toMatchObject({
+      category: "experience",
+      name: "Mountain photography spot (experience or event)",
+      state: "review",
+      priority: "LOW",
+      recommend: false,
+    });
+    expect(o.priorityReason).toMatch(/supports a stay/);
+  });
+
+  test("3. cottages: discussed on the home page, so a dedicated page is optional; alone, the home page fulfils it", () => {
+    const c = cover(PAGES, base());
+    const cottages = opp(
+      c,
+      "Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)",
+    );
+    expect(cottages).toMatchObject({ state: "review", recommend: false });
+    expect(verdict(cottages, "/")).toMatch(/main content discusses it/);
+    const alone = cover(PAGES, [
+      fact({ kind: "BUSINESS_TYPE", value: "hospitality" }),
+      fact({ kind: "SERVICE", value: "Cottages" }),
+      fact({ kind: "GOAL", value: "bookings" }),
+    ]);
+    expect(one(alone, "BIZ_ACCOMMODATION_PAGE")).toMatchObject({
+      state: "fulfilled",
+      fulfilledBy: new URL("/", SITE).href,
+    });
+  });
+
+  test("4. camping: covered by home-page passages, a dedicated page is an option to review", () => {
+    const camping = cover(PAGES, base()).opportunities.find((o) =>
+      o.key.includes("“Camping”"),
+    )!;
+    expect(camping).toMatchObject({ state: "review", recommend: false });
+    expect(camping.stateReason).toMatch(/dedicated page is optional/);
+  });
+
+  test("5. the privacy policy and the default WordPress post are never offering pages", () => {
+    const c = cover(PAGES, base());
+    const byPath = Object.fromEntries(
+      c.pages.map((p) => [new URL(p.url).pathname, p.type]),
+    );
+    expect(byPath).toMatchObject({
+      "/privacy-policy/": "legal",
+      "/hello-world/": "article",
+    });
+    for (const o of c.opportunities) {
+      expect(o.fulfilledBy ?? "").not.toMatch(/privacy-policy|hello-world/);
+      if (o.considered.some((p) => p.url.includes("privacy-policy")))
+        expect(verdict(o, "/privacy-policy/")).toBe(
+          "Legal page: not considered.",
+        );
+    }
+  });
+
+  test("6. the business name in a heading is not evidence for its words", () => {
+    const GALLERY: Spec = {
+      path: "/gallery/",
+      title: `Gallery - ${BRAND}`,
+      h1: ["Gallery"],
+      h2: [`Moments at ${BRAND}`],
+    };
+    const c = cover([...PAGES, GALLERY], base());
+    for (const kind of ["Cottages", "Cafe"]) {
+      const need = c.needs.find(
+        (n) => n.kind === "service-page" && n.facts[0].value === kind,
+      )!;
+      const urls = need.matches.map((m) => new URL(m.url).pathname);
+      expect(urls, kind).not.toContain("/privacy-policy/");
+      expect(urls, kind).not.toContain("/gallery/");
+    }
+    // A heading that names the offering beside the brand still counts.
+    const named = cover(
+      [...PAGES, { ...GALLERY, h2: [`Our cottages at ${BRAND}`] }],
+      base(),
+    ).needs.find((n) => n.facts[0].value === "Cottages")!;
+    expect(named.matches.map((m) => new URL(m.url).pathname)).toContain(
+      "/gallery/",
+    );
+  });
+
+  test("a location named only in body text: no task, and never counted as covered", () => {
+    const c = cover(
+      [{ ...MM_HOME, meta: undefined }, MM_HELLO, MM_PRIVACY],
+      base(),
+    );
+    const need = c.needs.find((n) => n.kind === "location-mention")!;
+    expect(need).toMatchObject({ status: "weak", recommend: false });
+    expect(need.note).toMatch(/Named only in the main text/);
+    const key = need.key;
+    const ctx = { issues: new Map(), remainingRules: new Map(), coverage: c };
+    expect(heldReason({ title: key, issueId: null }, ctx)).toBe("unverified");
+  });
+
+  test("7. nothing new is created automatically for Moh Maya", () => {
+    expect(coverageDrafts(cover(PAGES, base())).map((d) => d.title)).toEqual(
+      [],
+    );
+  });
+
+  test("8. existing tasks keep their identity: kept, never completed or duplicated, and can be dismissed", () => {
+    const existing: ExistingTasks = new Map([
+      [PARTIES, "PROPOSED"],
+      [PHOTO, "PROPOSED"],
+    ]);
+    const c = cover(PAGES, base(), { existing });
+    for (const key of [PARTIES, PHOTO]) {
+      // Same title (identity), still in the plan, now LOW and explained.
+      expect(opp(c, key)).toMatchObject({
+        decision: "accepted",
+        recommend: true,
+        priority: "LOW",
+        state: "review",
+      });
+      const ctx = { issues: new Map(), remainingRules: new Map(), coverage: c };
+      expect(heldReason({ title: key, issueId: null }, ctx)).toBe("unverified");
+    }
+    // Drafts update the same two titles; no new task appears.
+    expect(
+      coverageDrafts(c)
+        .map((d) => d.title)
+        .sort(),
+    ).toEqual([PARTIES, PHOTO].sort());
+    expect(coverageDrafts(c).map((d) => d.priority)).toEqual(["LOW", "LOW"]);
+    expect(
+      rekeyTasks(
+        [PARTIES, PHOTO].map((title, i) => ({
+          id: `t${i}`,
+          title,
+          status: "PROPOSED" as const,
+          issueId: null,
+          updatedAt: NOW,
+        })),
+        c,
+      ).moves,
+    ).toEqual([]);
+    // A person's dismissal is kept.
+    const dismissed = cover(PAGES, base(), {
+      existing: new Map([[PHOTO, "DISMISSED"]]),
+    });
+    expect(opp(dismissed, PHOTO)).toMatchObject({
+      decision: "dismissed",
+      recommend: false,
+    });
   });
 });

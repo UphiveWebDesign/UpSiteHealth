@@ -15,6 +15,10 @@ organizations is unchanged and unaffected.
 - Business facts, coverage and business coverage tasks (`BIZ_…`) are
   hidden from CLIENT members entirely until this is built
   (`src/lib/business/visibility.ts`, [business-coverage.md](business-coverage.md)).
+- The Overview's portfolio attention list
+  ([portfolio-attention.md](portfolio-attention.md)) follows the same
+  rules: every website of the organization, without business tasks. Its
+  client filter narrows the view; it is not access control.
 
 ## Proposed design
 

@@ -20,6 +20,8 @@ export type Fact = {
   synonyms: string[];
   source: BusinessFactSource;
   status: BusinessFactStatus;
+  /** When a person approved or rejected it, when loaded (null: pending). */
+  reviewedAt?: Date | null;
 };
 
 /** Kinds in display order, with the wording used on the profile page. */
@@ -127,6 +129,40 @@ export function factLabel(f: Pick<Fact, "kind" | "value">): string {
     return BUSINESS_TYPE_LABEL[f.value as BusinessType] ?? f.value;
   if (f.kind === "GOAL") return GOAL_LABEL[f.value as Goal] ?? f.value;
   return f.value;
+}
+
+/**
+ * Whether the client confirmed a fact: only facts the client supplied are.
+ * Facts our team entered or imported are our understanding of the business,
+ * even once approved, until the client confirms them.
+ */
+export const clientConfirmed = (f: Pick<Fact, "source">) =>
+  f.source === "CLIENT";
+
+const UNCONFIRMED_SOURCE: Record<BusinessFactSource, string> = {
+  CLIENT: "from the client",
+  TEAM: "entered by our team, not confirmed by the client",
+  IMPORT: "imported, not confirmed by the client",
+  INFERENCE: "suggested by UpSiteHealth, not confirmed by the client",
+};
+
+/** A fact with where it came from: “Cottages” (from the client). */
+export function factWithSource(
+  f: Pick<Fact, "kind" | "value" | "source">,
+): string {
+  return `“${factLabel(f)}” (${UNCONFIRMED_SOURCE[f.source]})`;
+}
+
+/**
+ * What to confirm with the client before acting on facts they did not
+ * supply, or null when the client supplied every one.
+ */
+export function unconfirmedFactsNote(
+  facts: Array<Pick<Fact, "kind" | "value" | "source">>,
+): string | null {
+  const open = facts.filter((f) => !clientConfirmed(f));
+  if (!open.length) return null;
+  return `Not confirmed by the client: ${open.map(factWithSource).join(", ")}. Check with the client that this is accurate before publishing anything based on it.`;
 }
 
 const text = z

@@ -1,3 +1,4 @@
+import { db } from "@/lib/db";
 import { buildExport, DATASETS, type Dataset } from "@/lib/reports/exports";
 import { findOrgContext } from "@/lib/tenancy/context";
 
@@ -22,6 +23,8 @@ export async function GET(
   const csv = await buildExport(ctx.db, dataset as Dataset, {
     days,
     websiteId,
+    role: ctx.role,
+    root: db(),
   });
 
   const date = new Date().toISOString().slice(0, 10);

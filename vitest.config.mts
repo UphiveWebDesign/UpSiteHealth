@@ -24,5 +24,12 @@ export default defineConfig({
     // `prisma dev` (PGlite) serves one connection at a time, so integration
     // test files must not run in parallel against it.
     fileParallelism: !process.env.TEST_DATABASE_URL,
+    // A hosted test database (Neon) costs a network round trip per query and
+    // seconds per new connection, so database tests get far more than the
+    // 5-second default: the slowest (several full syncs) takes 2-4 minutes
+    // from here. Unit-only runs keep the defaults.
+    ...(process.env.TEST_DATABASE_URL
+      ? { testTimeout: 600_000, hookTimeout: 600_000 }
+      : {}),
   },
 });

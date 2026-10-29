@@ -1,4 +1,8 @@
-import type { CheckOutcome, IssueSeverity } from "@/generated/prisma/enums";
+import type {
+  CheckOutcome,
+  CrawlRunStatus,
+  IssueSeverity,
+} from "@/generated/prisma/enums";
 
 /**
  * Unified website health score v2 — RECONSTRUCTED.
@@ -44,6 +48,8 @@ export type ScoreInputs = {
   seo: {
     crawlRunId: string | null;
     analyzedAt: Date | null;
+    /** The analysed crawl's status: a run that did not complete checked only part of the site. */
+    crawlStatus?: CrawlRunStatus | null;
     pagesAnalyzed: number;
     openFindings: Partial<Record<IssueSeverity, number>>;
   };
@@ -117,9 +123,12 @@ function technicalSeo(input: ScoreInputs["seo"]): DimensionScore {
   );
   // Penalty per analysed page, so large sites are not punished for size alone.
   const score = measured ? clamp(100 - (penalty / pages) * 4) : null;
+  // A crawl that stopped early (page budget, cancellation) checked only part
+  // of the site: never more than limited coverage, however many pages.
+  const incomplete = !!input.crawlStatus && input.crawlStatus !== "COMPLETED";
   const coverage: Coverage = !measured
     ? "NONE"
-    : pages < 10
+    : pages < 10 || incomplete
       ? "LOW"
       : pages < 50
         ? "MEDIUM"
@@ -137,12 +146,13 @@ function technicalSeo(input: ScoreInputs["seo"]): DimensionScore {
     sampleCount: pages,
     sourceTimestamp: iso(input.analyzedAt),
     summary: measured
-      ? `${total} open findings across ${pages} analysed pages`
+      ? `${total} open findings across ${pages} analysed pages${incomplete ? `; the latest crawl was ${input.crawlStatus!.toLowerCase()}, so part of the site was not checked` : ""}`
       : "No analysed crawl yet",
     evidence: {
       crawlRunId: input.crawlRunId,
       findingCounts: input.openFindings,
       pagesAnalyzed: pages,
+      ...(input.crawlStatus ? { crawlStatus: input.crawlStatus } : {}),
     },
   };
 }

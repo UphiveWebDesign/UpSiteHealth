@@ -4,6 +4,7 @@ import type {
   RecommendationStatus,
 } from "@/generated/prisma/enums";
 import { relevantFacts } from "@/lib/business/coverage";
+import { isContentRule } from "@/lib/knowledge/catalogue";
 import type { Confidence } from "@/lib/integrations/evaluate";
 import {
   businessRelevance,
@@ -20,6 +21,7 @@ import {
   recommendationBasis,
   recommendationMeta,
   recommendationState,
+  verifiedByCrawl,
   type RecommendationBasis,
   type RecommendationState,
 } from "@/lib/recommendations/generate";
@@ -27,6 +29,7 @@ import type {
   Effort,
   RecommendationMeta,
 } from "@/lib/recommendations/metadata";
+import { provenanceLabel } from "@/lib/recommendations/provenance";
 
 /**
  * A read-only weekly SEO plan preview built from existing recommendations.
@@ -62,11 +65,15 @@ export type PlanItem = {
   rationale: string | null;
   effort: Effort | null;
   confidence: { level: Confidence; reason: string } | null;
+  /** Where the evidence comes from and how current it is (provenance.ts). */
+  basedOn: string | null;
   /** What the evidence does not show. */
   limits: string[];
   verification: string | null;
   /** Titles of open items that should be done first. */
   dependsOn: string[];
+  /** Waiting for evidence that only a new crawl can bring (verifiedByCrawl). */
+  waitsForCrawl: boolean;
   /** Technical fix, new page, or other business coverage work. */
   workType: WorkType;
   /** For a new page: what it is for (a proposal, not a decision). */
@@ -137,6 +144,9 @@ const PAGE_CODES = new Set([
 ]);
 
 export function workType(basis: RecommendationBasis): WorkType {
+  // Content gaps (seo/content.ts) are business coverage, not a technical fix.
+  if (basis.kind === "seo-rule" && isContentRule(basis.ruleId))
+    return "business";
   if (basis.kind !== "coverage") return "technical";
   return PAGE_CODES.has(basis.code) ? "new-page" : "business";
 }
@@ -216,6 +226,7 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     id: i.id,
     title: i.title,
     ...splitTitle(i.title),
+    waitsForCrawl: i.state.kind === "awaiting-recheck" && verifiedByCrawl(i),
     // A page to be created has no affected pages (its URLs are the pages
     // that were considered, not affected).
     affectedPages:
@@ -237,6 +248,7 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
     confidence: i.meta
       ? { level: i.meta.confidence, reason: i.meta.confidenceReason }
       : null,
+    basedOn: i.meta?.provenance ? provenanceLabel(i.meta.provenance) : null,
     limits: i.meta?.limits ?? [],
     verification: i.meta?.verification ?? null,
     dependsOn:

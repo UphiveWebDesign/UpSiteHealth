@@ -2,10 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState } from "@/components/ui/feedback";
+import { Callout, EmptyState } from "@/components/ui/feedback";
 import { Card, PageHeader, Table, td } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { WebsiteNav } from "@/components/website-nav";
+import {
+  crawlActivity,
+  describeActivity,
+  lastCrawlProcessorAt,
+  loadPageFacts,
+} from "@/lib/crawler/activity";
+import { crawlSchedule, describeCrawlSchedule } from "@/lib/crawler/schedule";
+import { db } from "@/lib/db";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
@@ -27,7 +35,7 @@ export default async function CrawlsPage({
   const ctx = await requireOrgContext(orgSlug);
   const website = await ctx.db.website.findFirst({
     where: { id: websiteId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, crawlMode: true, monitoringEnabled: true },
   });
   if (!website) notFound();
   const runs = await ctx.db.crawlRun.findMany({
@@ -40,6 +48,24 @@ export default async function CrawlsPage({
     (r) => r.status === "QUEUED" || r.status === "RUNNING",
   );
   const base = `/o/${orgSlug}/websites/${websiteId}`;
+  const now = new Date();
+  const schedule = crawlSchedule(website, runs[0] ?? null, now);
+  // What is actually happening: a RUNNING status alone proves nothing.
+  const pageFacts = await loadPageFacts(
+    ctx.db,
+    runs
+      .filter((r) => r.status === "QUEUED" || r.status === "RUNNING")
+      .map((r) => r.id),
+    now,
+  );
+  // Platform-wide heartbeat (not tenant data), read after membership is confirmed.
+  const workerSeenAt = await lastCrawlProcessorAt(db());
+  const activity = new Map(
+    runs.map((r) => [
+      r.id,
+      crawlActivity(r, pageFacts.get(r.id) ?? null, { workerSeenAt, now }),
+    ]),
+  );
 
   const control =
     editor &&
@@ -69,6 +95,24 @@ export default async function CrawlsPage({
         actions={control}
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
+      <div className="mb-4">
+        <Callout
+          title={
+            website.crawlMode === "AUTOMATIC"
+              ? "Automatic crawling"
+              : "Manual crawling"
+          }
+          action={
+            editor ? (
+              <Link href={`${base}/settings`} className="text-sm underline">
+                Change crawl mode
+              </Link>
+            ) : undefined
+          }
+        >
+          {describeCrawlSchedule(schedule, formatDateTime)}
+        </Callout>
+      </div>
       <Card padded={false}>
         {runs.length === 0 ? (
           <EmptyState
@@ -111,6 +155,7 @@ export default async function CrawlsPage({
                       Page limit reached
                     </div>
                   )}
+                  <ActivityNote activity={activity.get(r.id)!} />
                 </td>
                 <td className={`${td} tabular-nums text-sm`}>
                   {r.pagesCrawled}
@@ -141,5 +186,30 @@ export default async function CrawlsPage({
         )}
       </Card>
     </>
+  );
+}
+
+function ActivityNote({
+  activity: a,
+}: {
+  activity: ReturnType<typeof crawlActivity>;
+}) {
+  const text = describeActivity(a);
+  if (!text) return null;
+  const warn =
+    a.state === "waiting-for-worker" ||
+    a.state === "stalled" ||
+    a.analysis === "failed" ||
+    a.analysis === "retrying";
+  return (
+    <div
+      className={`mt-1 max-w-64 text-xs ${warn ? "text-warning-700" : "text-muted"}`}
+    >
+      {text}
+      {a.active && a.lastProgressAt && (
+        <> · last progress {formatRelative(a.lastProgressAt)}</>
+      )}
+      {a.active && a.maxAttempt > 1 && <> · retry {a.maxAttempt - 1}</>}
+    </div>
   );
 }

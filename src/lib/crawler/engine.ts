@@ -3,6 +3,7 @@ import type {
   CheckOutcome,
   CrawlDiscoverySource,
   CrawlSkipReason,
+  CrawlTrigger,
 } from "@/generated/prisma/enums";
 import { alertForCrawl, recordAlerts } from "@/lib/alerts/events";
 import { fanOutAlerts } from "@/lib/alerts/notify";
@@ -14,8 +15,7 @@ import {
   SafeFetchError,
   type FetchFailureCode,
 } from "@/lib/net/safe-fetch";
-import { strictPolicy, type NetPolicy } from "@/lib/net/ssrf";
-import { syncSeoFindings } from "@/lib/seo/sync";
+import type { NetPolicy } from "@/lib/net/ssrf";
 import type { TenantDb } from "@/lib/tenancy/scope";
 import { parsePage } from "./html";
 import {
@@ -42,7 +42,22 @@ export const CRAWL_DEFAULTS = {
 const PAGE_LEASE_MS = 2 * 60 * 1000;
 const MAX_PAGE_ATTEMPTS = 3;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
-const MAX_SITEMAP_FILES = 3;
+/** Sitemaps with page URLs read per crawl (index files are counted apart). */
+export const MAX_SITEMAP_FILES = 10;
+/** Sitemap index files read per crawl. */
+export const MAX_SITEMAP_INDEXES = 3;
+/** Fetch attempts per crawl, failures included: the hard safety cap. */
+export const MAX_SITEMAP_FETCHES = MAX_SITEMAP_FILES + MAX_SITEMAP_INDEXES;
+/** URLs kept per list in the stored evidence (counts are always complete). */
+const MAX_EVIDENCE_URLS = 20;
+/**
+ * Child sitemaps of taxonomy and author archives (Yoast, Rank Math and
+ * WordPress core names). They list listing pages, not content, so they are
+ * skipped on purpose and never make a crawl incomplete. Product categories
+ * (product_cat) are not skipped: for a shop they are real content.
+ */
+const ARCHIVE_SITEMAP =
+  /^(?:(?:category|post_tag|tag|author|post_format)-sitemap\d*\.xml|wp-sitemap-(?:taxonomies-(?:category|post_tag|post_format)|users)-\d+\.xml)$/i;
 
 export class CrawlError extends Error {}
 
@@ -59,40 +74,95 @@ export async function startCrawl(
     select: { id: true, url: true },
   });
   if (!website) throw new CrawlError("Website not found.");
-  const active = await db.crawlRun.count({
-    where: { websiteId, status: { in: ["QUEUED", "RUNNING"] } },
-  });
-  if (active > 0)
-    throw new CrawlError("A crawl is already in progress for this website.");
-
   const seed = normalizeCrawlUrl(website.url);
   if (!seed) throw new CrawlError("The website URL cannot be crawled.");
   return db.$transaction(async (tx) => {
-    const run = await tx.crawlRun.create({
-      data: {
-        organizationId,
-        websiteId,
-        maxPages: options.maxPages ?? CRAWL_DEFAULTS.maxPages,
-        maxDepth: options.maxDepth ?? CRAWL_DEFAULTS.maxDepth,
-        maxDiscoveredUrls: CRAWL_DEFAULTS.maxDiscoveredUrls,
-        userAgent: CRAWL_DEFAULTS.userAgent,
-        pagesDiscovered: 1,
-        pagesQueued: 1,
-      },
+    // One crawl at a time per website, also against the scheduler
+    // (crawler/schedule.ts): checked under the website's row lock.
+    const client = tx as unknown as Prisma.TransactionClient;
+    await lockWebsite(client, websiteId, organizationId);
+    if (await hasActiveCrawl(client, websiteId))
+      throw new CrawlError("A crawl is already in progress for this website.");
+    return createCrawlRun(client, {
+      organizationId,
+      websiteId,
+      seed,
+      trigger: "MANUAL",
+      ...options,
     });
-    await tx.crawlPage.create({
-      data: {
-        organizationId,
-        websiteId,
-        crawlRunId: run.id,
-        url: seed,
-        normalizedUrl: seed,
-        discoverySource: "SEED",
-        depth: 0,
-      },
-    });
-    return run;
   });
+}
+
+export const ACTIVE_CRAWL_STATUSES = ["QUEUED", "RUNNING"] as const;
+
+/**
+ * Takes the website's row lock for the rest of the transaction. Every path
+ * that creates a crawl run takes it first, so "is a crawl active?" and
+ * "create one" cannot interleave between two requests or the scheduler.
+ */
+export async function lockWebsite(
+  tx: Prisma.TransactionClient,
+  websiteId: string,
+  organizationId: string,
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM websites
+    WHERE id = ${websiteId} AND "organizationId" = ${organizationId}
+    FOR UPDATE`;
+  return rows.length === 1;
+}
+
+export async function hasActiveCrawl(
+  tx: Prisma.TransactionClient,
+  websiteId: string,
+): Promise<boolean> {
+  const active = await tx.crawlRun.count({
+    where: { websiteId, status: { in: [...ACTIVE_CRAWL_STATUSES] } },
+  });
+  return active > 0;
+}
+
+/**
+ * Creates a queued crawl run and its seed page with the standard limits.
+ * Callers hold the website lock and have checked that no crawl is active.
+ */
+export async function createCrawlRun(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    websiteId: string;
+    seed: string;
+    trigger: CrawlTrigger;
+    maxPages?: number;
+    maxDepth?: number;
+  },
+) {
+  const { organizationId, websiteId, seed } = input;
+  const run = await tx.crawlRun.create({
+    data: {
+      organizationId,
+      websiteId,
+      trigger: input.trigger,
+      maxPages: input.maxPages ?? CRAWL_DEFAULTS.maxPages,
+      maxDepth: input.maxDepth ?? CRAWL_DEFAULTS.maxDepth,
+      maxDiscoveredUrls: CRAWL_DEFAULTS.maxDiscoveredUrls,
+      userAgent: CRAWL_DEFAULTS.userAgent,
+      pagesDiscovered: 1,
+      pagesQueued: 1,
+    },
+  });
+  await tx.crawlPage.create({
+    data: {
+      organizationId,
+      websiteId,
+      crawlRunId: run.id,
+      url: seed,
+      normalizedUrl: seed,
+      discoverySource: "SEED",
+      depth: 0,
+    },
+  });
+  return run;
 }
 
 export async function requestCrawlCancel(
@@ -111,13 +181,11 @@ export async function requestCrawlCancel(
 type Run = Prisma.CrawlRunGetPayload<{
   include: { website: { select: { url: true; name: true } } };
 }>;
+/** A crawl run with the website fields the worker needs. */
+export type CrawlRunWithWebsite = Run;
 
-export type CrawlWorkerOptions = {
-  deadline: number;
-  policy?: NetPolicy;
-  concurrency?: number;
-  batchSize?: number;
-};
+/** A run still QUEUED or RUNNING this long after it was created is stopped as FAILED. */
+export const MAX_RUN_AGE_MS = 24 * 3_600_000;
 
 const robotsCache = new Map<string, Robots>();
 
@@ -125,15 +193,39 @@ const robotsCache = new Map<string, Robots>();
  * Whether sitemap discovery really dropped anything (a configured limit
  * that dropped nothing is not recorded as truncation). Stored on the seed
  * page's parsed result as `result.discovery`, so coverage can tell a
- * complete inventory from a cut-short one; crawls before this have none.
+ * complete inventory from a cut-short one; crawls before this have none,
+ * and crawls before v2 have no `sitemaps` breakdown.
  */
 export type DiscoveryEvidence = {
-  v: 1;
-  /** Sitemap files listed (robots.txt or a sitemap index) but never read. */
+  v: 1 | 2;
+  /**
+   * Sitemap files listed (robots.txt or a sitemap index) whose URLs are
+   * unknown: never read because of a limit, or failed. Archive sitemaps
+   * skipped on purpose are not counted.
+   */
   sitemapFilesOmitted: number;
   /** A sitemap listed more URLs than the crawl records. */
   sitemapUrlsCapped: boolean;
+  /** v2: what happened to every distinct sitemap file listed. */
+  sitemaps?: SitemapLedger;
 };
+
+type UrlList = { count: number; urls: string[] };
+export type SitemapLedger = {
+  /** Distinct sitemap files listed or tried. */
+  discovered: number;
+  /** Index files read. */
+  indexes: number;
+  /** Sitemaps with page URLs read. */
+  processed: number;
+  /** Taxonomy and author archive sitemaps, skipped on purpose. */
+  skipped: UrlList;
+  /** Listed, but the fetch failed or returned no sitemap. */
+  failed: UrlList;
+  /** Listed, but not read because of a limit. */
+  unprocessed: UrlList;
+};
+
 const discoveryCache = new Map<string, DiscoveryEvidence>();
 
 const FAILURE_OUTCOME: Record<FetchFailureCode, CheckOutcome> = {
@@ -233,11 +325,31 @@ async function loadRobots(run: Run, policy: NetPolicy): Promise<Robots> {
   return robots;
 }
 
+const listOf = (urls: string[]): UrlList => ({
+  count: urls.length,
+  urls: urls.slice(0, MAX_EVIDENCE_URLS),
+});
+
+/** Whether a sitemap file is a taxonomy or author archive (skipped on purpose). */
+export function isArchiveSitemap(url: string): boolean {
+  try {
+    const name = new URL(url).pathname.split("/").pop() ?? "";
+    return ARCHIVE_SITEMAP.test(name);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Reads the site's sitemaps (at most MAX_SITEMAP_FILES files) and reports
- * what was really dropped: sitemap files listed but not read, and sitemaps
- * longer than the URL cap. `fetchXml` returns a body for HTTP 200, else
- * null; it is the crawler's safe fetch in production.
+ * Reads the site's sitemaps and reports what happened to each one: index
+ * files (at most MAX_SITEMAP_INDEXES) do not use up the budget of sitemaps
+ * with page URLs (MAX_SITEMAP_FILES), and no more than MAX_SITEMAP_FETCHES
+ * fetches are attempted in all; archive sitemaps are skipped on
+ * purpose; a listed sitemap that fails is recorded as failed; anything left
+ * by a limit is unprocessed. Sitemap files and page URLs are read once each.
+ * `fetchXml` returns a body for HTTP 200, else null; it is the crawler's safe
+ * fetch in production. Without robots.txt sitemaps, /sitemap.xml is tried:
+ * a guess, so a miss there means "no sitemap", not a failure.
  */
 export async function discoverSitemaps({
   robotsSitemaps,
@@ -250,45 +362,84 @@ export async function discoverSitemaps({
   maxUrls: number;
   fetchXml: (url: string) => Promise<string | null>;
 }): Promise<{ urls: string[]; discovery: DiscoveryEvidence }> {
-  const sitemapUrls: string[] = [];
-  const queue = robotsSitemaps.length
-    ? robotsSitemaps.slice(0, MAX_SITEMAP_FILES)
-    : [`${origin}/sitemap.xml`];
-  let fetched = 0;
-  let sitemapFilesOmitted = Math.max(
-    0,
-    robotsSitemaps.length - MAX_SITEMAP_FILES,
-  );
+  const pageUrls = new Set<string>();
+  const seen = new Set<string>();
+  const skipped: string[] = [];
+  const failed: string[] = [];
+  const unprocessed: string[] = [];
+  const queue: Array<{ url: string; guessed: boolean }> = [];
+  const enqueue = (url: string, guessed = false) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    if (isArchiveSitemap(url)) skipped.push(url);
+    else queue.push({ url, guessed });
+  };
+  if (robotsSitemaps.length) for (const u of robotsSitemaps) enqueue(u);
+  else enqueue(`${origin}/sitemap.xml`, true);
+
+  let indexes = 0;
+  let processed = 0;
+  let attempts = 0;
   let sitemapUrlsCapped = false;
-  while (
-    queue.length &&
-    fetched < MAX_SITEMAP_FILES &&
-    sitemapUrls.length < maxUrls
-  ) {
-    const sitemapUrl = queue.shift()!;
-    fetched++;
+  while (queue.length) {
+    if (
+      processed >= MAX_SITEMAP_FILES ||
+      attempts >= MAX_SITEMAP_FETCHES ||
+      pageUrls.size >= maxUrls
+    )
+      break;
+    const item = queue.shift()!;
+    attempts++;
+    let xml: string | null = null;
     try {
-      const xml = await fetchXml(sitemapUrl);
-      if (xml === null) continue;
-      const { urls, isIndex, truncated } = parseSitemap(xml, maxUrls);
-      if (isIndex) {
-        queue.push(...urls.slice(0, MAX_SITEMAP_FILES));
-        sitemapFilesOmitted += Math.max(0, urls.length - MAX_SITEMAP_FILES);
-        if (truncated) sitemapUrlsCapped = true; // an index longer than the cap
-      } else {
-        sitemapUrls.push(...urls);
-        if (truncated) sitemapUrlsCapped = true;
-      }
+      xml = await fetchXml(item.url);
     } catch {
-      // Ignore unreachable sitemaps.
+      xml = null;
+    }
+    if (xml === null) {
+      if (!item.guessed) failed.push(item.url);
+      continue;
+    }
+    const { urls, isIndex, truncated } = parseSitemap(xml, maxUrls);
+    if (isIndex) {
+      if (indexes >= MAX_SITEMAP_INDEXES) {
+        // Read, but beyond the index budget: its children stay unknown.
+        unprocessed.push(item.url);
+        continue;
+      }
+      indexes++;
+      for (const u of urls) enqueue(u);
+      if (truncated) sitemapUrlsCapped = true; // an index longer than the cap
+    } else {
+      processed++;
+      for (const u of urls) {
+        if (pageUrls.size >= maxUrls) {
+          sitemapUrlsCapped = true;
+          break;
+        }
+        pageUrls.add(u);
+      }
+      if (truncated) sitemapUrlsCapped = true;
     }
   }
   // Files still queued were never read (the file limit or the URL cap).
-  sitemapFilesOmitted += queue.length;
-  if (queue.length && sitemapUrls.length >= maxUrls) sitemapUrlsCapped = true;
+  unprocessed.push(...queue.map((q) => q.url));
+  if (queue.length && pageUrls.size >= maxUrls) sitemapUrlsCapped = true;
   return {
-    urls: sitemapUrls,
-    discovery: { v: 1, sitemapFilesOmitted, sitemapUrlsCapped },
+    urls: [...pageUrls],
+    discovery: {
+      v: 2,
+      sitemapFilesOmitted: failed.length + unprocessed.length,
+      sitemapUrlsCapped,
+      sitemaps: {
+        discovered: seen.size,
+        indexes,
+        processed,
+        skipped: listOf(skipped),
+        failed: listOf(failed),
+        unprocessed: listOf(unprocessed),
+      },
+    },
   };
 }
 
@@ -382,6 +533,11 @@ function claimPages(
   now = new Date(),
 ) {
   const lease = new Date(now.getTime() + PAGE_LEASE_MS);
+  // At most `limit` pages of the run held at once by all workers together
+  // (live leases count), so a second worker does not double the requests to
+  // one website. Two workers claiming at the same instant can each see the
+  // other's pages not yet claimed: the cap can then be exceeded by at most
+  // one batch per worker, briefly.
   return db.$queryRaw<ClaimedPage[]>`
     UPDATE crawl_pages
     SET status = 'CRAWLING', "claimedAt" = ${now}, "claimExpiresAt" = ${lease}, "updatedAt" = ${now}
@@ -389,20 +545,40 @@ function claimPages(
       SELECT id FROM crawl_pages
       WHERE "crawlRunId" = ${runId} AND status = 'QUEUED'
       ORDER BY depth ASC, "firstDiscoveredAt" ASC
-      LIMIT ${limit}
+      LIMIT GREATEST(0, ${limit}::int - (
+        SELECT count(*) FROM crawl_pages
+        WHERE "crawlRunId" = ${runId} AND status = 'CRAWLING' AND "claimExpiresAt" > ${now}
+      )::int)
       FOR UPDATE SKIP LOCKED
     )
     RETURNING id, url, depth, attempt, "discoverySource"`;
 }
 
 export async function recoverStalePages(db: PrismaClient, now = new Date()) {
+  // One statement (it runs at the start of every processCrawls call, before
+  // any crawling): for each page whose lease expired,
+  // - on a finished run: closed (SKIPPED, CANCELLED); nothing would crawl it;
+  // - after MAX_PAGE_ATTEMPTS: FAILED, "Abandoned after retries";
+  // - otherwise: queued again with the next attempt.
   await db.$executeRaw`
-    UPDATE crawl_pages SET status = 'FAILED', "errorMessage" = 'Abandoned after retries', "updatedAt" = ${now}
-    WHERE status = 'CRAWLING' AND "claimExpiresAt" < ${now} AND attempt >= ${MAX_PAGE_ATTEMPTS}`;
-  await db.$executeRaw`
-    UPDATE crawl_pages SET status = 'QUEUED', attempt = attempt + 1, "claimedAt" = NULL,
-      "claimExpiresAt" = NULL, "updatedAt" = ${now}
-    WHERE status = 'CRAWLING' AND "claimExpiresAt" < ${now}`;
+    UPDATE crawl_pages p SET
+      status = (CASE
+        WHEN r.status NOT IN ('QUEUED', 'RUNNING') THEN 'SKIPPED'
+        WHEN p.attempt >= ${MAX_PAGE_ATTEMPTS} THEN 'FAILED'
+        ELSE 'QUEUED' END)::"CrawlPageStatus",
+      "skipReason" = CASE WHEN r.status NOT IN ('QUEUED', 'RUNNING')
+        THEN 'CANCELLED'::"CrawlSkipReason" ELSE p."skipReason" END,
+      "errorMessage" = CASE WHEN r.status IN ('QUEUED', 'RUNNING') AND p.attempt >= ${MAX_PAGE_ATTEMPTS}
+        THEN 'Abandoned after retries' ELSE p."errorMessage" END,
+      attempt = CASE WHEN r.status IN ('QUEUED', 'RUNNING') AND p.attempt < ${MAX_PAGE_ATTEMPTS}
+        THEN p.attempt + 1 ELSE p.attempt END,
+      "claimedAt" = CASE WHEN r.status IN ('QUEUED', 'RUNNING') AND p.attempt >= ${MAX_PAGE_ATTEMPTS}
+        THEN p."claimedAt" ELSE NULL END,
+      "claimExpiresAt" = CASE WHEN r.status IN ('QUEUED', 'RUNNING') AND p.attempt >= ${MAX_PAGE_ATTEMPTS}
+        THEN p."claimExpiresAt" ELSE NULL END,
+      "updatedAt" = ${now}
+    FROM crawl_runs r
+    WHERE p."crawlRunId" = r.id AND p.status = 'CRAWLING' AND p."claimExpiresAt" < ${now}`;
 }
 
 /**
@@ -478,16 +654,34 @@ async function crawlPage(
   // final URL, which is crawled and analysed once as its own page, so the
   // same page is never analysed under two URLs.
   const target = redirectTarget(page.url, res.finalUrl, res.redirectCount);
+  // Links are queued before the page is marked done: until then the page
+  // counts as pending, so no other worker can finalize the run in between
+  // (it would end with the links never crawled). Queueing is idempotent,
+  // so a retry after a failure here queues nothing twice.
   if (target) {
-    await db.crawlPage.update({ where: { id: page.id }, data: base });
     await discover(db, run, robots, [
       { url: target, source: "REDIRECT", depth: page.depth, fromUrl: page.url },
     ]);
+    await db.crawlPage.update({ where: { id: page.id }, data: base });
     return;
   }
 
   const parsed = parsePage(res.body.toString("utf8"), res.finalUrl);
   const r = parsed.result;
+  const candidates: Candidate[] = [];
+  if (!/\bnofollow\b/i.test(parsed.robotsMetaRaw ?? "")) {
+    for (const link of r.links) {
+      if (link.type === "internal" && !link.nofollow) {
+        candidates.push({
+          url: link.url,
+          source: "LINK",
+          depth: page.depth + 1,
+          fromUrl: page.url,
+        });
+      }
+    }
+  }
+  await discover(db, run, robots, candidates);
   await db.crawlPage.update({
     where: { id: page.id },
     data: {
@@ -512,48 +706,37 @@ async function crawlPage(
         : r) as unknown as Prisma.InputJsonValue,
     },
   });
-
-  const candidates: Candidate[] = [];
-  if (!/\bnofollow\b/i.test(parsed.robotsMetaRaw ?? "")) {
-    for (const link of r.links) {
-      if (link.type === "internal" && !link.nofollow) {
-        candidates.push({
-          url: link.url,
-          source: "LINK",
-          depth: page.depth + 1,
-          fromUrl: page.url,
-        });
-      }
-    }
-  }
-  await discover(db, run, robots, candidates);
 }
 
+// One statement, so the counters come from one snapshot of the pages. Lanes
+// and workers refresh the same run concurrently: a refresh whose snapshot is
+// older than the stored counters (fewer pages discovered or finished; both
+// only grow) writes nothing, so it can never overwrite newer counters.
 async function refreshCounters(db: PrismaClient, runId: string) {
-  const [groups, succeeded] = await Promise.all([
-    db.crawlPage.groupBy({
-      by: ["status"],
-      where: { crawlRunId: runId },
-      _count: true,
-    }),
-    db.crawlPage.count({
-      where: { crawlRunId: runId, status: "CRAWLED", httpStatus: { lt: 400 } },
-    }),
-  ]);
-  const n = (s: string) => groups.find((g) => g.status === s)?._count ?? 0;
-  const discovered = groups.reduce((sum, g) => sum + g._count, 0);
-  await db.crawlRun.update({
-    where: { id: runId },
-    data: {
-      pagesDiscovered: discovered,
-      pagesQueued: discovered - n("SKIPPED"),
-      pagesCrawled: n("CRAWLED") + n("FAILED"),
-      pagesSucceeded: succeeded,
-      pagesFailed: n("FAILED") + (n("CRAWLED") - succeeded),
-      pagesSkipped: n("SKIPPED"),
-    },
-  });
-  return { pending: n("QUEUED") + n("CRAWLING") };
+  const [row] = await db.$queryRaw<{ pending: bigint }[]>`
+    WITH c AS (
+      SELECT count(*)::int AS discovered,
+        (count(*) FILTER (WHERE status = 'SKIPPED'))::int AS skipped,
+        (count(*) FILTER (WHERE status IN ('CRAWLED', 'FAILED')))::int AS crawled,
+        (count(*) FILTER (WHERE status = 'CRAWLED' AND "httpStatus" < 400))::int AS succeeded,
+        count(*) FILTER (WHERE status IN ('QUEUED', 'CRAWLING')) AS pending
+      FROM crawl_pages WHERE "crawlRunId" = ${runId}
+    ), u AS (
+      UPDATE crawl_runs r SET
+        "pagesDiscovered" = c.discovered,
+        "pagesQueued" = c.discovered - c.skipped,
+        "pagesCrawled" = c.crawled,
+        "pagesSucceeded" = c.succeeded,
+        "pagesFailed" = c.crawled - c.succeeded,
+        "pagesSkipped" = c.skipped,
+        "updatedAt" = ${new Date()}
+      FROM c
+      WHERE r.id = ${runId} AND c.discovered >= r."pagesDiscovered"
+        AND c.crawled + c.skipped >= r."pagesCrawled" + r."pagesSkipped"
+      RETURNING 1
+    )
+    SELECT c.pending FROM c`;
+  return { pending: Number(row.pending) };
 }
 
 /** Returns false if another worker already finished or cancelled the run. */
@@ -573,12 +756,55 @@ async function cancelRun(db: PrismaClient, run: Run): Promise<boolean> {
   return true;
 }
 
+const scopeOf = (run: { organizationId: string; websiteId: string }) => ({
+  organizationId: run.organizationId,
+  websiteId: run.websiteId,
+});
+
+/** The crawl alert draft for a finished run (none when nothing failed). */
+const crawlAlert = (
+  run: Pick<Run, "id" | "websiteId" | "status" | "pagesFailed"> & {
+    website: { name: string };
+  },
+) =>
+  alertForCrawl({
+    websiteId: run.websiteId,
+    websiteName: run.website.name,
+    runId: run.id,
+    status: run.status,
+    pagesFailed: run.pagesFailed,
+  });
+
+/**
+ * Records a finished run's crawl alert if it was never recorded (runs
+ * finalized before the alert moved into the finalize transaction). The
+ * alert is closed when created, so recordAlerts alone would not dedupe it.
+ */
+export async function recordMissingCrawlAlert(db: PrismaClient, run: Run) {
+  const drafts = crawlAlert(run);
+  if (!drafts.length) return;
+  const scope = scopeOf(run);
+  if (
+    (await db.alertEvent.count({
+      where: { ...scope, sourceRef: `crawl_run:${run.id}` },
+    })) > 0
+  )
+    return;
+  await fanOutAlerts(db, await recordAlerts(db, scope, drafts));
+}
+
 /**
  * Finishes a run exactly once: the RUNNING → final-status update is
- * conditional, and only the worker that wins it syncs SEO findings and emits
- * the crawl alert. Returns false if another worker already finalized it.
+ * conditional, and only the worker that wins it records the crawl alert, in
+ * the same transaction (so no other worker can see the run finished without
+ * its alert). It does not analyse: the caller hands the run to its analysis
+ * stage (scheduler.ts) or analyses it itself (finalizeCrawlRun, analysis.ts). Returns
+ * the finished run, or null if another worker finalized it.
  */
-async function finalizeRun(db: PrismaClient, run: Run): Promise<boolean> {
+export async function finalizeRun(
+  db: PrismaClient,
+  run: Run,
+): Promise<Run | null> {
   const seed = await db.crawlPage.findFirst({
     where: { crawlRunId: run.id, discoverySource: "SEED" },
     select: {
@@ -605,48 +831,26 @@ async function finalizeRun(db: PrismaClient, run: Run): Promise<boolean> {
     status = "FAILED";
     errorMessage = "robots.txt disallows the start page";
   }
-  const claimed = await db.crawlRun.updateMany({
-    where: { id: run.id, status: "RUNNING" },
-    data: { status, errorMessage, completedAt: new Date() },
+  const done = await db.$transaction(async (tx) => {
+    const claimed = await tx.crawlRun.updateMany({
+      where: { id: run.id, status: "RUNNING" },
+      data: { status, errorMessage, completedAt: new Date() },
+    });
+    if (claimed.count === 0) return null;
+    const finished = {
+      ...(await tx.crawlRun.findUniqueOrThrow({ where: { id: run.id } })),
+      website: run.website,
+    };
+    return {
+      finished,
+      alerts: await recordAlerts(tx, scopeOf(run), crawlAlert(finished)),
+    };
   });
-  if (claimed.count === 0) return false;
-  const finished = await db.crawlRun.findUniqueOrThrow({
-    where: { id: run.id },
-  });
+  if (!done) return null;
   robotsCache.delete(run.id);
   discoveryCache.delete(run.id);
-  if (status !== "FAILED") {
-    await syncSeoFindings(db, finished, new URL(run.website.url).hostname);
-  }
-  const scope = {
-    organizationId: run.organizationId,
-    websiteId: run.websiteId,
-  };
-  const eventIds = await recordAlerts(
-    db,
-    scope,
-    alertForCrawl({
-      websiteId: run.websiteId,
-      websiteName: run.website.name,
-      runId: run.id,
-      status,
-      pagesFailed: finished.pagesFailed,
-    }),
-  );
-  await fanOutAlerts(db, eventIds);
-  return true;
-}
-
-/** Finalizes a run by id (used by tests and recovery tooling); idempotent. */
-export async function finalizeCrawlRun(
-  db: PrismaClient,
-  runId: string,
-): Promise<boolean> {
-  const run = await db.crawlRun.findUniqueOrThrow({
-    where: { id: runId },
-    include: { website: { select: { url: true, name: true } } },
-  });
-  return finalizeRun(db, run);
+  await fanOutAlerts(db, done.alerts);
+  return done.finished;
 }
 
 async function inPool<T>(
@@ -662,87 +866,124 @@ async function inPool<T>(
   );
 }
 
-/** Advances active crawls until there is no work left or the deadline passes. */
-export async function processCrawls(
-  db: PrismaClient,
-  opts: CrawlWorkerOptions,
-) {
-  const policy = opts.policy ?? strictPolicy;
-  const stats = {
-    pagesCrawled: 0,
-    runsFinished: 0,
-    pageErrors: 0,
-    runErrors: 0,
-  };
-  // Runs that errored in this invocation are skipped until the next one.
-  const failedRuns = new Set<string>();
-  await recoverStalePages(db);
-
-  while (Date.now() < opts.deadline) {
-    const runs = (
-      await db.crawlRun.findMany({
-        where: { status: { in: ["QUEUED", "RUNNING"] } },
-        include: { website: { select: { url: true, name: true } } },
-        orderBy: { createdAt: "asc" },
-        take: 5 + failedRuns.size,
-      })
-    ).filter((r) => !failedRuns.has(r.id));
-    if (runs.length === 0) break;
-    let progressed = false;
-
-    for (const run of runs) {
-      if (Date.now() >= opts.deadline) break;
-      const ids = {
-        runId: run.id,
-        websiteId: run.websiteId,
-        organizationId: run.organizationId,
+/**
+ * Stops runs still QUEUED or RUNNING MAX_RUN_AGE_MS after they were created
+ * (a website that keeps erroring, or work nothing processed for a day): the
+ * run becomes FAILED with a reason, its queued pages SKIPPED, and its alert
+ * is recorded in the same transaction. A bounded end for every run.
+ */
+export async function stopExpiredRuns(db: PrismaClient, now = new Date()) {
+  const hours = Math.round(MAX_RUN_AGE_MS / 3_600_000);
+  const expired = await db.crawlRun.findMany({
+    where: {
+      status: { in: [...ACTIVE_CRAWL_STATUSES] },
+      createdAt: { lt: new Date(now.getTime() - MAX_RUN_AGE_MS) },
+    },
+    include: { website: { select: { url: true, name: true } } },
+    orderBy: { createdAt: "asc" },
+    take: 10,
+  });
+  let stopped = 0;
+  for (const run of expired) {
+    const done = await db.$transaction(async (tx) => {
+      const claimed = await tx.crawlRun.updateMany({
+        where: { id: run.id, status: { in: [...ACTIVE_CRAWL_STATUSES] } },
+        data: {
+          status: "FAILED",
+          errorMessage: `Stopped: the crawl did not finish within ${hours} hours`,
+          completedAt: now,
+        },
+      });
+      if (claimed.count === 0) return null;
+      await tx.crawlPage.updateMany({
+        where: { crawlRunId: run.id, status: "QUEUED" },
+        data: { status: "SKIPPED", skipReason: "CANCELLED" },
+      });
+      const finished = {
+        ...(await tx.crawlRun.findUniqueOrThrow({ where: { id: run.id } })),
+        website: run.website,
       };
-      try {
-        if (run.cancelRequested) {
-          if (await cancelRun(db, run)) stats.runsFinished++;
-          progressed = true;
-          continue;
-        }
-        if (run.status === "QUEUED") {
-          await initRun(db, run, policy);
-          progressed = true;
-        }
-        const robots = await loadRobots(run, policy);
-        const pages = await claimPages(db, run.id, opts.batchSize ?? 10);
-        await inPool(pages, opts.concurrency ?? 3, async (p) => {
-          try {
-            await crawlPage(db, run, p, robots, policy);
-          } catch (error) {
-            // The page keeps its lease; recoverStalePages retries it later.
-            stats.pageErrors++;
-            log.error(
-              "crawl_page_failed",
-              { ...ids, pageId: p.id, attempt: p.attempt },
-              error,
-            );
-          }
-        });
-        stats.pagesCrawled += pages.length;
-        if (pages.length) progressed = true;
+      return {
+        alerts: await recordAlerts(tx, scopeOf(run), crawlAlert(finished)),
+      };
+    });
+    if (!done) continue;
+    robotsCache.delete(run.id);
+    discoveryCache.delete(run.id);
+    await refreshCounters(db, run.id);
+    await fanOutAlerts(db, done.alerts);
+    log.warn("crawl_run_expired", {
+      runId: run.id,
+      websiteId: run.websiteId,
+      organizationId: run.organizationId,
+    });
+    stopped++;
+  }
+  return stopped;
+}
 
-        const { pending } = await refreshCounters(db, run.id);
-        if (pending === 0) {
-          const latest = await db.crawlRun.findUniqueOrThrow({
-            where: { id: run.id },
-          });
-          const finished = latest.cancelRequested
-            ? await cancelRun(db, run)
-            : await finalizeRun(db, run);
-          if (finished) stats.runsFinished++;
-          progressed = true;
-        }
-      } catch (error) {
-        stats.runErrors++;
-        failedRuns.add(run.id);
-        log.error("crawl_run_step_failed", ids, error);
+/**
+ * One batch of one run: starts it if QUEUED (robots.txt, sitemaps,
+ * discovery), claims and fetches up to `batchSize` pages, refreshes its
+ * counters, and finishes it (cancelled or finalized) once no page is
+ * pending. Adds to `counts` as it goes. `progressed` is false when there was
+ * nothing to do for the run (all its pages held by another worker);
+ * `finished` is the run when this batch finalized it COMPLETED or PARTIAL,
+ * so its analysis is owed. Which run, and when, is the scheduler's choice
+ * (scheduler.ts).
+ */
+export async function crawlBatch(
+  db: PrismaClient,
+  run: Run,
+  opts: { policy: NetPolicy; batchSize?: number; concurrency?: number },
+  counts: { pagesCrawled: number; runsFinished: number; pageErrors: number },
+): Promise<{ progressed: boolean; finished: Run | null }> {
+  const ids = {
+    runId: run.id,
+    websiteId: run.websiteId,
+    organizationId: run.organizationId,
+  };
+  if (run.cancelRequested) {
+    if (await cancelRun(db, run)) counts.runsFinished++;
+    return { progressed: true, finished: null };
+  }
+  let progressed = false;
+  let finished: Run | null = null;
+  if (run.status === "QUEUED")
+    progressed = (await initRun(db, run, opts.policy)) !== false;
+  const robots = await loadRobots(run, opts.policy);
+  const pages = await claimPages(db, run.id, opts.batchSize ?? 10);
+  await inPool(pages, opts.concurrency ?? 3, async (p) => {
+    try {
+      await crawlPage(db, run, p, robots, opts.policy);
+    } catch (error) {
+      // The page keeps its lease; recoverStalePages retries it later.
+      counts.pageErrors++;
+      log.error(
+        "crawl_page_failed",
+        { ...ids, pageId: p.id, attempt: p.attempt },
+        error,
+      );
+    }
+  });
+  counts.pagesCrawled += pages.length;
+  if (pages.length) progressed = true;
+
+  const { pending } = await refreshCounters(db, run.id);
+  if (pending === 0) {
+    const latest = await db.crawlRun.findUniqueOrThrow({
+      where: { id: run.id },
+    });
+    if (latest.cancelRequested) {
+      if (await cancelRun(db, run)) counts.runsFinished++;
+    } else {
+      const done = await finalizeRun(db, run);
+      if (done) {
+        counts.runsFinished++;
+        if (done.status !== "FAILED") finished = done;
       }
     }
-    if (!progressed) break; // only in-flight pages owned by other workers remain
+    progressed = true;
   }
-  return stats;
+  return { progressed, finished };
 }

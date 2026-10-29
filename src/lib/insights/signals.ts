@@ -5,6 +5,7 @@ import type {
   PerformanceStrategy,
 } from "@/generated/prisma/enums";
 import type { TenantDb } from "@/lib/tenancy/scope";
+import { scoreFreshness, type FreshnessState } from "@/lib/scoring/freshness";
 import {
   uptimePercent,
   type SeverityCounts,
@@ -20,11 +21,14 @@ import {
 
 export type WebsiteSummary = WebsiteSignals & {
   domain: string;
+  clientId: string | null;
   url: string;
   latestScore: {
     score: number | null;
     measuredWeight: number | null;
     calculatedAt: Date;
+    /** How current its evidence is now (scoring/freshness.ts). */
+    freshness: FreshnessState;
   } | null;
   uptime24h: { percent: number | null; checks: number };
   lastResponseMs: number | null;
@@ -64,6 +68,8 @@ export async function loadWebsiteSummaries(
       url: true,
       status: true,
       monitoringEnabled: true,
+      crawlMode: true,
+      clientId: true,
     },
   });
   if (websites.length === 0) return [];
@@ -201,6 +207,7 @@ export async function loadWebsiteSummaries(
             score: true,
             measuredWeight: true,
             calculatedAt: true,
+            dimensions: true,
           },
         })
       : [],
@@ -237,6 +244,8 @@ export async function loadWebsiteSummaries(
       url: w.url,
       status: w.status,
       monitoringEnabled: w.monitoringEnabled,
+      crawlMode: w.crawlMode,
+      clientId: w.clientId,
       uptime: up ? { outcome: up.outcome, at: up.createdAt } : null,
       ssl: ssl ? { outcome: ssl.outcome, expiresAt: ssl.sslExpiresAt } : null,
       dns: dns ? { outcome: dns.outcome } : null,
@@ -253,6 +262,7 @@ export async function loadWebsiteSummaries(
             score: score.score,
             measuredWeight: score.measuredWeight,
             calculatedAt: score.calculatedAt,
+            freshness: scoreFreshness(score, now).state,
           }
         : null,
       uptime24h: uptimePercent(

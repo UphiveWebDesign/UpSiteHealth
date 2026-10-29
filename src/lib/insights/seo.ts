@@ -1,4 +1,6 @@
 import type { IssueSeverity } from "@/generated/prisma/enums";
+import { formatDateTime } from "@/lib/format";
+import { isContentRule } from "@/lib/knowledge/catalogue";
 
 /** Relative weight of one finding of each severity, used to rank rule groups. */
 export const SEVERITY_WEIGHT: Record<IssueSeverity, number> = {
@@ -74,11 +76,12 @@ export function groupFindings(rows: FindingRow[]): RuleGroup[] {
 
 /** One-line, human-readable evidence for a finding (or null if nothing useful). */
 export function describeEvidence(
-  _ruleId: string,
+  ruleId: string,
   evidence: unknown,
 ): string | null {
   if (!evidence || typeof evidence !== "object") return null;
   const e = evidence as Record<string, unknown>;
+  if (isContentRule(ruleId)) return describeContentGap(e);
   const num = (k: string) =>
     typeof e[k] === "number" ? (e[k] as number) : null;
   if (num("actualLength") !== null) {
@@ -103,11 +106,46 @@ export function describeEvidence(
   return null;
 }
 
+/** A path for display ("/leeds"), or the text as stored if it is no URL. */
+const pathOf = (u: unknown) => {
+  if (typeof u !== "string") return null;
+  try {
+    return new URL(u).pathname;
+  } catch {
+    return u;
+  }
+};
+
+/**
+ * A content gap (seo/content.ts): what the crawl observed, the pages it
+ * rests on and when. Only what the stored evidence holds; nothing invented.
+ */
+function describeContentGap(e: Record<string, unknown>): string {
+  const service = pathOf(e.servicePage);
+  const places = Array.isArray(e.locationPages)
+    ? e.locationPages.map(pathOf).filter((x): x is string => !!x)
+    : [];
+  const at =
+    typeof e.crawlAnalyzedAt === "string" ? new Date(e.crawlAnalyzedAt) : null;
+  return [
+    "No analysed page names both",
+    service && `service page ${service}`,
+    places.length &&
+      `location page${places.length === 1 ? "" : "s"} ${places.join(", ")}`,
+    at && !Number.isNaN(at.getTime()) && `crawl of ${formatDateTime(at)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /** The page a finding is about, or a label for site-wide findings. */
 export function findingTarget(
-  f: Pick<FindingRow, "scope" | "evidence">,
+  f: Pick<FindingRow, "scope" | "evidence"> & { ruleId?: string },
 ): string {
-  const url = (f.evidence as { url?: unknown } | null)?.url;
-  if (typeof url === "string") return url;
+  const e = f.evidence as { url?: unknown; label?: unknown } | null;
+  if (typeof e?.url === "string") return e.url;
+  // A content gap names its topic ("Boiler repair in Leeds").
+  if (f.ruleId && isContentRule(f.ruleId) && typeof e?.label === "string")
+    return e.label;
   return f.scope === "SITE" ? "Whole site" : "—";
 }

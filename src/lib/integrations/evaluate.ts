@@ -86,6 +86,8 @@ export type EvidencePage = {
 export type IntegrationEvidence = {
   websiteUrl: string;
   crawl: {
+    /** The crawl run's id, when loaded (cited as evidence by the topic map). */
+    id?: string;
     status: CrawlRunStatus;
     analyzedAt: Date;
     pages: EvidencePage[];

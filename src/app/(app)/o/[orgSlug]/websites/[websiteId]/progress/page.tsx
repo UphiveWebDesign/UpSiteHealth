@@ -21,7 +21,11 @@ import { FINDINGS } from "@/lib/workflow/labels";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { loadBaseline } from "@/lib/workflow/baseline";
-import { buildTrend, loadCrawlHistory } from "@/lib/workflow/history";
+import {
+  buildTrend,
+  loadCrawlHistory,
+  trendSummary,
+} from "@/lib/workflow/history";
 import {
   comparablePeriods,
   countConfirmedFixes,
@@ -82,16 +86,13 @@ export default async function SeoProgressPage({
         }
       : null;
   const trend = buildTrend(history, baselineRow);
-  const latestCompleted = history.find(
-    (r) => r.status === "COMPLETED" && r.findings !== null,
-  );
+  const summary = trendSummary(history, trend);
+  const { latestCompleted } = summary;
+  const analysisPending = summary.awaitingAnalysis > 0;
   const latestPoint = trend[trend.length - 1];
   const latestRow = latestPoint
     ? history.find((r) => r.id === latestPoint.id)
     : undefined;
-  const onlyPartial =
-    history.length > 0 && !history.some((r) => r.status === "COMPLETED");
-
   return (
     <>
       <PageHeader
@@ -112,7 +113,11 @@ export default async function SeoProgressPage({
           format={(t) => <span className="text-xl">{dayOf(new Date(t))}</span>}
           notMeasured="No baseline yet"
           hint={
-            baselineRow ? "First completed crawl" : "Needs a completed crawl"
+            baselineRow
+              ? "First completed crawl"
+              : analysisPending
+                ? "A completed crawl is awaiting analysis"
+                : "Needs a completed crawl"
           }
         />
         <Stat
@@ -121,14 +126,14 @@ export default async function SeoProgressPage({
           notMeasured="No completed crawl"
           hint={
             latestCompleted
-              ? `of ${latestCompleted.pagesDiscovered} discovered · crawled pages, not pages indexed by Google`
+              ? `of ${latestCompleted.pagesDiscovered} discovered · crawled pages, not pages indexed by Google${latestCompleted.findings === null ? " · analysis pending" : ""}`
               : undefined
           }
         />
         <Stat
           label={FINDINGS.latestCrawl}
           value={latestPoint?.total ?? null}
-          notMeasured="Not measured"
+          notMeasured={analysisPending ? "Analysis pending" : "Not measured"}
           hint={
             latestPoint
               ? `Latest comparable crawl, ${dayOf(latestPoint.at)} · ${FINDINGS.latestCrawlHint}`
@@ -148,7 +153,7 @@ export default async function SeoProgressPage({
           title="Technical findings over time"
           description={
             latestCompleted
-              ? `Last completed crawl ${formatRelative(latestCompleted.at)}${lastCheck ? ` · last uptime check ${formatRelative(lastCheck.createdAt)}` : " · no uptime checks yet"}`
+              ? `Last completed crawl ${formatRelative(latestCompleted.at)}${latestCompleted.findings === null ? " (not analysed yet)" : ""}${lastCheck ? ` · last uptime check ${formatRelative(lastCheck.createdAt)}` : " · no uptime checks yet"}`
               : "No completed crawl yet"
           }
         >
@@ -172,13 +177,7 @@ export default async function SeoProgressPage({
                     tone: "danger",
                   },
                 ]}
-                empty={
-                  history.length === 0
-                    ? "No crawls yet. Run a crawl to set the baseline; the trend starts after the second completed crawl."
-                    : onlyPartial
-                      ? "Only partial crawls so far. Partial crawls are not compared, so there is no trend yet. Run a crawl that can complete within the page limit."
-                      : "One comparable completed crawl so far. The trend appears after the next completed crawl."
-                }
+                empty={summary.empty}
               />
             </div>
             <div>

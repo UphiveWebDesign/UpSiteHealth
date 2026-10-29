@@ -232,6 +232,97 @@ describe("page classification", () => {
   });
 });
 
+describe("page classification: generic plugin markup against legal evidence", () => {
+  const none = { service: false, location: false };
+  const page = (over: {
+    path: string;
+    title?: string | null;
+    h1?: string[];
+    schemaTypes?: string[];
+  }) =>
+    classify(
+      { title: null, h1: [], schemaTypes: [], isHome: false, ...over },
+      none,
+    );
+
+  test("a privacy policy with SEO-plugin Article markup is legal (Moh Maya)", () => {
+    const c = page({
+      path: "/privacy-policy/",
+      title: "Privacy Policy - MOH MAYA COTTAGES & CAFE",
+      h1: ["Privacy Policy"],
+      schemaTypes: ["Article", "ImageObject", "Person", "WebPage", "WebSite"],
+    });
+    expect(c.type).toBe("legal");
+    expect(c.signals.join(" ")).toMatch(/generic markup/);
+    // WooCommerce's default refund page is legal too.
+    expect(
+      page({
+        path: "/refund_returns/",
+        title: "Refund and Returns Policy",
+        schemaTypes: ["Article"],
+      }).type,
+    ).toBe("legal");
+  });
+
+  test("Article markup keeps its weight without both legal signals", () => {
+    // A post about privacy: legal wording in the title only.
+    expect(
+      page({
+        path: "/blog/our-privacy-policy-explained/",
+        title: "Our privacy policy, explained",
+        schemaTypes: ["Article"],
+      }).type,
+    ).toBe("article");
+    // A legal-looking URL with a different title: markup still counts fully.
+    expect(
+      page({
+        path: "/terms/",
+        title: "Seasonal stay terms for groups",
+        schemaTypes: ["Article"],
+      }).type,
+    ).toBe("article");
+    // Explicit BlogPosting markup is never discounted.
+    expect(
+      page({
+        path: "/hello-world/",
+        title: "Hello world!",
+        schemaTypes: ["BlogPosting"],
+      }).type,
+    ).toBe("article");
+  });
+});
+
+describe("legal pages never satisfy business coverage", () => {
+  // Terms whose title names the service, with plugin Article markup.
+  const TERMS: PageSpec = {
+    path: "/terms-and-conditions/",
+    title: "Terms and Conditions for Boiler repair",
+    h1: ["Terms and Conditions"],
+    schema: [{ "@type": "Article", name: "Terms and Conditions" }],
+    wordCount: 1200,
+  };
+  const svc = fact({ kind: "SERVICE", value: "Boiler repair" });
+
+  test("a terms page naming the service is classified legal and is not the service page", () => {
+    const c = cover([HOME, CONTACT, TERMS], [svc]);
+    const termsUrl = new URL(TERMS.path, SITE).href;
+    expect(c.pages.find((p) => p.url === termsUrl)?.type).toBe("legal");
+    const need = c.needs.find((n) => n.kind === "service-page")!;
+    expect(need.status).not.toBe("covered");
+    expect(need.matches.find((m) => m.url === termsUrl)).toMatchObject({
+      strength: "medium",
+      note: "A legal page names it.",
+    });
+    const o = c.opportunities.find((x) =>
+      x.key.endsWith("(BIZ_SERVICE_PAGE)"),
+    )!;
+    expect(o.state).not.toBe("fulfilled");
+    expect(o.considered.find((p) => p.url === termsUrl)?.verdict).toBe(
+      "Legal page: not considered.",
+    );
+  });
+});
+
 describe("matching a fact to a page", () => {
   const svc = fact({
     kind: "SERVICE",

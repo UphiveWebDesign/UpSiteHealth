@@ -49,6 +49,43 @@ export const FIXTURE_PAGES: SeoPage[] = [
   }),
   base({ id: "dup1", url: "https://site.example/dup1" }),
   base({ id: "dup2", url: "https://site.example/dup2" }),
+  // Thin content is reported only on indexable pages ("bare" is noindex).
+  base({
+    id: "thin",
+    url: "https://site.example/thin",
+    title: "A short but indexable page",
+    metaDescription:
+      "A distinct description for the short indexable page used by the fixtures.",
+    wordCount: 80,
+  }),
+  base({
+    id: "hello",
+    url: "https://site.example/hello-world/",
+    title: "Hello world! - Site",
+    metaDescription:
+      "A distinct description for the default WordPress post used by the fixtures.",
+    h1: ["Hello world!"],
+    mainWords: 400,
+    mainText: [
+      "Welcome to WordPress. This is your first post. Edit or delete it, then start writing!",
+    ],
+  }),
+  // Valid Hotel markup without an address or the telephone the page links.
+  base({
+    id: "hotel",
+    url: "https://site.example/stay",
+    title: "Stay with us in the valley",
+    metaDescription:
+      "A distinct description for the hotel page with incomplete business markup.",
+    telLinks: 2,
+    structuredData: [
+      {
+        valid: true,
+        data: { "@type": ["Hotel", "Organization"], name: "Valley Stay" },
+        error: null,
+      },
+    ],
+  }),
 ];
 
 export const FIXTURE_FACTS: SiteFacts = {
