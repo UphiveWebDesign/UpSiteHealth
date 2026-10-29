@@ -42,6 +42,38 @@ vi.mock("next/headers", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 vi.mock("@/lib/db", () => ({ db: () => state.client }));
 
+/**
+ * The real capability check, unless a test forces option A: M1 is applied
+ * on itest-ci, and the "today:" tests pin the behaviour of a database
+ * without it (the shared database and production).
+ */
+const capability = vi.hoisted(() => ({ forceOff: false }));
+vi.mock("@/lib/recommendations/capabilities", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/recommendations/capabilities")>();
+  return {
+    ...actual,
+    identityCapabilities: (
+      ...args: Parameters<typeof actual.identityCapabilities>
+    ) =>
+      capability.forceOff
+        ? Promise.resolve({
+            enabled: false,
+            missing: ["forced off: option A test"],
+          })
+        : actual.identityCapabilities(...args),
+  };
+});
+/** Runs `fn` as on a database without M1 (option A). */
+async function optionA<T>(fn: () => Promise<T>): Promise<T> {
+  capability.forceOff = true;
+  try {
+    return await fn();
+  } finally {
+    capability.forceOff = false;
+  }
+}
+
 const policy: NetPolicy = {
   resolve: async () => [{ address: "127.0.0.1", family: 4 }],
   isAllowed: (ip) => ip === "127.0.0.1",
@@ -705,10 +737,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
     });
 
-    // ─── Stage 2 decisions, before the implementation ───────────────────
-    // `test` holds today and after; "today:" pins what the approved design
-    // changes; `test.fails` is the approved behaviour (passes now because it
-    // is not implemented, and becomes `test` when it lands).
+    // ─── Stage 2 decisions ──────────────────────────────────────────────
+    // M1 is applied on itest-ci, so the Stage 2 rules (C1b) are on there.
+    // `test` holds with them; "today:" pins option A (a database without
+    // M1) and runs with the capability check forced off.
 
     describe("D2-b: Moh Maya, “hospitality” approved after the combined page was accepted", () => {
       const COMBINED = "Add a page for “Cottages and Cafe” (BIZ_SERVICE_PAGE)";
@@ -756,21 +788,20 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
 
       test("today: the combined task is moved to the accommodation page automatically (same row)", async () => {
-        const { combined, offering } = await approvedLater("d2b-today");
-        expect(offering).toEqual([
-          { id: combined.id, title: ACC, status: "IN_PROGRESS" },
-        ]);
+        await optionA(async () => {
+          const { combined, offering } = await approvedLater("d2b-today");
+          expect(offering).toEqual([
+            { id: combined.id, title: ACC, status: "IN_PROGRESS" },
+          ]);
+        });
       });
 
-      test.fails(
-        "D2-b: the combined task is held for review unchanged, and no second task is created",
-        async () => {
-          const { combined, offering } = await approvedLater("d2b-new");
-          expect(offering).toEqual([
-            { id: combined.id, title: COMBINED, status: "IN_PROGRESS" },
-          ]);
-        },
-      );
+      test("D2-b: the combined task is held for review unchanged, and no second task is created", async () => {
+        const { combined, offering } = await approvedLater("d2b-new");
+        expect(offering).toEqual([
+          { id: combined.id, title: COMBINED, status: "IN_PROGRESS" },
+        ]);
+      });
     });
 
     describe("D2: a service fact deleted, withdrawn or re-created, across several syncs", () => {
@@ -829,21 +860,18 @@ describe.skipIf(!TEST_DATABASE_URL)(
         ]);
       });
 
-      test.fails(
-        "E1: the move records IDENTITY_CHANGED on the same task",
-        async () => {
-          const s = await withService("e1-event");
-          await s.remove();
-          await s.add("Boiler repairs");
-          await s.sync();
-          const types = (
-            await db.recommendationEvent.findMany({
-              where: { recommendationId: s.t.id },
-            })
-          ).map((e) => e.type as string);
-          expect(types).toContain("IDENTITY_CHANGED");
-        },
-      );
+      test("E1: the move records IDENTITY_CHANGED on the same task", async () => {
+        const s = await withService("e1-event");
+        await s.remove();
+        await s.add("Boiler repairs");
+        await s.sync();
+        const types = (
+          await db.recommendationEvent.findMany({
+            where: { recommendationId: s.t.id },
+          })
+        ).map((e) => e.type as string);
+        expect(types).toContain("IDENTITY_CHANGED");
+      });
 
       test("B3: re-created but pending for several syncs: held, never completed or duplicated; moves once approved", async () => {
         const s = await withService("b3");
@@ -865,60 +893,58 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
 
       test("today: narrower wording (score 1) moves the task automatically", async () => {
-        const s = await withService("e3-today");
-        await s.remove();
-        await s.add("Emergency boiler repair");
-        await s.sync();
-        await s.sync();
-        expect(await s.tasksFor("oiler")).toEqual([
-          {
-            id: s.t.id,
-            title: svc("Emergency boiler repair"),
-            status: "PROPOSED",
-          },
-        ]);
-      });
-
-      test.fails(
-        "E3: narrower wording is held as a suggestion: the task is unchanged and no second task appears",
-        async () => {
-          const s = await withService("e3-new");
+        await optionA(async () => {
+          const s = await withService("e3-today");
           await s.remove();
           await s.add("Emergency boiler repair");
           await s.sync();
           await s.sync();
           expect(await s.tasksFor("oiler")).toEqual([
-            { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+            {
+              id: s.t.id,
+              title: svc("Emergency boiler repair"),
+              status: "PROPOSED",
+            },
           ]);
-        },
-      );
-
-      test("today: two plausible candidates: the task is held, and each candidate becomes its own task", async () => {
-        const s = await withService("e7-today");
-        await s.remove();
-        await s.add("Emergency boiler repair");
-        await s.add("Boiler repair and servicing");
-        await s.sync();
-        const rows = await s.tasksFor("oiler");
-        expect(rows).toHaveLength(3);
-        expect(rows[0]).toEqual({
-          id: s.t.id,
-          title: svc("Boiler repair"),
-          status: "PROPOSED",
         });
       });
 
-      test.fails(
-        "E7: two plausible candidates: the task is held for review and neither candidate becomes a second task meanwhile",
-        async () => {
-          const s = await withService("e7-new");
+      test("E3: narrower wording is held as a suggestion: the task is unchanged and no second task appears", async () => {
+        const s = await withService("e3-new");
+        await s.remove();
+        await s.add("Emergency boiler repair");
+        await s.sync();
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toEqual([
+          { id: s.t.id, title: svc("Boiler repair"), status: "PROPOSED" },
+        ]);
+      });
+
+      test("today: two plausible candidates: the task is held, and each candidate becomes its own task", async () => {
+        await optionA(async () => {
+          const s = await withService("e7-today");
           await s.remove();
           await s.add("Emergency boiler repair");
           await s.add("Boiler repair and servicing");
           await s.sync();
-          expect(await s.tasksFor("oiler")).toHaveLength(1);
-        },
-      );
+          const rows = await s.tasksFor("oiler");
+          expect(rows).toHaveLength(3);
+          expect(rows[0]).toEqual({
+            id: s.t.id,
+            title: svc("Boiler repair"),
+            status: "PROPOSED",
+          });
+        });
+      });
+
+      test("E7: two plausible candidates: the task is held for review and neither candidate becomes a second task meanwhile", async () => {
+        const s = await withService("e7-new");
+        await s.remove();
+        await s.add("Emergency boiler repair");
+        await s.add("Boiler repair and servicing");
+        await s.sync();
+        expect(await s.tasksFor("oiler")).toHaveLength(1);
+      });
 
       test("E5: a different service replaces it: the old task is held (not completed), the new one is its own task", async () => {
         const s = await withService("e5");

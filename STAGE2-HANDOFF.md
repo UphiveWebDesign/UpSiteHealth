@@ -10,6 +10,102 @@ changing anything. Nothing below authorises implementation.
 - **Earlier handoff:** `docs/HANDOFF.md` (2026-10-25, Sprint 2 objective 2) and
   `docs/DEVELOPMENT-STATUS.md`. Both untracked, not updated today.
 
+## 0. Latest status — M1 applied to `itest-ci` (updated 2026-10-29)
+
+Read this first. Sections 1–6 below are the morning checkpoint of 28 Oct,
+kept as history. Design document sections 37–39 record the same.
+
+**Done since that checkpoint (each step approved by the owner):**
+
+- C1a: pure identity, verification and collision functions, and the
+  capability check.
+- C1b: key-first matching, collision freeze, strict D2-b and score-1 holds,
+  D3, `rowUpdatedAt`, and the Reopen refusal. All of it runs only where
+  `identityCapabilities()` finds every part (option A).
+- P1: `identityKey` and `recurrenceOfId` (and their relation) are `@ignore`
+  in `schema.prisma`, so one codebase serves databases with and without M1.
+- The M1 package: the evidence model, the migration
+  `4_recommendation_identity`, the capability check extended to the triggers
+  and the follow-up index and FK, `TENANT_MODELS` including
+  `RecommendationEvidence`, and static and history tests. The Prisma client
+  was regenerated on 28 Oct, before the apply; the apply did not change it.
+
+**M1 is applied to `itest-ci` only.**
+
+- Target: endpoint `ep-long-surf-b4hm6pyi`, branch `br-noisy-glade-b4rjvu65`,
+  database `upsitehealth_test`.
+- Applied by `prisma migrate deploy` in one guarded process, in 19.2 s.
+- Migration file SHA-256 (Prisma's checksum):
+  `0a8d43347191efabcb6d5441a389af897c18a7c930ebff5463076b14e367b913`.
+- Before: 2026-10-28 21:02:42.246 UTC, LSN `0/90E4EB0`. The `4_` row
+  finished at 21:03:01.242 UTC.
+- Preconditions passed:
+  - identity and marker;
+  - history 0–3 finished, with checksums equal to the files;
+  - no M1 objects present;
+  - pre-M1 objects present;
+  - baseline of 0 recommendations, events, websites and organizations,
+    digest `d41d8cd98f00b204e9800998ecf8427e`;
+  - no other sessions, and no local test, Prisma or worker process.
+- Postconditions passed:
+  - history 0–4, with rows 0–3 unchanged;
+  - both event types;
+  - both columns nullable, with no values;
+  - the unique `recurrenceOfId` index;
+  - the composite follow-up FK, NO ACTION on delete and update;
+  - the evidence table: 26 columns, 7 indexes, FKs cascade ×2 and SET NULL ×3;
+  - both CHECKs;
+  - both triggers enabled, with pinned `search_path`;
+  - RLS on with no policies (as designed);
+  - the evidence table empty;
+  - the baseline unchanged;
+  - the capability check enabled.
+- The shared manual-testing database and production are **not** migrated.
+  They have no `recommendation_events` and no migration history, so option A
+  applies there.
+
+**Recovery.**
+
+- Neon branch `manual-backup` (`br-aged-boat-b437p0gm`, endpoint
+  `ep-empty-dream-b4t4xm17`) was created from `itest-ci` before M1. It is the
+  pre-M1 reference. Its history 0–3 and empty baseline were checked by the
+  owner in the console.
+- Restoring `itest-ci` from it is **not confirmed**, and point-in-time
+  retention is **not verified**.
+- The reviewed down script, which is comments in the migration, cannot remove
+  the two enum values.
+- Never "reset from parent" on `manual-backup`.
+
+**C1b is now active on `itest-ci`, and the integration tests have not been
+run since M1.** The tests were updated (code only) on 29 Oct:
+
+- the seven "today:" tests run with the capability forced off (option A); the
+  eighth already uses the option A path;
+- nine expected-fail tests are now tests: T1, T2, the three collisions,
+  D2-b Moh Maya, E1 event, E3 and E7;
+- the collision test now passes the real capability and expects
+  `IdentityCollisionError`;
+- new: the unkeyed-collision and C1-keying tests, and
+  `tests/integration/recommendation-identity-schema.test.ts` (V0 to V8, the
+  follow-up link, the capability check on the real catalog, key-first
+  creation, a two-connection race);
+- still open: the R1 expected-fail and the R1, R3/R20, B1 and E14 to-dos.
+
+Unit check on 29 Oct: 1,179 passed, 1 expected-fail, 208 skipped, 9 to-do.
+
+**Not authorised, each a separate decision:** D5 (with the P3 retirement
+marker), D7, D8, D9, decision 13, CR1/CR2, B1, M2, and step 4 (follow-ups,
+suggestions and the review queue). The next gate is the `itest-ci`
+integration run.
+
+**Local notes.**
+
+- A `next dev` on port 3000 (owner-started) uses the shared database from
+  `.env`. It cannot reach `itest-ci`.
+- A peer Claude session (`upsitehealth-4f`) exists; it must not run
+  `itest-ci` tests during gates.
+- Nothing is staged or committed.
+
 ## 1. Repository state (inspected 2026-10-28, not changed)
 
 - Branch `main`; last commit `77cca96 feat: business-aware SEO` (2026-10-23).

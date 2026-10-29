@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { RecommendationStatus } from "@/generated/prisma/enums";
 import { createSessionRecord } from "@/lib/auth/session-store";
+import { identityCapabilities } from "@/lib/recommendations/capabilities";
 import { changeStatus, resetHistoryCache } from "@/lib/recommendations/events";
 import { loadTaskHistory } from "@/lib/recommendations/history";
 import {
@@ -236,10 +237,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       // No open finding for this rule remains: the latest analysed crawl is the evidence.
       const t = await createRecommendationOnce(db, scope, draft(RULE_TASK));
       await syncRecommendations(db, s);
-      expect(
-        (await db.recommendation.findUniqueOrThrow({ where: { id: t.id } }))
-          .status,
-      ).toBe("COMPLETED");
+      const completed = await db.recommendation.findUniqueOrThrow({
+        where: { id: t.id },
+      });
+      expect(completed.status).toBe("COMPLETED");
       const after = (await events(t.id)).filter((e) => e.type !== "CREATED");
       expect(
         after.map((e) => [e.type, e.fromStatus, e.toStatus, e.actorUserId]),
@@ -247,12 +248,20 @@ describe.skipIf(!TEST_DATABASE_URL)(
         ["STATUS_CHANGED", "PROPOSED", "COMPLETED", null],
         ["VERIFICATION_RECORDED", null, "COMPLETED", null],
       ]);
+      // Stage 2 (D1, section 29): where every capability is present (M1),
+      // the completing transaction also records the row's updatedAt as it
+      // stands after the change; nothing writes the completed row since.
+      // Without them the evidence is exactly as before (option A).
+      const { enabled } = await identityCapabilities(db);
       for (const e of after)
         expect(e.evidence).toEqual({
           basis: "seo-rule",
           ruleId: "TECH_TITLE_TOO_LONG",
           crawlRunId: crawl!.id,
           observedAt: expect.any(String),
+          ...(enabled
+            ? { rowUpdatedAt: completed.updatedAt.toISOString() }
+            : {}),
         });
       // Repeated syncs add nothing.
       await syncRecommendations(db, s);

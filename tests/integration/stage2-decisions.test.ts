@@ -1,25 +1,61 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
+import {
+  identityCapabilities,
+  resetCapabilitiesCache,
+} from "@/lib/recommendations/capabilities";
 import { changeStatus, resetHistoryCache } from "@/lib/recommendations/events";
 import {
   createRecommendationOnce,
   syncRecommendations,
 } from "@/lib/recommendations/generate";
+import { IdentityCollisionError } from "@/lib/recommendations/identity";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
 
 /**
  * Stage 2 decision tests (D1, D3, collisions, backfill premise) against the
- * isolated test database, run before the implementation. Rows are seeded
- * directly (crawl runs, findings, tasks); nothing is crawled.
+ * isolated test database. Rows are seeded directly (crawl runs, findings,
+ * tasks); nothing is crawled.
  *
- * As in the unit file: `test` holds today and after; "today:" pins what the
- * approved design changes; `test.fails` states the approved behaviour and
- * passes now because it is not implemented; `test.todo` needs schema the
- * implementation adds (M1), so it is blocked at this gate.
+ * M1 is applied on itest-ci (28 Oct), so the Stage 2 rules (C1b) are on
+ * there. `test` holds with them; "today:" pins option A, the behaviour of a
+ * database missing any capability (the shared database and production), and
+ * runs with the capability check forced off; `test.fails` is approved
+ * behaviour not implemented yet (D1 follow-ups, step 4); `test.todo` needs
+ * work not done yet. M1's own database behaviour (evidence, follow-up link,
+ * capability parts) is tested in recommendation-identity-schema.test.ts.
  */
 vi.mock("@/lib/db", () => ({ db: () => null }));
+
+/** The real capability check, unless a test forces option A. */
+const capability = vi.hoisted(() => ({ forceOff: false }));
+vi.mock("@/lib/recommendations/capabilities", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/recommendations/capabilities")>();
+  return {
+    ...actual,
+    identityCapabilities: (
+      ...args: Parameters<typeof actual.identityCapabilities>
+    ) =>
+      capability.forceOff
+        ? Promise.resolve({
+            enabled: false,
+            missing: ["forced off: option A test"],
+          })
+        : actual.identityCapabilities(...args),
+  };
+});
+/** Runs `fn` as on a database without M1 (option A). */
+async function optionA<T>(fn: () => Promise<T>): Promise<T> {
+  capability.forceOff = true;
+  try {
+    return await fn();
+  } finally {
+    capability.forceOff = false;
+  }
+}
 
 const RULE = "TECH_TITLE_TOO_LONG";
 const OLD = "Title is too long";
@@ -135,6 +171,15 @@ describe.skipIf(!TEST_DATABASE_URL)(
     beforeAll(async () => {
       db = testDb();
       resetHistoryCache();
+      resetCapabilitiesCache();
+    });
+
+    test("M1 is applied here: the capability check is enabled (every part present)", async () => {
+      resetCapabilitiesCache();
+      expect(await identityCapabilities(db)).toEqual({
+        enabled: true,
+        missing: [],
+      });
     });
     afterAll(async () => {
       await db.organization.deleteMany({ where: { id: { in: orgIds } } });
@@ -215,10 +260,10 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
 
       test.todo(
-        "R1: the follow-up's recurrenceOfId names the completed task (blocked: needs M1)",
+        "R1: the follow-up's recurrenceOfId names the completed task (blocked: follow-up creation is step 4; M1 has the column)",
       );
       test.todo(
-        "R3/R20: concurrent syncs on two connections create one follow-up (blocked: needs M1 and the follow-up index)",
+        "R3/R20: concurrent syncs on two connections create one follow-up (blocked: follow-up creation is step 4; M1 has the unique index)",
       );
     });
 
@@ -246,28 +291,26 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
 
       test("today (the duplicate defect): a reworded rule leaves two open tasks", async () => {
-        expect((await reworded("t1-today", false)).map((r) => r.title)).toEqual(
-          [task(OLD), task(NEW)],
-        );
+        await optionA(async () => {
+          expect(
+            (await reworded("t1-today", false)).map((r) => r.title),
+          ).toEqual([task(OLD), task(NEW)]);
+        });
       });
 
-      test.fails(
-        "T1: a reworded rule keeps one open task, the same row",
-        async () => {
-          expect(await reworded("t1-new", false)).toHaveLength(1);
-        },
-      );
+      test("T1: a reworded rule keeps one open task, the same row", async () => {
+        expect(await reworded("t1-new", false)).toHaveLength(1);
+      });
 
       test("today: a partial crawl that refreshed only some findings leaves two open tasks", async () => {
-        expect(await reworded("t2-today", true)).toHaveLength(2);
+        await optionA(async () => {
+          expect(await reworded("t2-today", true)).toHaveLength(2);
+        });
       });
 
-      test.fails(
-        "T2: a partial crawl never splits one rule into two tasks",
-        async () => {
-          expect(await reworded("t2-new", true)).toHaveLength(1);
-        },
-      );
+      test("T2: a partial crawl never splits one rule into two tasks", async () => {
+        expect(await reworded("t2-new", true)).toHaveLength(1);
+      });
     });
 
     describe("collisions: two open rows with one identity", () => {
@@ -294,41 +337,44 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
 
       test("today: with the problem still present, the sync updates one duplicate and leaves the other", async () => {
-        const { a, b, after } = await twoRows("c-upd-today", true);
-        const changed = after.filter(
-          (r) =>
-            r.updatedAt.getTime() !==
-            [a, b].find((x) => x.id === r.id)!.updatedAt.getTime(),
-        );
-        expect(after).toHaveLength(2);
-        expect(changed).toHaveLength(1);
+        await optionA(async () => {
+          const { a, b, after } = await twoRows("c-upd-today", true);
+          const changed = after.filter(
+            (r) =>
+              r.updatedAt.getTime() !==
+              [a, b].find((x) => x.id === r.id)!.updatedAt.getTime(),
+          );
+          expect(after).toHaveLength(2);
+          expect(changed).toHaveLength(1);
+        });
       });
 
-      test.fails(
-        "collision: the sync updates neither duplicate and creates nothing",
-        async () => {
-          const { a, b, after } = await twoRows("c-upd-new", true);
-          expect(after.map((r) => [r.id, r.updatedAt.getTime()])).toEqual([
-            [a.id, a.updatedAt.getTime()],
-            [b.id, b.updatedAt.getTime()],
-          ]);
-        },
-      );
+      test("collision: the sync updates neither duplicate and creates nothing", async () => {
+        const { a, b, after } = await twoRows("c-upd-new", true);
+        expect(after.map((r) => [r.id, r.updatedAt.getTime()])).toEqual([
+          [a.id, a.updatedAt.getTime()],
+          [b.id, b.updatedAt.getTime()],
+        ]);
+      });
 
       test("today: with the problem gone, the sync completes both duplicates", async () => {
-        const { after } = await twoRows("c-done-today", false);
-        expect(after.map((r) => r.status)).toEqual(["COMPLETED", "COMPLETED"]);
+        await optionA(async () => {
+          const { after } = await twoRows("c-done-today", false);
+          expect(after.map((r) => r.status)).toEqual([
+            "COMPLETED",
+            "COMPLETED",
+          ]);
+        });
       });
 
-      test.fails(
-        "collision: the sync completes neither duplicate",
-        async () => {
-          const { after } = await twoRows("c-done-new", false);
-          expect(after.map((r) => r.status)).toEqual(["PROPOSED", "PROPOSED"]);
-        },
-      );
+      test("collision: the sync completes neither duplicate", async () => {
+        const { after } = await twoRows("c-done-new", false);
+        expect(after.map((r) => r.status)).toEqual(["PROPOSED", "PROPOSED"]);
+      });
 
       test("today: a title-based create (the sync's, or Accept's) returns the oldest duplicate", async () => {
+        // createRecommendationOnce without the capability options is the
+        // option A path, whatever the database has.
         const s = await site("c-accept-today");
         const make = () =>
           db.recommendation.create({
@@ -354,38 +400,60 @@ describe.skipIf(!TEST_DATABASE_URL)(
         ).resolves.toMatchObject({ created: false, id: a.id });
       });
 
-      test.fails(
-        "collision: a title-based create or Accept refuses instead of picking one",
-        async () => {
-          const s = await site("c-accept-new");
-          const make = () =>
-            db.recommendation.create({
-              data: {
-                ...s.scope,
-                title: "Dup (BIZ_SERVICE_PAGE)",
-                explanation: "x",
-                priority: "LOW",
-                recommendedAction: "y",
-              },
-            });
-          await make();
-          await make();
-          await expect(
-            createRecommendationOnce(db, s.scope, {
+      test("collision: a title-based create or Accept refuses instead of picking one", async () => {
+        const s = await site("c-accept-new");
+        const make = () =>
+          db.recommendation.create({
+            data: {
+              ...s.scope,
               title: "Dup (BIZ_SERVICE_PAGE)",
               explanation: "x",
               priority: "LOW",
-              expectedImpact: "z",
               recommendedAction: "y",
-              issueId: null,
-            }),
-          ).rejects.toThrow();
-        },
-      );
+            },
+          });
+        const a = await make();
+        const b = await make();
+        // As the sync and the Accept action call it: with the capability
+        // this database reports. No fact id, so no key: matched by title.
+        const { enabled } = await identityCapabilities(db);
+        const refusal = createRecommendationOnce(
+          db,
+          s.scope,
+          {
+            title: "Dup (BIZ_SERVICE_PAGE)",
+            explanation: "x",
+            priority: "LOW",
+            expectedImpact: "z",
+            recommendedAction: "y",
+            issueId: null,
+          },
+          null,
+          { identity: enabled, key: null },
+        );
+        // Strengthened from toThrow(): the collision refusal, naming both rows.
+        await expect(refusal).rejects.toThrow(IdentityCollisionError);
+        await expect(refusal).rejects.toMatchObject({
+          ids: expect.arrayContaining([a.id, b.id]),
+        });
+        expect(
+          await db.recommendation.count({
+            where: { ...s.scope, title: "Dup (BIZ_SERVICE_PAGE)" },
+          }),
+        ).toBe(2);
+      });
 
-      test.todo(
-        "collision: no identityKey is assigned to either row (blocked: needs M1)",
-      );
+      test("collision: no identityKey is assigned to either row", async () => {
+        const { a, b } = await twoRows("c-key", true);
+        const keys = await db.$queryRaw<
+          Array<{ id: string; identityKey: string | null }>
+        >`SELECT id, "identityKey" FROM recommendations
+          WHERE id = ANY(${[a.id, b.id]}) ORDER BY "createdAt"`;
+        expect(keys).toEqual([
+          { id: a.id, identityKey: null },
+          { id: b.id, identityKey: null },
+        ]);
+      });
     });
 
     describe("backfill premise: updatedAt survives a raw UPDATE (condition 5)", () => {
@@ -427,14 +495,43 @@ describe.skipIf(!TEST_DATABASE_URL)(
         );
       });
 
-      test.todo(
-        "B1 apply and C1 keying preserve updatedAt, ids, statuses, titles and event counts (blocked: needs M1 and the backfill script)",
-      );
-    });
+      test("C1 keying: a matched COMPLETED or DISMISSED row is keyed with its id, status, title, updatedAt and events unchanged", async () => {
+        for (const status of ["COMPLETED", "DISMISSED"] as const) {
+          const s = await site(`key-${status.toLowerCase()}`);
+          const c1 = await s.crawl(HOUR);
+          await s.finding(c1.id, OLD);
+          const row = await db.recommendation.create({
+            data: {
+              ...s.scope,
+              title: task(OLD),
+              explanation: "seeded",
+              priority: "MEDIUM",
+              recommendedAction: "seeded",
+              status,
+            },
+          });
+          await syncRecommendations(db, s.site);
+          const after = await db.recommendation.findUniqueOrThrow({
+            where: { id: row.id },
+          });
+          expect([after.status, after.title, after.updatedAt]).toEqual([
+            status,
+            task(OLD),
+            row.updatedAt,
+          ]);
+          // The column is @ignore in the client: read it with SQL.
+          const [{ identityKey }] = await db.$queryRaw<
+            Array<{ identityKey: string | null }>
+          >`SELECT "identityKey" FROM recommendations WHERE id = ${row.id}`;
+          expect(identityKey).toBe(`seo:${RULE}`);
+          expect(await s.events(row.id)).toBe(0);
+          // It holds the draft: no second task for the rule.
+          expect(await s.ruleTasks()).toHaveLength(1);
+        }
+      });
 
-    describe("D4: evidence references and tenancy (V1 to V7)", () => {
       test.todo(
-        "V1 to V7: cross-tenant references rejected, fact deletion sets NULL and keeps the summary, append-only (blocked: needs M1)",
+        "B1 apply preserves updatedAt, ids, statuses, titles and event counts (blocked: needs the backfill script, B1)",
       );
     });
   },

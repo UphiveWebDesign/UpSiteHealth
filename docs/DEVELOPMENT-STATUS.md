@@ -2,6 +2,41 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-10-28 — Stage 2 M1 applied to `itest-ci`; integration tests updated (not run)
+
+**Applied: migration `4_recommendation_identity`, to `itest-ci` only.**
+
+- Target: endpoint `ep-long-surf-b4hm6pyi`, branch `br-noisy-glade-b4rjvu65`,
+  database `upsitehealth_test`.
+- Owner-approved. One guarded process ran read-only checks, then
+  `prisma migrate deploy` (exit 0, 19.2 s), then read-only checks.
+- Before: 21:02:42 UTC, LSN `0/90E4EB0`. The `4_` row finished at
+  21:03:01 UTC.
+- Checksum `0a8d4334…b913` equals the reviewed file.
+- Every precondition and postcondition passed: identity, history and
+  checksums, objects absent before and present after, FK actions, triggers
+  enabled, RLS on with no policies, the evidence table empty, and the
+  baseline unchanged (all counts 0, digest
+  `d41d8cd98f00b204e9800998ecf8427e`).
+- The capability check now reports enabled there.
+- Not applied to the shared database or production.
+- Pre-M1 reference: the Neon branch `manual-backup`. Restoring from it is
+  not confirmed.
+
+**Code only, 29 Oct; no database used.**
+
+- `tests/integration/stage2-decisions.test.ts` and `opportunities.test.ts`:
+  the "today:" tests run with the capability forced off (option A); nine
+  verified expected-fail tests became tests; the collision create passes the
+  real capability.
+- New `tests/integration/recommendation-identity-schema.test.ts`: the M1
+  triggers, foreign keys and follow-up link; the capability check on the
+  real catalog (rolled-back changes); key-first creation; a two-connection
+  race.
+- `env -u TEST_DATABASE_URL npm run check`: **1,179 passed, 1 expected-fail,
+  208 skipped, 9 to-do**.
+- The integration tests have **not** been run against M1 yet.
+
 ## 2026-10-27 — Analysis retries respect the processing deadline
 
 **Problem.** On the shared database at 12:05:57 UTC, Start crawl for Miwoo
