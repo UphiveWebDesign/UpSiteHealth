@@ -61,6 +61,15 @@ const BASIS: Record<string, string> = {
   "ai-search": "the latest AI Search run",
 };
 
+/**
+ * Stage 2 event types (M1). Looked up by name, so this reads the same
+ * whether or not the generated client lists them yet.
+ */
+const IDENTITY_EVENT: Record<string, string> = {
+  IDENTITY_CHANGED: "Moved to follow a renamed source",
+  IDENTITY_LINK_DECLINED: "Suggested match declined",
+};
+
 /** One event in plain words: what happened, who did it, and its evidence. */
 export function describeEvent(e: HistoryEvent): {
   what: string;
@@ -92,7 +101,9 @@ export function describeEvent(e: HistoryEvent): {
             ? "Note added"
             : e.type === "ESTIMATE_CHANGED"
               ? "Estimate changed"
-              : "Planned";
+              : e.type === "PLANNED"
+                ? "Planned"
+                : (IDENTITY_EVENT[e.type] ?? "Updated");
   const details: string[] = [];
   if (e.note) details.push(e.note);
   if (evidence) {
@@ -105,6 +116,10 @@ export function describeEvent(e: HistoryEvent): {
       details.push(`Issue ${evidence.issueId}`);
     if (typeof evidence.integration === "string")
       details.push(`Integration ${evidence.integration}`);
+    if (typeof evidence.fromTitle === "string")
+      details.push(`Was “${evidence.fromTitle}”`);
+    if (typeof evidence.toTitle === "string")
+      details.push(`Now “${evidence.toTitle}”`);
   }
   return { what, who, details };
 }

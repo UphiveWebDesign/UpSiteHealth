@@ -404,6 +404,7 @@ model Organization {
   issues                   Issue[]
   recommendations          Recommendation[]
   recommendationEvents     RecommendationEvent[]
+  recommendationEvidence   RecommendationEvidence[]
   scoreSnapshots           WebsiteScoreSnapshot[]
   performanceObservations  PerformanceObservation[]
   aiSearchProfiles         AiSearchProfile[]
@@ -622,6 +623,7 @@ model CrawlRun {
   website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   pages        CrawlPage[]
   seoFindings  SeoFinding[]
+  recommendationEvidence RecommendationEvidence[]
 
   @@index([organizationId])
   @@index([status])
@@ -709,6 +711,7 @@ model SeoFinding {
   website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   crawlRun     CrawlRun     @relation(fields: [crawlRunId], references: [id], onDelete: Cascade)
   crawlPage    CrawlPage?   @relation(fields: [crawlPageId], references: [id], onDelete: SetNull)
+  recommendationEvidence RecommendationEvidence[]
 
   @@unique([websiteId, fingerprint])
   @@index([crawlRunId])
@@ -757,11 +760,22 @@ model Recommendation {
   status            RecommendationStatus   @default(PROPOSED)
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
+  // Stage 2 (M1, 4_recommendation_identity). @ignore: Migrate manages these
+  // columns, but the client never reads or writes them, so the same code runs
+  // on databases with and without M1 (option A). Accessed only through
+  // recommendations/identity-store.ts, behind identityCapabilities().
+  identityKey       String?                @ignore
+  recurrenceOfId    String?                @unique @ignore
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   website      Website               @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   issue        Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
   events       RecommendationEvent[]
+  evidence     RecommendationEvidence[]
+  // A follow-up after a verified completion (D1): same website and
+  // organization by construction. Ignored by the client, like its column.
+  recurrenceOf Recommendation?  @relation("Recurrence", fields: [recurrenceOfId, websiteId, organizationId], references: [id, websiteId, organizationId], onDelete: NoAction, onUpdate: NoAction) @ignore
+  recurrences  Recommendation[] @relation("Recurrence") @ignore
 
   // Lets history rows reference (id, websiteId, organizationId) together, so
   // an event can never point at another organization's or website's task.
@@ -779,6 +793,10 @@ enum RecommendationEventType {
   ESTIMATE_CHANGED
   PLANNED
   VERIFICATION_RECORDED
+  // Stage 2 (M1, 4_recommendation_identity): written only where
+  // identityCapabilities() finds them in the database.
+  IDENTITY_CHANGED
+  IDENTITY_LINK_DECLINED
 }
 
 /// Append-only task history: rows are added, never changed (an UPDATE trigger
@@ -908,6 +926,7 @@ model BusinessFact {
   website      Website      @relation(fields: [websiteId, organizationId], references: [id, organizationId], onDelete: Cascade)
   createdBy    User?        @relation("BusinessFactCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   reviewedBy   User?        @relation("BusinessFactReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  recommendationEvidence RecommendationEvidence[]
 
   @@unique([websiteId, kind, normalizedValue])
   @@index([organizationId])
@@ -1106,4 +1125,74 @@ model NotificationDeliveryJob {
   @@index([status, availableAt])
   @@index([status, claimExpiresAt])
   @@map("notification_delivery_jobs")
+}
+
+// ─── Stage 2 evidence (M1, 4_recommendation_identity) ──────────────────────
+
+enum EvidenceRole {
+  OBSERVED
+  INFERRED
+  MISSING
+}
+
+enum EvidenceProvenance {
+  RECORDED
+  LEGACY_UNAVAILABLE
+  RECONSTRUCTED
+}
+
+enum EvidenceConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+/// What a task rested on at a point in time (Stage 2, D4). Append-only: a
+/// trigger in the migration allows only `supersededAt` set once from NULL and
+/// a source reference becoming NULL when its source is deleted. Another
+/// trigger refuses a reference to another website's or organization's
+/// crawl, finding or fact. Written only behind identityCapabilities().
+model RecommendationEvidence {
+  id                 String              @id @default(cuid())
+  organizationId     String
+  websiteId          String
+  recommendationId   String
+  /// Items written by one sync share a set id and its digest.
+  setId              String
+  setDigest          String
+  capturedAt         DateTime            @default(now())
+  supersededAt       DateTime?
+  role               EvidenceRole
+  kind               String
+  source             String
+  sourceVersion      String?
+  /// When the source measured it; null = date unknown, never defaulted.
+  observedAt         DateTime?
+  crawlRunId         String?
+  seoFindingId       String?
+  businessFactId     String?
+  refType            String?
+  refId              String?
+  url                String?
+  summary            String
+  payload            Json?
+  factStatus         BusinessFactStatus?
+  freshnessDimension String?
+  confidence         EvidenceConfidence?
+  rationale          String?
+  provenance         EvidenceProvenance
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recommendation Recommendation @relation(fields: [recommendationId, websiteId, organizationId], references: [id, websiteId, organizationId], onDelete: Cascade)
+  crawlRun       CrawlRun?      @relation(fields: [crawlRunId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  seoFinding     SeoFinding?    @relation(fields: [seoFindingId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  businessFact   BusinessFact?  @relation(fields: [businessFactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([recommendationId, supersededAt])
+  @@index([websiteId, capturedAt])
+  @@index([organizationId])
+  @@index([crawlRunId])
+  @@index([seoFindingId])
+  @@index([businessFactId])
+  @@map("recommendation_evidence")
 }

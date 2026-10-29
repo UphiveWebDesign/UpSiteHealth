@@ -87,3 +87,93 @@ describe("describeEvent", () => {
     });
   });
 });
+
+describe("describeEvent: Stage 2 event types (M1)", () => {
+  const sync = {
+    actorUserId: null,
+    actor: null,
+    fromStatus: null,
+    toStatus: null,
+  };
+
+  test("IDENTITY_CHANGED from the sync: labelled, automatic, with the old and new titles", () => {
+    expect(
+      describeEvent(
+        event({
+          ...sync,
+          type: "IDENTITY_CHANGED",
+          evidence: {
+            fromTitle: "Add a page for “Cottages and Cafe” (BIZ_SERVICE_PAGE)",
+            toTitle:
+              "Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)",
+            fromKey: "biz:offering-page:f1",
+          },
+        }),
+      ),
+    ).toEqual({
+      what: "Moved to follow a renamed source",
+      who: "UpSiteHealth (automatic)",
+      details: [
+        "Was “Add a page for “Cottages and Cafe” (BIZ_SERVICE_PAGE)”",
+        "Now “Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)”",
+      ],
+    });
+  });
+
+  test("IDENTITY_LINK_DECLINED by a person: labelled and attributed to them", () => {
+    expect(
+      describeEvent(
+        event({
+          type: "IDENTITY_LINK_DECLINED",
+          fromStatus: null,
+          toStatus: null,
+        }),
+      ),
+    ).toEqual({ what: "Suggested match declined", who: "Asha", details: [] });
+  });
+
+  test("title details: each shown only when recorded as text", () => {
+    const details = (evidence: unknown) =>
+      describeEvent(event({ ...sync, type: "IDENTITY_CHANGED", evidence }))
+        .details;
+    expect(details({ toTitle: "B" })).toEqual(["Now “B”"]);
+    expect(details({ fromTitle: "A" })).toEqual(["Was “A”"]);
+    expect(details({ fromTitle: 1, toTitle: null })).toEqual([]);
+  });
+
+  test("an event type this code does not know is shown neutrally, never as another type", () => {
+    expect(
+      describeEvent(
+        event({ type: "SOMETHING_NEW" as unknown as HistoryEvent["type"] }),
+      ).what,
+    ).toBe("Updated");
+  });
+
+  test("the six earlier event types keep exactly their labels", () => {
+    const what = (type: HistoryEvent["type"]) =>
+      describeEvent(
+        event({ type, fromStatus: "PROPOSED", toStatus: "COMPLETED" }),
+      ).what;
+    expect(
+      Object.fromEntries(
+        (
+          [
+            "CREATED",
+            "STATUS_CHANGED",
+            "VERIFICATION_RECORDED",
+            "NOTE_ADDED",
+            "ESTIMATE_CHANGED",
+            "PLANNED",
+          ] as const
+        ).map((t) => [t, what(t)]),
+      ),
+    ).toEqual({
+      CREATED: "Added as done",
+      STATUS_CHANGED: "Changed from proposed to done",
+      VERIFICATION_RECORDED: "Verified by a recheck",
+      NOTE_ADDED: "Note added",
+      ESTIMATE_CHANGED: "Estimate changed",
+      PLANNED: "Planned",
+    });
+  });
+});

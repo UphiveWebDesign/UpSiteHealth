@@ -20,6 +20,7 @@ export const TENANT_MODELS = new Set([
   "Issue",
   "Recommendation",
   "RecommendationEvent",
+  "RecommendationEvidence",
   "WebsiteScoreSnapshot",
   "PerformanceObservation",
   "AiSearchProfile",

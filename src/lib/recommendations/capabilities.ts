@@ -4,19 +4,36 @@ import { log } from "@/lib/log";
 /**
  * Whether this database has everything the Stage 2 identity behaviour needs
  * (keys, collision freeze, D1 follow-ups, suggestions): task history, the M1
- * columns and evidence table, and the two new event types. All or nothing:
- * with any part missing, the new behaviour stays off and the sync behaves
- * exactly as before (owner decision, option A). Never partly on.
+ * columns and evidence table, the two new event types, both evidence
+ * triggers (enabled), and the follow-up link's unique index and foreign key.
+ * All or nothing: with any part missing (including an M1 applied only in
+ * part, by hand), the new behaviour stays off and the sync behaves exactly
+ * as before (owner decision, option A). Never partly on.
  *
  * Read-only: one catalog query, cached for a minute like `historyAvailable`.
  * Names are schema-qualified, so the result does not depend on search_path.
  */
+
+/** Objects created by 4_recommendation_identity, by name (tests compare them). */
+export const M1_OBJECTS = {
+  triggers: [
+    "recommendation_evidence_tenancy",
+    "recommendation_evidence_append_only",
+  ],
+  recurrenceIndex: "recommendations_recurrenceOfId_key",
+  recurrenceForeignKey:
+    "recommendations_recurrenceOfId_websiteId_organizationId_fkey",
+} as const;
 
 const REQUIRED = {
   events: "table recommendation_events (migration 2_recommendation_events)",
   evidence: "table recommendation_evidence (M1)",
   columns: 'columns recommendations."identityKey" and "recurrenceOfId" (M1)',
   eventTypes: "event types IDENTITY_CHANGED and IDENTITY_LINK_DECLINED (M1)",
+  triggers:
+    "triggers recommendation_evidence_tenancy and recommendation_evidence_append_only, enabled (M1)",
+  recurrence:
+    "unique index and foreign key for recommendations.recurrenceOfId (M1)",
 } as const;
 
 export type IdentityCapabilities = {
@@ -47,7 +64,23 @@ export async function identityCapabilities(
           JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
           WHERE n.nspname = 'public' AND t.typname = 'RecommendationEventType'
             AND e.enumlabel IN ('IDENTITY_CHANGED', 'IDENTITY_LINK_DECLINED')) = 2
-          AS "eventTypes"`;
+          AS "eventTypes",
+        (SELECT count(*) FROM pg_catalog.pg_trigger tr
+          JOIN pg_catalog.pg_class c ON c.oid = tr.tgrelid
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relname = 'recommendation_evidence'
+            AND NOT tr.tgisinternal AND tr.tgenabled <> 'D'
+            AND tr.tgname IN (${M1_OBJECTS.triggers[0]}, ${M1_OBJECTS.triggers[1]})) = 2
+          AS triggers,
+        (EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'i'
+            AND c.relname = ${M1_OBJECTS.recurrenceIndex})
+         AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+          JOIN pg_catalog.pg_namespace n ON n.oid = k.connamespace
+          WHERE n.nspname = 'public' AND k.contype = 'f'
+            AND k.conname = ${M1_OBJECTS.recurrenceForeignKey}))
+          AS recurrence`;
   } catch (error) {
     // Unknown means off; not cached, so the next sync asks again.
     log.warn("recommendation_identity.check_failed", {}, error);
