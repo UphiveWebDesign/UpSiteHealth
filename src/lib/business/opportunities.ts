@@ -102,6 +102,8 @@ export type PageOpportunity = {
   decision: "accepted" | "dismissed" | null;
   /** True when it becomes (or stays) a recommendation in the plan. */
   recommend: boolean;
+  /** The part of a compound fact it is for ("Cottages"), else none. */
+  part?: string | null;
 };
 
 export type ExistingTasks = Map<string, RecommendationStatus>;
@@ -807,6 +809,7 @@ export function buildOpportunities(input: OpportunityInput): {
               ? `${quote(o.label)} is an approved experience or event. Describing it clearly helps guests choose their stay${g.length ? `, supporting ${goalNames(g)}` : ""}.`
               : `${quote(o.label)} is an approved offering. A page about it lets people find and understand it${g.length ? `, supporting ${goalNames(g)}` : ""}.`,
       facts: [o.fact],
+      part: o.component ? o.label : null,
       goals: g,
       considered: a.considered,
       slug,

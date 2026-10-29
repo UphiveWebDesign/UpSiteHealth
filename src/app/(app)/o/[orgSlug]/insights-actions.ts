@@ -32,8 +32,10 @@ import {
   runIntegrationCheck,
 } from "@/lib/integrations/service";
 import { recordPageSpeed } from "@/lib/performance/pagespeed";
+import { identityCapabilities } from "@/lib/recommendations/capabilities";
 import { changeStatus, historyAvailable } from "@/lib/recommendations/events";
 import {
+  reopenTask,
   syncRecommendations,
   verifiedByCrawl,
 } from "@/lib/recommendations/generate";
@@ -213,17 +215,35 @@ export async function setRecommendationStatusAction(
     return refuse({ kind: "stale", now: current.status });
   if (!canTransition(current.status, status))
     return refuse({ kind: "unsupported", from: current.status });
+  // Stage 2 (section 21), only where every capability is present: Reopen
+  // is refused while a newer task holds this problem's open slot, checked
+  // and applied under the website lock (root client, scope verified above).
+  const reopen =
+    current.status === "COMPLETED" &&
+    status === "PROPOSED" &&
+    (await identityCapabilities(db())).enabled
+      ? await reopenTask(db(), {
+          id: recommendationId,
+          organizationId: ctx.organization.id,
+          websiteId: current.websiteId,
+          actorUserId: ctx.user.id,
+        })
+      : null;
+  if (reopen?.kind === "blocked")
+    return refuse({ kind: "superseded", by: reopen.by });
   // The change and its history row (with this person as actor) are one
   // transaction, applied only if the status is still the one checked.
-  const changed = await changeStatus(ctx.db, {
-    id: recommendationId,
-    organizationId: ctx.organization.id,
-    websiteId: current.websiteId,
-    from: current.status,
-    to: status,
-    actorUserId: ctx.user.id,
-    history: await historyAvailable(db()),
-  });
+  const changed = reopen
+    ? reopen.kind === "reopened"
+    : await changeStatus(ctx.db, {
+        id: recommendationId,
+        organizationId: ctx.organization.id,
+        websiteId: current.websiteId,
+        from: current.status,
+        to: status,
+        actorUserId: ctx.user.id,
+        history: await historyAvailable(db()),
+      });
   if (!changed) {
     const now = await ctx.db.recommendation.findFirst({
       where: { id: recommendationId },

@@ -23,11 +23,18 @@ import type { TenantDb } from "@/lib/tenancy/scope";
  * recorded and the change itself still happens (logged once per minute).
  */
 
+/**
+ * Event types added by M1. Written only where `identityCapabilities` found
+ * them in the database; they join RecommendationEventType when M1's schema
+ * lands, and this alias goes.
+ */
+export type IdentityEventType = "IDENTITY_CHANGED" | "IDENTITY_LINK_DECLINED";
+
 export type EventInput = {
   organizationId: string;
   websiteId: string;
   recommendationId: string;
-  type: RecommendationEventType;
+  type: RecommendationEventType | IdentityEventType;
   fromStatus?: RecommendationStatus | null;
   toStatus?: RecommendationStatus | null;
   note?: string | null;
@@ -83,7 +90,7 @@ export async function recordEvents(tx: EventWriter, events: EventInput[]) {
       organizationId: e.organizationId,
       websiteId: e.websiteId,
       recommendationId: e.recommendationId,
-      type: e.type,
+      type: e.type as RecommendationEventType,
       fromStatus: e.fromStatus ?? null,
       toStatus: e.toStatus ?? null,
       note: e.note ?? null,
@@ -111,6 +118,12 @@ export async function changeStatus(
     history: boolean;
     /** For UpSiteHealth's own changes: what the recheck rests on. */
     verification?: Record<string, unknown>;
+    /**
+     * Stage 2 (D1), only where every capability is present: add the row's
+     * `updatedAt` after this change to the verification, read back in the
+     * same transaction, so a later change without an event is detectable.
+     */
+    recordRowUpdatedAt?: boolean;
   },
 ): Promise<boolean> {
   // The tenant client keeps its scope inside the transaction at runtime.
@@ -120,6 +133,19 @@ export async function changeStatus(
       data: { status: change.to },
     });
     if (count === 0) return false;
+    let verification = change.verification;
+    if (verification && change.recordRowUpdatedAt) {
+      const row = await tx.recommendation.findUnique({
+        where: { id: change.id },
+        select: { updatedAt: true },
+      });
+      // Without it the verification never counts for D1 (section 29).
+      if (row)
+        verification = {
+          ...verification,
+          rowUpdatedAt: row.updatedAt.toISOString(),
+        };
+    }
     if (change.history) {
       const base = {
         organizationId: change.organizationId,
@@ -133,15 +159,15 @@ export async function changeStatus(
           fromStatus: change.from,
           toStatus: change.to,
           actorUserId: change.actorUserId,
-          evidence: change.verification ?? null,
+          evidence: verification ?? null,
         },
-        ...(change.verification
+        ...(verification
           ? [
               {
                 ...base,
                 type: "VERIFICATION_RECORDED" as const,
                 toStatus: change.to,
-                evidence: change.verification,
+                evidence: verification,
               },
             ]
           : []),

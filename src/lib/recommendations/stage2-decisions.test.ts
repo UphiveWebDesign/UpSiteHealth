@@ -9,16 +9,24 @@ import {
   AI_SEARCH_TITLE,
   buildRecommendations,
   createRecommendationOnce,
+  draftKey,
+  effectiveKey,
   heldReason,
   matchDraft,
   planSync,
+  reopenBlockedBy,
   verificationEvidence,
   type Existing,
   type RecommendationContext,
   type RecommendationDraft,
   type RecommendationInputs,
 } from "./generate";
-import { findCollisions, logCollisions } from "./identity";
+import { seoRule } from "@/lib/knowledge/catalogue";
+import {
+  findCollisions,
+  IdentityCollisionError,
+  logCollisions,
+} from "./identity";
 import {
   detectedAfterVerification,
   recurrenceEligible,
@@ -98,6 +106,12 @@ const row = (
 const stillOpen = ctx({
   remainingRules: new Map([[RULE, { open: 3, ignored: 0 }]]),
 });
+/**
+ * Step C1b: the approved behaviour runs only where every capability is
+ * present (option A). These tests pass the capability in; the "today"
+ * tests beside them run without it and pin that nothing changes there.
+ */
+const ON = { identity: true } as const;
 
 describe("D3: one task per rule, whatever the wording (T1 to T3)", () => {
   test("today: two wordings of one rule (a partial crawl refreshed only some findings) make two drafts", () => {
@@ -111,11 +125,14 @@ describe("D3: one task per rule, whatever the wording (T1 to T3)", () => {
     ]);
   });
 
-  test.fails("T2: two wordings of one rule make one draft", () => {
-    const drafts = buildRecommendations({
-      ...none,
-      findingGroups: [group(OLD_WORDING), group(NEW_WORDING)],
-    });
+  test("T2: two wordings of one rule make one draft", () => {
+    const drafts = buildRecommendations(
+      {
+        ...none,
+        findingGroups: [group(OLD_WORDING), group(NEW_WORDING)],
+      },
+      ON,
+    );
     expect(drafts).toHaveLength(1);
   });
 
@@ -127,15 +144,12 @@ describe("D3: one task per rule, whatever the wording (T1 to T3)", () => {
     ).toBeUndefined();
   });
 
-  test.fails(
-    "T1: a task under the old wording matches the reworded draft for the same rule",
-    () => {
-      const d = draftFor(NEW_WORDING);
-      expect(
-        matchDraft(row("t", `${OLD_WORDING} (${RULE})`, "PROPOSED"), [d]),
-      ).toBe(d);
-    },
-  );
+  test("T1: a task under the old wording matches the reworded draft for the same rule", () => {
+    const d = draftFor(NEW_WORDING);
+    expect(
+      matchDraft(row("t", `${OLD_WORDING} (${RULE})`, "PROPOSED"), [d], ON),
+    ).toBe(d);
+  });
 
   test("today: after a rewording, sync keeps the old task (held) and the new draft is unclaimed, so a second task is created", () => {
     const old = row("t", `${OLD_WORDING} (${RULE})`, "PROPOSED");
@@ -145,27 +159,65 @@ describe("D3: one task per rule, whatever the wording (T1 to T3)", () => {
     expect(claimed.has(d)).toBe(false); // so createRecommendationOnce runs
   });
 
-  test.fails(
-    "T1: after a rewording, sync updates the existing task instead",
-    () => {
-      const old = row("t", `${OLD_WORDING} (${RULE})`, "PROPOSED");
-      const d = draftFor(NEW_WORDING);
-      const { actions, claimed } = planSync([old], [d], stillOpen, NOW);
-      expect(actions).toEqual([{ kind: "update", r: old, draft: d }]);
-      expect(claimed.has(d)).toBe(true);
-    },
-  );
+  test("T1: after a rewording, sync updates the existing task instead", () => {
+    const old = row("t", `${OLD_WORDING} (${RULE})`, "PROPOSED");
+    const d = draftFor(NEW_WORDING);
+    const { actions, claimed } = planSync([old], [d], stillOpen, NOW, ON);
+    expect(actions).toEqual([{ kind: "update", r: old, draft: d }]);
+    expect(claimed.has(d)).toBe(true);
+  });
 
-  test.fails(
-    "T3: one rule with findings of two severities makes one draft",
-    () => {
-      const drafts = buildRecommendations({
+  test("T3: one rule with findings of two severities makes one draft", () => {
+    const drafts = buildRecommendations(
+      {
         ...none,
         findingGroups: [group(NEW_WORDING, "LOW"), group(NEW_WORDING)],
-      });
-      expect(drafts).toHaveLength(1);
-    },
-  );
+      },
+      ON,
+    );
+    expect(drafts).toHaveLength(1);
+  });
+
+  test("D3 merge (C1b): highest severity, total count, the current catalogue title and text", () => {
+    const [d] = buildRecommendations(
+      {
+        ...none,
+        findingGroups: [
+          { ...group(OLD_WORDING, "LOW"), count: 7 },
+          { ...group(NEW_WORDING), count: 2 },
+        ],
+      },
+      ON,
+    );
+    const entry = seoRule(RULE)!;
+    expect(d.title).toBe(`${entry.title} (${RULE})`);
+    expect(d.recommendedAction).toBe(entry.recommendation);
+    expect(d.priority).toBe("MEDIUM");
+    expect(d.explanation).toBe("9 open findings for this rule.");
+  });
+
+  test("D3 merge (C1b): a rule no longer in the catalogue takes the largest group's wording", () => {
+    const gone = (title: string, count: number) => ({
+      ...group(title),
+      ruleId: "TECH_RETIRED_RULE",
+      count,
+    });
+    const drafts = buildRecommendations(
+      { ...none, findingGroups: [gone("Small", 2), gone("Large", 5)] },
+      ON,
+    );
+    expect(drafts.map((d) => d.title)).toEqual(["Large (TECH_RETIRED_RULE)"]);
+  });
+
+  test("the key, not the title, decides a match: a task keyed to another rule does not take this draft", () => {
+    const d = draftFor(NEW_WORDING);
+    const keyed = {
+      ...row("t", d.title, "PROPOSED"),
+      identityKey: "seo:TECH_H1_MISSING",
+    };
+    expect(matchDraft(keyed, [d], ON)).toBeUndefined();
+    expect(matchDraft(keyed, [d])).toBe(d); // today: by title
+  });
 });
 
 describe("D1: a problem that returns after completion (R1 to R4)", () => {
@@ -214,7 +266,7 @@ describe("D1: a problem that returns after completion (R1 to R4)", () => {
     "R1/R2/R3: the follow-up links to the completed row (recurrenceOfId), and repeated or concurrent syncs keep exactly one",
   );
   test.todo(
-    "R17/R18 (sync): the sync reports `recurrence: unavailable` and behaves exactly as today without the capabilities (wiring is C1b)",
+    "R17/R18 (sync, needs a database): without M1 the sync behaves exactly as today and reports `identity: unavailable` (wired in C1b; run on itest-ci when authorised)",
   );
 });
 
@@ -513,8 +565,60 @@ describe("D1: Reopen while a follow-up holds the open slot (R19)", () => {
   test("today: a person may always reopen a completed task", () => {
     expect(canTransition("COMPLETED", "PROPOSED")).toBe(true);
   });
+  const done = { id: "c", title: `${OLD_WORDING} (${RULE})`, issueId: null };
+  const target = { ...done, status: "COMPLETED" as const };
+  const other = (status: Existing["status"], o: object = {}) => ({
+    id: "n",
+    title: `${NEW_WORDING} (${RULE})`,
+    issueId: null,
+    status,
+    ...o,
+  });
+
+  test("R19 (C1b): Reopen is refused while a newer task for the same rule is open or dismissed", () => {
+    for (const status of ["PROPOSED", "IN_PROGRESS", "DISMISSED"] as const)
+      expect(reopenBlockedBy(target, [target, other(status)])).toMatchObject({
+        id: "n",
+        status,
+      });
+  });
+
+  test("R19 (C1b): allowed when no other row holds the slot: completed rows, other rules", () => {
+    expect(reopenBlockedBy(target, [target, other("COMPLETED")])).toBeNull();
+    expect(
+      reopenBlockedBy(target, [
+        target,
+        other("PROPOSED", { title: "Add an H1 (TECH_H1_MISSING)" }),
+      ]),
+    ).toBeNull();
+  });
+
+  test("R19 (C1b): a business task without a key is compared by title only, never by a key from its wording", () => {
+    const biz = (id: string, title: string, status: Existing["status"]) => ({
+      id,
+      title,
+      issueId: null,
+      status,
+    });
+    const cottages = "Add a page for “Cottages” (BIZ_SERVICE_PAGE)";
+    const t = biz("c", cottages, "COMPLETED");
+    expect(
+      reopenBlockedBy(t, [t, biz("n", cottages, "PROPOSED")]),
+    ).not.toBeNull();
+    expect(
+      reopenBlockedBy(t, [
+        t,
+        biz(
+          "n",
+          "Add an accommodation page for “Cottages” (BIZ_ACCOMMODATION_PAGE)",
+          "PROPOSED",
+        ),
+      ]),
+    ).toBeNull();
+  });
+
   test.todo(
-    "R19: Reopen is refused, with a link, while a later task for the same key is open or dismissed",
+    "R19 (action, needs M1): the refusal links to the newer task (FormState is text only today, so the message names it)",
   );
 });
 
@@ -556,12 +660,41 @@ describe("D1 verification evidence (section 29)", () => {
     expect(coverage.observedAt).toBe(T1.toISOString());
   });
 
-  test.fails(
-    "C1: verification evidence records the coverage crawl's own time",
-    () => {
-      expect(coverage.observedAt).toBe(coverageCrawlAt.toISOString());
-    },
-  );
+  test("C1: verification evidence records the coverage crawl's own time", () => {
+    const evidence = verificationEvidence(
+      {
+        title: "Name the areas you serve on the website (BIZ_SERVICE_AREAS)",
+        issueId: null,
+      },
+      c,
+      ON,
+    );
+    expect(evidence.observedAt).toBe(coverageCrawlAt.toISOString());
+  });
+
+  test("C1b: coverage evidence records the outcome it rested on; other families are unchanged", () => {
+    const key = "Name the areas you serve on the website (BIZ_SERVICE_AREAS)";
+    for (const status of ["covered", "ambiguous"] as const) {
+      const withNeed = ctx({
+        ...c,
+        coverage: {
+          crawl: { analyzedAt: coverageCrawlAt, status: "COMPLETED" },
+          opportunities: [],
+          needs: [{ key, kind: "service-areas", status, facts: [] }],
+        } as unknown as RecommendationContext["coverage"],
+      });
+      expect(
+        verificationEvidence({ title: key, issueId: null }, withNeed, ON),
+      ).toMatchObject({ basis: "coverage", outcome: status });
+    }
+    expect(
+      verificationEvidence(
+        { title: `${NEW_WORDING} (${RULE})`, issueId: null },
+        c,
+        ON,
+      ),
+    ).toEqual(seo);
+  });
 });
 
 describe("verification audit: weak rules found today (section 28; completion itself is unchanged by Stage 2)", () => {
@@ -646,32 +779,81 @@ describe("collisions: two open rows for one identity (condition 3)", () => {
     expect(actions).toEqual([{ kind: "update", r: b, draft: d }]);
   });
 
-  test.fails("collision: the sync updates neither row", () => {
-    const { actions } = planSync([a, b], [d], stillOpen, NOW);
+  test("collision: the sync updates neither row", () => {
+    const { actions } = planSync([a, b], [d], stillOpen, NOW, ON);
     expect(actions).toEqual([]);
   });
 
-  test.fails(
-    "collision: the sync completes neither row when the problem is gone",
-    () => {
-      const gone = ctx({
-        crawlStatus: "COMPLETED",
-        evidenceAt: {
-          crawl: T1,
-          checks: {},
-          performance: null,
-          aiSearch: null,
-        },
-      });
-      const { actions } = planSync(
-        [row("a", d.title, "PROPOSED"), row("b", d.title, "PROPOSED")],
-        [],
-        gone,
+  test("collision: the sync completes neither row when the problem is gone", () => {
+    const gone = ctx({
+      crawlStatus: "COMPLETED",
+      evidenceAt: {
+        crawl: T1,
+        checks: {},
+        performance: null,
+        aiSearch: null,
+      },
+    });
+    const { actions } = planSync(
+      [row("a", d.title, "PROPOSED"), row("b", d.title, "PROPOSED")],
+      [],
+      gone,
+      NOW,
+      ON,
+    );
+    expect(actions).toEqual([]);
+  });
+
+  test("collision (C1b): neither row is keyed, the draft is claimed (no third row), and both are reported", () => {
+    const { actions, claimed, collisions, keys } = planSync(
+      [a, b],
+      [d],
+      stillOpen,
+      NOW,
+      ON,
+    );
+    expect(actions).toEqual([]);
+    expect(keys).toEqual([]);
+    expect(claimed.has(d)).toBe(true);
+    expect(collisions).toEqual([
+      expect.objectContaining({
+        by: "identityKey",
+        value: `seo:${RULE}`,
+        rows: [
+          expect.objectContaining({ id: "a" }),
+          expect.objectContaining({ id: "b" }),
+        ],
+      }),
+    ]);
+  });
+
+  test("collision (C1b): two wordings of one rule left by today's defect are one identity, so they are frozen too", () => {
+    const old = row("o", `${OLD_WORDING} (${RULE})`, "PROPOSED");
+    const { actions, collisions } = planSync([old, a], [d], stillOpen, NOW, ON);
+    expect(actions).toEqual([]);
+    expect(collisions).toHaveLength(1);
+  });
+
+  test("C1b: a matched row without a stored key is keyed; a completed one too (raw SQL keeps its updatedAt)", () => {
+    const done = row("c", d.title, "COMPLETED");
+    const open = row("o", `${OLD_WORDING} (${RULE})`, "PROPOSED");
+    expect(planSync([open], [d], stillOpen, NOW, ON).keys).toEqual([
+      { r: open, key: `seo:${RULE}` },
+    ]);
+    expect(planSync([done], [d], stillOpen, NOW, ON).keys).toEqual([
+      { r: done, key: `seo:${RULE}` },
+    ]);
+    expect(
+      planSync(
+        [{ ...open, identityKey: `seo:${RULE}` }],
+        [d],
+        stillOpen,
         NOW,
-      );
-      expect(actions).toEqual([]);
-    },
-  );
+        ON,
+      ).keys,
+    ).toEqual([]);
+    expect(planSync([open], [d], stillOpen, NOW).keys).toEqual([]); // today
+  });
 
   test("today: the sync completes both duplicates when the problem is gone", () => {
     const gone = ctx({
@@ -698,6 +880,8 @@ describe("collisions: two open rows for one identity (condition 3)", () => {
         const r = rows.find((x) => x.title === where.title);
         return r ? { id: r.id, status: r.status } : null;
       },
+      // The website's rows, oldest first (the Stage 2 lookup reads them all).
+      findMany: async () => rows.map((r) => ({ ...r, issueId: null })),
       create: async () => {
         throw new Error("must not create");
       },
@@ -717,14 +901,16 @@ describe("collisions: two open rows for one identity (condition 3)", () => {
     ).resolves.toEqual({ created: false, id: "a", status: "PROPOSED" });
   });
 
-  test.fails(
-    "collision: a title-based create or Accept refuses instead of picking one",
-    async () => {
-      await expect(
-        createRecommendationOnce(twoRows(), scope, d),
-      ).rejects.toThrow();
-    },
-  );
+  test("collision: a title-based create or Accept refuses instead of picking one", async () => {
+    // Strengthened from toThrow(): it must be the collision refusal itself,
+    // naming both rows, not any error (a missing fake method would also throw).
+    const refusal = createRecommendationOnce(twoRows(), scope, d, null, {
+      ...ON,
+      key: `seo:${RULE}`,
+    });
+    await expect(refusal).rejects.toThrow(IdentityCollisionError);
+    await expect(refusal).rejects.toMatchObject({ ids: ["a", "b"] });
+  });
 
   test("collision (C1a): detection finds the two rows the sync would claim from, and one log line lists both", () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
@@ -749,7 +935,7 @@ describe("collisions: two open rows for one identity (condition 3)", () => {
   });
 
   test.todo(
-    "collision: no identity key is assigned to either row (needs M1), and the sync logs it (wiring is C1b)",
+    "collision (sync, needs M1): the logged collision leaves both rows unkeyed in the database (integration)",
   );
 });
 
@@ -782,4 +968,85 @@ describe("backfill premise: a raw UPDATE of identityKey leaves updatedAt alone (
   test.todo(
     "B1 apply and C1 keying of COMPLETED or DISMISSED rows leave updatedAt unchanged (needs a database: Step 2b)",
   );
+});
+
+describe("option A: without every capability, today's results exactly (step C1b)", () => {
+  const OFF = { identity: false } as const;
+  const inputs: RecommendationInputs = {
+    ...none,
+    findingGroups: [group(OLD_WORDING), group(NEW_WORDING, "LOW")],
+    aiSearch: { results: 4, mentioned: 1 },
+  };
+  const rows = [
+    row("a", `${NEW_WORDING} (${RULE})`, "PROPOSED", T0),
+    row("b", `${NEW_WORDING} (${RULE})`, "IN_PROGRESS", T1),
+    row("c", `${OLD_WORDING} (${RULE})`, "COMPLETED"),
+  ];
+
+  test("drafting, matching and planning are unchanged with the capability off", () => {
+    expect(buildRecommendations(inputs, OFF)).toEqual(
+      buildRecommendations(inputs),
+    );
+    const drafts = buildRecommendations(inputs);
+    for (const r of rows)
+      expect(matchDraft(r, drafts, OFF)).toBe(matchDraft(r, drafts));
+    const off = planSync(rows, drafts, stillOpen, NOW, OFF);
+    const today = planSync(rows, drafts, stillOpen, NOW);
+    expect(off.actions).toEqual(today.actions);
+    expect([...off.claimed]).toEqual([...today.claimed]);
+    expect(off.collisions).toEqual([]);
+    expect(off.keys).toEqual([]);
+  });
+
+  test("verification evidence is unchanged with the capability off", () => {
+    const c = ctx({
+      evidenceAt: { crawl: T1, checks: {}, performance: null, aiSearch: null },
+    });
+    const r = { title: `${NEW_WORDING} (${RULE})`, issueId: null };
+    expect(verificationEvidence(r, c, OFF)).toEqual(verificationEvidence(r, c));
+  });
+});
+
+describe("business identity is never derived from title text (owner condition)", () => {
+  const title = "Add a page for “Cottages” (BIZ_SERVICE_PAGE)";
+
+  test("a business task without a stored key has no identity of its own: it matches by title", () => {
+    expect(effectiveKey({ title, issueId: null })).toBeNull();
+    expect(
+      effectiveKey({
+        title,
+        issueId: null,
+        identityKey: "biz:offering-page:f1",
+      }),
+    ).toBe("biz:offering-page:f1");
+  });
+
+  test("a business draft's key comes from its opportunity's fact, or there is none", () => {
+    const draft = { title, issueId: null };
+    const coverage = {
+      opportunities: [
+        { key: title, category: "service", facts: [{ id: "f1" }], part: null },
+      ],
+      needs: [],
+    } as unknown as RecommendationContext["coverage"];
+    expect(draftKey(draft, coverage)).toBe("biz:offering-page:f1");
+    expect(draftKey(draft, null)).toBeNull();
+  });
+
+  test("legacy SEO, integration and issue tasks get their key from the rule or problem code or issue id", () => {
+    expect(
+      effectiveKey({ title: `${OLD_WORDING} (${RULE})`, issueId: null }),
+    ).toBe(`seo:${RULE}`);
+    expect(
+      effectiveKey({
+        title: "Fix the sitemap (INT_SITEMAP_URL_BROKEN)",
+        issueId: null,
+      }),
+    ).toBe("integration:SITEMAP:URL_BROKEN");
+    expect(effectiveKey({ title: "Resolve: Site down", issueId: "i1" })).toBe(
+      "issue:i1",
+    );
+    // PageSpeed and AI search are not among the approved families.
+    expect(effectiveKey({ title: AI_SEARCH_TITLE, issueId: null })).toBeNull();
+  });
 });

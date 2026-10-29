@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { parsePage } from "@/lib/crawler/html";
 import type { EvidencePage } from "@/lib/integrations/evaluate";
 import { heldReason } from "@/lib/recommendations/generate";
+import { businessKey } from "@/lib/recommendations/identity";
 import {
   analyzeCoverage,
   coverageDrafts,
@@ -1018,6 +1019,8 @@ describe("crawl completeness is explicit (audit M2)", () => {
 });
 
 const movesOf = (...a: Parameters<typeof rekeyTasks>) => rekeyTasks(...a).moves;
+/** The Stage 2 re-key rules (D2, D2-b), as used where every capability is present. */
+const STRICT = { strict: true } as const;
 
 describe("stable identity when facts or the business type change (audit M3)", () => {
   const services = (hospitality: boolean) => [
@@ -1048,21 +1051,21 @@ describe("stable identity when facts or the business type change (audit M3)", ()
   // shares the task's category. A service task splitting into accommodation
   // and food has none, so it is held for a person to choose. The test above
   // pins today's tie-break and is replaced when this lands.
-  test.fails(
-    "D2-b: approving “hospitality” holds the combined task for review, listing both parts",
-    () => {
-      const c = cover([HOME], services(true));
-      const plan = rekeyTasks([task(COMBINED)], c);
-      expect(plan.moves).toEqual([]);
-      expect(plan.ambiguous).toEqual([
-        {
-          id: COMBINED,
-          title: COMBINED,
-          candidates: expect.arrayContaining([ACC, FOOD]),
-        },
-      ]);
-    },
-  );
+  // Step C1b: the Stage 2 rules run only where every capability is present
+  // (option A), so these pass them in; the tests above pin today's moves,
+  // which still apply everywhere else.
+  test("D2-b: approving “hospitality” holds the combined task for review, listing both parts", () => {
+    const c = cover([HOME], services(true));
+    const plan = rekeyTasks([task(COMBINED)], c, STRICT);
+    expect(plan.moves).toEqual([]);
+    expect(plan.ambiguous).toEqual([
+      {
+        id: COMBINED,
+        title: COMBINED,
+        candidates: expect.arrayContaining([ACC, FOOD]),
+      },
+    ]);
+  });
 
   test("withdrawing “hospitality”: the accommodation task takes the combined page when it is planned", () => {
     // No page names the offering, so the combined page is a confirmed gap.
@@ -1081,20 +1084,44 @@ describe("stable identity when facts or the business type change (audit M3)", ()
 
   // Stage 2, D2-b (approved): a merge is automatic only when exactly one part
   // task competes for the whole. Two do here, so both are held and listed.
-  test.fails(
-    "D2-b: withdrawing “hospitality” with two part tasks holds both for review",
-    () => {
-      const c = cover(
-        [{ ...HOME, title: "Welcome", h1: ["Welcome"] }],
-        services(false),
-      );
-      const plan = rekeyTasks([task(FOOD), task(ACC)], c);
-      expect(plan.moves).toEqual([]);
-      expect(plan.ambiguous.map((a) => a.id).sort()).toEqual(
-        [ACC, FOOD].sort(),
-      );
-    },
-  );
+  test("D2-b: withdrawing “hospitality” with two part tasks holds both for review", () => {
+    const c = cover(
+      [{ ...HOME, title: "Welcome", h1: ["Welcome"] }],
+      services(false),
+    );
+    const plan = rekeyTasks([task(FOOD), task(ACC)], c, STRICT);
+    expect(plan.moves).toEqual([]);
+    expect(plan.ambiguous.map((a) => a.id).sort()).toEqual([ACC, FOOD].sort());
+  });
+
+  test("D2-b (C1b, strict): exactly one part task for the whole is unambiguous, so it moves, keyed to the fact", () => {
+    const c = cover(
+      [{ ...HOME, title: "Welcome", h1: ["Welcome"] }],
+      services(false),
+    );
+    const whole = one(c, "BIZ_SERVICE_PAGE");
+    expect(rekeyTasks([task(ACC)], c, STRICT)).toEqual({
+      moves: [
+        {
+          id: ACC,
+          from: ACC,
+          to: COMBINED,
+          toKey: `biz:offering-page:${whole.facts[0].id}`,
+        },
+      ],
+      ambiguous: [],
+      suggestions: [],
+    });
+  });
+
+  test("D2-b (C1b, strict): a part opportunity's key names its fact and part, never its wording", () => {
+    const c = cover([HOME], services(true));
+    const acc = c.opportunities.find((o) => o.key === ACC)!;
+    expect(acc.part).toBe("Cottages");
+    expect(businessKey(acc)).toBe(
+      `biz:offering-page:${acc.facts[0].id}:cottages`,
+    );
+  });
 
   test("a partial match never quietly accepts an opportunity awaiting review; the task waits instead", () => {
     const c = cover([HOME], services(false)); // the home page names it: review
@@ -1116,14 +1143,11 @@ describe("stable identity when facts or the business type change (audit M3)", ()
 
   // Stage 2, D2-b (approved): the same split held for review applies to a
   // dismissed task; completed work is still never moved.
-  test.fails(
-    "D2-b: a dismissed combined task is held for review on a split, not moved",
-    () => {
-      const c = cover([HOME], services(true));
-      expect(movesOf([task(COMBINED, "DISMISSED")], c)).toEqual([]);
-      expect(movesOf([task(COMBINED, "COMPLETED")], c)).toEqual([]);
-    },
-  );
+  test("D2-b: a dismissed combined task is held for review on a split, not moved", () => {
+    const c = cover([HOME], services(true));
+    expect(movesOf([task(COMBINED, "DISMISSED")], c, STRICT)).toEqual([]);
+    expect(movesOf([task(COMBINED, "COMPLETED")], c, STRICT)).toEqual([]);
+  });
 
   test("never two tasks for one purpose: an opportunity that already has a task is not claimed", () => {
     const c = cover([HOME], services(true));
@@ -1230,19 +1254,72 @@ describe("re-keying is conservative and explainable (sprint 3)", () => {
   // Stage 2, D2 (approved): a partial (score 1) match never moves a task by
   // itself; it becomes a suggestion a person confirms. The test above pins
   // today's automatic move and is replaced when this lands.
-  test.fails(
-    "D2: a narrower or broader wording (score 1) is a suggestion, not a move",
-    () => {
-      const c = cover(blank, [svc("Emergency boiler repair")]);
-      const plan = rekeyTasks([task(key("Boiler repair"))], c) as ReturnType<
-        typeof rekeyTasks
-      > & { suggestions?: Array<{ id: string; to: string }> };
-      expect(plan.moves).toEqual([]);
-      expect(plan.suggestions).toEqual([
-        { id: key("Boiler repair"), to: key("Emergency boiler repair") },
-      ]);
-    },
-  );
+  test("D2: a narrower or broader wording (score 1) is a suggestion, not a move", () => {
+    const c = cover(blank, [svc("Emergency boiler repair")]);
+    const plan = rekeyTasks([task(key("Boiler repair"))], c, {
+      strict: true,
+    }) as ReturnType<typeof rekeyTasks> & {
+      suggestions?: Array<{ id: string; to: string }>;
+    };
+    expect(plan.moves).toEqual([]);
+    expect(plan.suggestions).toEqual([
+      { id: key("Boiler repair"), to: key("Emergency boiler repair") },
+    ]);
+  });
+
+  test("D2 (C1b, strict): an exact rename still moves by itself, carrying the new fact's key", () => {
+    const c = cover(
+      [HOME, { path: "/x/", h2: ["Boiler repairs"] }],
+      [svc("Boiler Repairs")],
+    );
+    const factId = opp(c, "Boiler Repairs").facts[0].id;
+    expect(rekeyTasks([task(key("boiler repair"))], c, STRICT)).toEqual({
+      moves: [
+        {
+          id: key("boiler repair"),
+          from: key("boiler repair"),
+          to: key("Boiler Repairs"),
+          toKey: `biz:offering-page:${factId}`,
+        },
+      ],
+      ambiguous: [],
+      suggestions: [],
+    });
+  });
+
+  test("D2 (C1b, strict): two equally good candidates are held and listed, never picked", () => {
+    const c = cover(blank, [
+      svc("Emergency boiler repair"),
+      svc("Boiler repair Leeds"),
+    ]);
+    const plan = rekeyTasks([task(key("Boiler repair"))], c, STRICT);
+    expect(plan.moves).toEqual([]);
+    expect(plan.suggestions).toEqual([]);
+    expect(plan.ambiguous).toEqual([
+      {
+        id: key("Boiler repair"),
+        title: key("Boiler repair"),
+        candidates: expect.arrayContaining([
+          key("Emergency boiler repair"),
+          key("Boiler repair Leeds"),
+        ]),
+      },
+    ]);
+  });
+
+  test("D2 (C1b, strict): a keyed task whose fact is still current is not re-keyed by its title", () => {
+    const c = cover(blank, [svc("Emergency boiler repair")]);
+    const o = opp(c, "Emergency boiler repair");
+    const keyed = {
+      ...task(key("Boiler repair")),
+      identityKey: `biz:offering-page:${o.facts[0].id}`,
+    };
+    expect(rekeyTasks([keyed], c, STRICT)).toEqual({
+      moves: [],
+      ambiguous: [],
+      suggestions: [],
+    });
+  });
 
   test("D2: the reverse wording (broader) is also never a silent move onto an opportunity awaiting review", () => {
     const review = cover(

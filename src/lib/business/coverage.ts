@@ -4,6 +4,7 @@ import type { IntegrationEvidence } from "@/lib/integrations/evaluate";
 import type { BusinessFact } from "@/lib/knowledge/priority";
 import type { RecommendationPriority } from "@/generated/prisma/enums";
 import { BENEFIT } from "@/lib/recommendations/benefits";
+import { businessKey } from "@/lib/recommendations/identity";
 import type {
   Effort,
   RecommendationMeta,
@@ -860,9 +861,15 @@ const RANK_STATUS: Record<string, number> = {
 };
 
 export type RekeyPlan = {
-  moves: Array<{ id: string; from: string; to: string }>;
+  /** `toKey`: the target's identity key (strict mode only). */
+  moves: Array<{ id: string; from: string; to: string; toKey?: string | null }>;
   /** Tasks with several equally good targets: left alone, for review. */
   ambiguous: Array<{ id: string; title: string; candidates: string[] }>;
+  /**
+   * Strict mode only: a partial (score 1) match. Nothing moves; the task is
+   * held and its candidate waits for a person's confirmation.
+   */
+  suggestions?: Array<{ id: string; to: string }>;
 };
 
 const norm = (text: string) => words(text).join(" ");
@@ -913,9 +920,17 @@ export function rekeyScore(oldLabel: string, o: PageOpportunity): number {
  * approved; review"). Matching rules: rekeyScore.
  */
 export function rekeyTasks(
-  tasks: Array<{ id: string; title: string; status: string }>,
+  tasks: Array<{
+    id: string;
+    title: string;
+    status: string;
+    identityKey?: string | null;
+  }>,
   c: CoverageResult | null | undefined,
+  /** Stage 2 rules (D2, D2-b), only where every capability is present. */
+  opts: { strict?: boolean } = {},
 ): RekeyPlan {
+  if (opts.strict) return rekeyTasksStrict(tasks, c);
   if (!c) return { moves: [], ambiguous: [] };
   // Page needs are superseded by opportunities (same purpose, newer key).
   const current = new Set([
@@ -995,4 +1010,113 @@ export function rekeyTasks(
     moves.push({ id: t.id, from: t.title, to: o.key });
   }
   return { moves, ambiguous };
+}
+
+/**
+ * The approved Stage 2 policy (sections 20 and 30). A task moves by itself
+ * only when exactly one answer is possible:
+ * - score 3 (same words): one candidate;
+ * - score 2, split (the task is for the whole fact): exactly one part has
+ *   the task's category, and that part is confirmed (or the task dismissed);
+ * - score 2, merge (the task is for one part): it is the only task
+ *   competing for the whole, which is confirmed (or the task dismissed).
+ * Score 1 (narrower or broader wording) is a suggestion, never a move.
+ * Everything else, including two tasks wanting one target, is held and
+ * listed with its candidates; there is no tie-break. Held tasks and their
+ * candidates are left as they are: the sync does not create a candidate
+ * while it waits on a person.
+ */
+function rekeyTasksStrict(
+  tasks: Array<{
+    id: string;
+    title: string;
+    status: string;
+    identityKey?: string | null;
+  }>,
+  c: CoverageResult | null | undefined,
+): RekeyPlan {
+  if (!c) return { moves: [], ambiguous: [], suggestions: [] };
+  const nonPageNeeds = c.needs.filter((n) => !PAGE_NEEDS.includes(n.kind));
+  const current = new Set([
+    ...c.opportunities.map((o) => o.key),
+    ...nonPageNeeds.map((n) => n.key),
+  ]);
+  const currentKeys = new Set(
+    [
+      ...c.opportunities.map((o) => businessKey(o)),
+      ...nonPageNeeds.map((n) => businessKey(n)),
+    ].filter((k): k is string => !!k),
+  );
+  const takenTitles = new Set(tasks.map((t) => t.title));
+  const takenKeys = new Set(tasks.map((t) => t.identityKey).filter(Boolean));
+  const free = c.opportunities.filter(
+    (o) =>
+      !takenTitles.has(o.key) &&
+      !takenKeys.has(businessKey(o)) &&
+      (OFFERING_CODES as readonly string[]).includes(codeOf(o.key) ?? "") &&
+      o.state !== "unsupported",
+  );
+  const orphans = tasks
+    .filter(
+      (t) =>
+        t.status in RANK_STATUS &&
+        !current.has(t.title) &&
+        !(t.identityKey && currentKeys.has(t.identityKey)) &&
+        (OFFERING_CODES as readonly string[]).includes(codeOf(t.title) ?? ""),
+    )
+    .sort(
+      (a, b) =>
+        RANK_STATUS[a.status] - RANK_STATUS[b.status] ||
+        a.title.localeCompare(b.title),
+    );
+  type Task = (typeof orphans)[number];
+  const ambiguous: RekeyPlan["ambiguous"] = [];
+  const hold = (t: Task, os: PageOpportunity[]) =>
+    ambiguous.push({
+      id: t.id,
+      title: t.title,
+      candidates: os.map((o) => o.key),
+    });
+  const proposals: Array<{ t: Task; o: PageOpportunity; suggest: boolean }> =
+    [];
+  for (const t of orphans) {
+    const label = offeringOfTitle(t.title);
+    if (!label) continue;
+    const scored = free
+      .map((o) => ({ o, score: rekeyScore(label, o) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) continue;
+    const score = scored[0].score;
+    const top = scored.filter((x) => x.score === score).map((x) => x.o);
+    const ready = (o: PageOpportunity) =>
+      o.state === "confirmed" || t.status === "DISMISSED";
+    if (score !== 2) {
+      if (top.length === 1)
+        proposals.push({ t, o: top[0], suggest: score === 1 });
+      else hold(t, top);
+      continue;
+    }
+    const oneFact = new Set(top.map((o) => o.facts[0]?.id)).size === 1;
+    const whole = norm(top[0].facts[0]?.value ?? "") === norm(label);
+    const target = whole
+      ? top.filter((o) => codeOf(o.key) === codeOf(t.title))
+      : top;
+    if (oneFact && target.length === 1 && ready(target[0]))
+      proposals.push({ t, o: target[0], suggest: false });
+    else hold(t, top);
+  }
+  // Two tasks wanting one target: both held, neither picked.
+  const wanted = new Map<string, number>();
+  for (const p of proposals)
+    wanted.set(p.o.key, (wanted.get(p.o.key) ?? 0) + 1);
+  const moves: RekeyPlan["moves"] = [];
+  const suggestions: NonNullable<RekeyPlan["suggestions"]> = [];
+  for (const { t, o, suggest } of proposals) {
+    if (wanted.get(o.key)! > 1) hold(t, [o]);
+    else if (suggest) suggestions.push({ id: t.id, to: o.key });
+    else
+      moves.push({ id: t.id, from: t.title, to: o.key, toKey: businessKey(o) });
+  }
+  return { moves, ambiguous, suggestions };
 }

@@ -2,18 +2,27 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import type { BusinessFactKind } from "@/generated/prisma/enums";
+import type {
+  BusinessFactKind,
+  RecommendationStatus,
+} from "@/generated/prisma/enums";
 import { Prisma } from "@/generated/prisma/client";
 import { planDecision } from "@/lib/business/decisions";
 import { factInput, normalizeFactValue } from "@/lib/business/facts";
 import { opportunityDraft } from "@/lib/business/coverage";
 import { db } from "@/lib/db";
+import { identityCapabilities } from "@/lib/recommendations/capabilities";
 import { changeStatus, historyAvailable } from "@/lib/recommendations/events";
 import {
   createRecommendationOnce,
+  findSlotHolder,
   loadRecommendationContext,
   syncRecommendations,
 } from "@/lib/recommendations/generate";
+import {
+  businessKey,
+  IdentityCollisionError,
+} from "@/lib/recommendations/identity";
 import {
   ForbiddenError,
   requireOrgContext,
@@ -239,22 +248,44 @@ export async function decideOpportunityAction(
       error:
         "This opportunity is no longer suggested. Refresh the page to see the current ones.",
     };
-  const existing = await ctx.db.recommendation.findFirst({
-    where: { websiteId: website.id, title: o.key },
-    select: { id: true, status: true },
-    orderBy: { createdAt: "asc" },
-  });
+  // Stage 2 (section 31), only where every capability is present: the task
+  // is found by its key, and two tasks holding one slot are refused, never
+  // picked by title (root client, scope verified above).
+  const identity = (await identityCapabilities(db())).enabled;
+  const identityKey = identity ? businessKey(o) : null;
+  let existing: { id: string; status: RecommendationStatus } | null;
+  try {
+    existing = identity
+      ? await findSlotHolder(db(), scope, o.key, identityKey)
+      : await ctx.db.recommendation.findFirst({
+          where: { websiteId: website.id, title: o.key },
+          select: { id: true, status: true },
+          orderBy: { createdAt: "asc" },
+        });
+  } catch (error) {
+    if (error instanceof IdentityCollisionError)
+      return { error: error.message };
+    throw error;
+  }
   let plan = planDecision(decision, existing, o.state);
   if (plan.kind === "refuse") return { error: plan.error };
   if (plan.kind === "create") {
     // Created at most once per title, even if a sync runs at the same time
     // (root client with the scope verified above).
-    const row = await createRecommendationOnce(
-      db(),
-      scope,
-      { ...opportunityDraft(o), status: plan.status },
-      ctx.user.id,
-    );
+    let row: Awaited<ReturnType<typeof createRecommendationOnce>>;
+    try {
+      row = await createRecommendationOnce(
+        db(),
+        scope,
+        { ...opportunityDraft(o), status: plan.status },
+        ctx.user.id,
+        identity ? { identity, key: identityKey } : {},
+      );
+    } catch (error) {
+      if (error instanceof IdentityCollisionError)
+        return { error: error.message };
+      throw error;
+    }
     // Someone (or a sync) created it meanwhile: decide again on that task.
     if (!row.created) {
       plan = planDecision(decision, row, o.state);

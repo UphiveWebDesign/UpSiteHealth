@@ -20,7 +20,7 @@ import {
 import { readFacts } from "@/lib/business/load";
 import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { describeEvidence, findingTarget } from "@/lib/insights/seo";
-import { isContentRule } from "@/lib/knowledge/catalogue";
+import { isContentRule, seoRule } from "@/lib/knowledge/catalogue";
 import {
   evaluateIntegrations,
   type IntegrationKey,
@@ -36,7 +36,22 @@ import {
   type ResolutionCheck,
 } from "@/lib/integrations/resolution";
 import { log } from "@/lib/log";
+import { identityCapabilities } from "./capabilities";
 import { changeStatus, historyAvailable, recordEvents } from "./events";
+import {
+  businessKey,
+  findCollisions,
+  IdentityCollisionError,
+  identityKey,
+  logCollisions,
+  OPEN_SLOT,
+  type Collision,
+} from "./identity";
+import {
+  moveIdentityKey,
+  readIdentityKeys,
+  setIdentityKey,
+} from "./identity-store";
 import { issueResolution, type IssueResolution } from "@/lib/monitoring/rules";
 import { LEGAL_ROUTINE_RULES } from "@/lib/seo/rules";
 import { BENEFIT } from "./benefits";
@@ -192,8 +207,53 @@ const PRIORITY: Record<IssueSeverity, RecommendationPriority> = {
   INFO: "LOW",
 };
 
+type FindingGroup = RecommendationInputs["findingGroups"][number];
+
+const SEVERITY_RANK: Record<IssueSeverity, number> = {
+  CRITICAL: 4,
+  HIGH: 3,
+  MEDIUM: 2,
+  LOW: 1,
+  INFO: 0,
+};
+
+/**
+ * D3 (Stage 2): one group per rule, whatever its wording or severity (a
+ * rewording, or a partial crawl that refreshed only some findings). The
+ * highest severity and the total count; the current catalogue wording,
+ * else the largest group's (most findings, then severity, then title).
+ */
+export function groupsByRule(groups: FindingGroup[]): FindingGroup[] {
+  const byRule = new Map<string, FindingGroup[]>();
+  for (const g of groups)
+    byRule.set(g.ruleId, [...(byRule.get(g.ruleId) ?? []), g]);
+  return [...byRule.values()].map((gs) => {
+    if (gs.length === 1) return gs[0];
+    const largest = [...gs].sort(
+      (a, b) =>
+        b.count - a.count ||
+        SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+        a.title.localeCompare(b.title),
+    )[0];
+    const entry = seoRule(largest.ruleId);
+    return {
+      ...largest,
+      severity: gs.reduce(
+        (s, g) =>
+          SEVERITY_RANK[g.severity] > SEVERITY_RANK[s] ? g.severity : s,
+        largest.severity,
+      ),
+      count: gs.reduce((n, g) => n + g.count, 0),
+      title: entry?.title ?? largest.title,
+      recommendation: entry?.recommendation ?? largest.recommendation,
+    };
+  });
+}
+
 export function buildRecommendations(
   input: RecommendationInputs,
+  /** Stage 2 rules (D3), only where every capability is present. */
+  opts: { identity?: boolean } = {},
 ): RecommendationDraft[] {
   const out: RecommendationDraft[] = [];
 
@@ -209,7 +269,10 @@ export function buildRecommendations(
     });
   }
 
-  for (const g of input.findingGroups) {
+  const groups = opts.identity
+    ? groupsByRule(input.findingGroups)
+    : input.findingGroups;
+  for (const g of groups) {
     // Routine snippet findings only on legal pages (privacy policy, terms)
     // rank as INFO: listed with the findings, not a task of their own.
     const severity =
@@ -751,13 +814,62 @@ export type Existing = {
   issueId: string | null;
   status: RecommendationStatus;
   updatedAt: Date;
+  /** The stored key (read only where every capability is present). */
+  identityKey?: string | null;
 };
 
-/** The draft a stored recommendation corresponds to: same issue, else same title. */
+/**
+ * A stored task's identity: its stored key; else, for a legacy SEO,
+ * integration or issue task, the key its rule or problem code or its issue
+ * names (owner-approved for these families only); else none. A business
+ * task's identity is never derived from its title: until it is keyed from
+ * its fact, it matches by title, as today.
+ */
+export function effectiveKey(
+  r: Pick<Existing, "title" | "issueId"> & { identityKey?: string | null },
+): string | null {
+  if (r.identityKey) return r.identityKey;
+  const basis = recommendationBasis(r);
+  return basis.kind === "seo-rule" ||
+    basis.kind === "integration" ||
+    basis.kind === "issue"
+    ? identityKey(basis)
+    : null;
+}
+
+/**
+ * A draft's identity. Drafts are built here from structured fields; a
+ * business draft's key comes from its opportunity or need in this sync's
+ * coverage result (fact id and part), never from its wording.
+ */
+export function draftKey(
+  d: Pick<RecommendationDraft, "title" | "issueId">,
+  coverage: CoverageResult | null | undefined,
+): string | null {
+  const basis = recommendationBasis(d);
+  if (basis.kind !== "coverage") return identityKey(basis);
+  const o = coverage?.opportunities.find((x) => x.key === d.title);
+  if (o) return businessKey(o);
+  const n = coverage?.needs.find(
+    (x) => x.key === d.title && !PAGE_NEEDS.includes(x.kind),
+  );
+  return n ? businessKey(n) : null;
+}
+
+/**
+ * The draft a stored recommendation corresponds to: same issue, else same
+ * title. With the Stage 2 rules (only where every capability is present):
+ * same key, and same title only for a task without one.
+ */
 export function matchDraft(
-  r: Pick<Existing, "title" | "issueId">,
+  r: Pick<Existing, "title" | "issueId"> & { identityKey?: string | null },
   drafts: RecommendationDraft[],
+  opts: { identity?: boolean; coverage?: CoverageResult | null } = {},
 ): RecommendationDraft | undefined {
+  if (opts.identity) {
+    const key = effectiveKey(r);
+    if (key) return drafts.find((d) => draftKey(d, opts.coverage) === key);
+  }
   return (
     (r.issueId ? drafts.find((d) => d.issueId === r.issueId) : undefined) ??
     drafts.find(
@@ -955,7 +1067,11 @@ export async function syncRecommendations(
   };
   const ctx = await loadRecommendationContext(db, scope);
   const now = new Date();
-  const drafts = buildRecommendations(ctx.inputs);
+  // Stage 2 rules (keys, collision freeze, strict re-keys, D3, evidence
+  // fields) only where every capability is present; otherwise exactly
+  // today's behaviour (owner decision, option A). Read once per sync.
+  const identity = (await identityCapabilities(db)).enabled;
+  const drafts = buildRecommendations(ctx.inputs, { identity });
   const existing: Existing[] = await db.recommendation.findMany({
     where: scope,
     select: {
@@ -966,18 +1082,40 @@ export async function syncRecommendations(
       updatedAt: true,
     },
   });
+  if (identity) {
+    const stored = await readIdentityKeys(db, scope);
+    for (const r of existing) r.identityKey = stored.get(r.id) ?? null;
+  }
   // Same purpose, new title (business type or offering wording changed):
   // move the existing task to the new title instead of creating another.
-  const plan = rekeyTasks(existing, ctx.coverage);
-  for (const move of await applyRekeys(db, scope, plan)) {
+  const plan = rekeyTasks(existing, ctx.coverage, { strict: identity });
+  for (const move of await applyRekeys(db, scope, plan, { identity })) {
     const row = existing.find((r) => r.id === move.id);
     if (row) row.title = move.to;
+    if (row && move.toKey) row.identityKey = move.toKey;
   }
+  // Candidates of held tasks wait on a person; they are not created
+  // meanwhile, so a later move never has to merge two rows.
+  const waiting = new Set(
+    identity
+      ? [
+          ...(plan.suggestions ?? []).map((s) => s.to),
+          ...plan.ambiguous.flatMap((a) => a.candidates),
+        ]
+      : [],
+  );
   let created = 0;
   let completed = 0;
   const history = await historyAvailable(db);
   const verifiable: Existing[] = [];
-  const { actions, claimed } = planSync(existing, drafts, ctx, now);
+  const { actions, claimed, collisions, keys } = planSync(
+    existing,
+    drafts,
+    ctx,
+    now,
+    { identity },
+  );
+  logCollisions(scope, collisions);
   for (const a of actions) {
     if (a.kind === "update")
       await db.recommendation.update({ where: { id: a.r.id }, data: a.draft });
@@ -992,12 +1130,14 @@ export async function syncRecommendations(
           to: "COMPLETED",
           actorUserId: null,
           history,
-          verification: verificationEvidence(a.r, ctx),
+          verification: verificationEvidence(a.r, ctx, { identity }),
+          recordRowUpdatedAt: identity,
         })
       )
         completed++;
     } else if (history) verifiable.push(a.r);
   }
+  if (keys.length) await keyMatchedRows(db, scope, keys);
   // Work a person marked done that the latest evidence now confirms: record
   // the verification once (status unchanged), under the website lock so two
   // syncs cannot both record it.
@@ -1033,9 +1173,9 @@ export async function syncRecommendations(
           id: { in: verifiable.map((r) => r.id) },
           status: "COMPLETED",
         },
-        select: { id: true },
+        select: { id: true, updatedAt: true },
       });
-      const completedNow = new Set(still.map((x) => x.id));
+      const completedNow = new Map(still.map((x) => [x.id, x.updatedAt]));
       await recordEvents(
         tx,
         verifiable
@@ -1045,15 +1185,82 @@ export async function syncRecommendations(
             recommendationId: r.id,
             type: "VERIFICATION_RECORDED" as const,
             toStatus: "COMPLETED" as const,
-            evidence: verificationEvidence(r, ctx),
+            evidence: {
+              ...verificationEvidence(r, ctx, { identity }),
+              // The row as it is now, read under the lock (section 29).
+              ...(identity
+                ? { rowUpdatedAt: completedNow.get(r.id)!.toISOString() }
+                : {}),
+            },
           })),
       );
     });
   for (const d of drafts) {
-    if (claimed.has(d)) continue;
-    if ((await createRecommendationOnce(db, scope, d)).created) created++;
+    if (claimed.has(d) || waiting.has(d.title)) continue;
+    try {
+      const row = await createRecommendationOnce(
+        db,
+        scope,
+        d,
+        null,
+        identity ? { identity, key: draftKey(d, ctx.coverage) } : {},
+      );
+      if (row.created) created++;
+    } catch (error) {
+      // Rows created since this sync read them: never pick one.
+      if (!(error instanceof IdentityCollisionError)) throw error;
+      log.warn("recommendation_identity_collision", {
+        websiteId: scope.websiteId,
+        organizationId: scope.organizationId,
+        title: d.title,
+        rows: error.ids,
+      });
+    }
   }
-  return { created, completed };
+  return {
+    created,
+    completed,
+    identity: identity ? ("enabled" as const) : ("unavailable" as const),
+  };
+}
+
+/**
+ * Keys rows that matched a keyed draft (identity rules only), under the
+ * website lock. Each write is re-checked there: a row is never keyed if
+ * another open or dismissed row already has that identity (that would be
+ * a collision: skipped and logged), and never re-keyed if it has a key.
+ * Raw SQL, so `updatedAt` is unchanged, also on completed and dismissed rows.
+ */
+async function keyMatchedRows(
+  db: PrismaClient,
+  scope: Scope,
+  keys: Array<{ r: Existing; key: string }>,
+) {
+  await withWebsiteLock(db, scope, async (tx) => {
+    const rows = await rowsWithKeys(tx, scope);
+    for (const { r, key } of keys) {
+      const now = rows.find((x) => x.id === r.id);
+      if (!now || now.identityKey) continue;
+      const others = OPEN_SLOT.includes(now.status)
+        ? rows.filter(
+            (x) =>
+              x.id !== r.id &&
+              OPEN_SLOT.includes(x.status) &&
+              effectiveKey(x) === key,
+          )
+        : [];
+      if (others.length) {
+        log.warn("recommendation_identity_collision", {
+          websiteId: scope.websiteId,
+          organizationId: scope.organizationId,
+          identityKey: key,
+          rows: [now.id, ...others.map((x) => x.id)],
+        });
+        continue;
+      }
+      if (await setIdentityKey(tx, scope, r.id, key)) now.identityKey = key;
+    }
+  });
 }
 
 export type SyncAction =
@@ -1076,9 +1283,38 @@ export function planSync(
   drafts: RecommendationDraft[],
   ctx: RecommendationContext,
   now: Date,
-): { actions: SyncAction[]; claimed: Set<RecommendationDraft> } {
+  /**
+   * Stage 2 rules, only where every capability is present: match by key,
+   * and leave colliding rows exactly as they are (section 31): no update,
+   * completion, verification or key, and no new row for their draft.
+   */
+  opts: { identity?: boolean } = {},
+): {
+  actions: SyncAction[];
+  claimed: Set<RecommendationDraft>;
+  /** Rows sharing one open slot, frozen (identity rules only). */
+  collisions: Collision[];
+  /** Rows without a stored key that matched a keyed draft (identity rules only). */
+  keys: Array<{ r: Existing; key: string }>;
+} {
   const claimed = new Set<RecommendationDraft>();
   const actions: SyncAction[] = [];
+  const keys: Array<{ r: Existing; key: string }> = [];
+  const identity = !!opts.identity;
+  const collisions = identity
+    ? findCollisions(
+        existing.map((r) => ({ ...r, identityKey: effectiveKey(r) })),
+      )
+    : [];
+  const frozen = new Set(collisions.flatMap((c) => c.rows.map((r) => r.id)));
+  for (const c of collisions)
+    for (const d of drafts)
+      if (
+        c.by === "identityKey"
+          ? draftKey(d, ctx.coverage) === c.value
+          : d.title === c.value
+      )
+        claimed.add(d);
   // Active items claim their draft first, so an old COMPLETED item with the
   // same title never causes a live one to be completed.
   const order: Record<RecommendationStatus, number> = {
@@ -1093,12 +1329,16 @@ export function planSync(
       b.updatedAt.getTime() - a.updatedAt.getTime(),
   );
   for (const r of sorted) {
+    if (frozen.has(r.id)) continue;
     const d = matchDraft(
       r,
       drafts.filter((x) => !claimed.has(x)),
+      identity ? { identity, coverage: ctx.coverage } : {},
     );
     if (d) {
       claimed.add(d);
+      const key = identity && !r.identityKey ? draftKey(d, ctx.coverage) : null;
+      if (key) keys.push({ r, key });
       // Kept as the user left it: a recheck that still detects a COMPLETED
       // item is shown on the page, never silently reverted. (A new issue
       // with the same title does not match, so it becomes a new item.)
@@ -1111,7 +1351,7 @@ export function planSync(
       actions.push({ kind: "complete", r });
     else if (r.status === "COMPLETED") actions.push({ kind: "verify", r });
   }
-  return { actions, claimed };
+  return { actions, claimed, collisions, keys };
 }
 
 /**
@@ -1143,6 +1383,13 @@ export async function applyRekeys(
   db: PrismaClient,
   scope: Scope,
   plan: RekeyPlan,
+  /**
+   * Stage 2 rules, only where every capability is present: the key moves
+   * with the title (skipped if an open or dismissed row holds the target
+   * key) and the move is recorded as IDENTITY_CHANGED in the same
+   * transaction. The returned `toKey` is set only when the key was written.
+   */
+  opts: { identity?: boolean } = {},
 ): Promise<RekeyPlan["moves"]> {
   for (const a of plan.ambiguous)
     log.warn("recommendation_rekey_ambiguous", {
@@ -1150,15 +1397,48 @@ export async function applyRekeys(
       recommendationId: a.id,
       candidates: a.candidates.length,
     });
+  for (const s of plan.suggestions ?? [])
+    log.info("recommendation_rekey_suggested", {
+      websiteId: scope.websiteId,
+      recommendationId: s.id,
+      to: s.to,
+    });
   if (!plan.moves.length) return [];
   const applied = await withWebsiteLock(db, scope, async (tx) => {
     const done: RekeyPlan["moves"] = [];
+    const stored = opts.identity
+      ? await readIdentityKeys(tx, scope)
+      : new Map<string, string>();
     for (const move of plan.moves) {
       const clash = await tx.recommendation.findFirst({
         where: { ...scope, title: move.to },
         select: { id: true },
       });
       if (clash) continue;
+      if (opts.identity && move.toKey) {
+        const holders = [...stored].filter(
+          ([id, key]) => key === move.toKey && id !== move.id,
+        );
+        const open = holders.length
+          ? await tx.recommendation.findMany({
+              where: {
+                ...scope,
+                id: { in: holders.map(([id]) => id) },
+                status: { in: OPEN_SLOT },
+              },
+              select: { id: true },
+            })
+          : [];
+        if (open.length) {
+          log.warn("recommendation_rekey_key_taken", {
+            websiteId: scope.websiteId,
+            recommendationId: move.id,
+            identityKey: move.toKey,
+            heldBy: open.map((r) => r.id),
+          });
+          continue;
+        }
+      }
       const { count } = await tx.recommendation.updateMany({
         where: {
           ...scope,
@@ -1168,7 +1448,31 @@ export async function applyRekeys(
         },
         data: { title: move.to },
       });
-      if (count) done.push(move);
+      if (!count) continue;
+      if (!opts.identity) {
+        done.push(move);
+        continue;
+      }
+      const fromKey = stored.get(move.id) ?? null;
+      const keyMoved = move.toKey
+        ? await moveIdentityKey(tx, scope, move.id, fromKey, move.toKey)
+        : false;
+      if (keyMoved) stored.set(move.id, move.toKey!);
+      // Every capability is present, so the events table is too.
+      await recordEvents(tx, [
+        {
+          ...scope,
+          recommendationId: move.id,
+          type: "IDENTITY_CHANGED",
+          evidence: {
+            fromTitle: move.from,
+            toTitle: move.to,
+            ...(fromKey ? { fromKey } : {}),
+            ...(keyMoved ? { toKey: move.toKey } : {}),
+          },
+        },
+      ]);
+      done.push({ ...move, toKey: keyMoved ? move.toKey : undefined });
     }
     return done;
   });
@@ -1198,19 +1502,29 @@ export async function createRecommendationOnce(
   },
   /** The person creating it (accepting or dismissing); null for the sync. */
   actorUserId: string | null = null,
+  /**
+   * Stage 2 rules, only where every capability is present: find the task
+   * by key (`findSlotHolder`), refuse with IdentityCollisionError rather
+   * than pick one of several, and key the new row in the same transaction.
+   */
+  opts: { identity?: boolean; key?: string | null } = {},
 ): Promise<{ created: boolean; id: string; status: RecommendationStatus }> {
   const history = await historyAvailable(db);
   return withWebsiteLock(db, scope, async (tx) => {
-    const found = await tx.recommendation.findFirst({
-      where: { ...scope, title: data.title },
-      select: { id: true, status: true },
-      orderBy: { createdAt: "asc" },
-    });
-    if (found) return { created: false, ...found };
+    const found = opts.identity
+      ? await findSlotHolder(tx, scope, data.title, opts.key ?? null)
+      : await tx.recommendation.findFirst({
+          where: { ...scope, title: data.title },
+          select: { id: true, status: true },
+          orderBy: { createdAt: "asc" },
+        });
+    if (found) return { created: false, id: found.id, status: found.status };
     const row = await tx.recommendation.create({
       data: { ...scope, ...data },
       select: { id: true, status: true },
     });
+    if (opts.identity && opts.key)
+      await setIdentityKey(tx, scope, row.id, opts.key);
     if (history)
       await recordEvents(tx, [
         {
@@ -1225,6 +1539,112 @@ export async function createRecommendationOnce(
   });
 }
 
+type SlotCandidate = Pick<Existing, "id" | "title" | "issueId" | "status"> & {
+  identityKey?: string | null;
+};
+
+/** The website's rows with their stored keys (identity rules only). */
+async function rowsWithKeys(
+  db: Prisma.TransactionClient | PrismaClient,
+  scope: Scope,
+): Promise<SlotCandidate[]> {
+  const rows = await db.recommendation.findMany({
+    where: scope,
+    select: { id: true, title: true, issueId: true, status: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const stored = await readIdentityKeys(db, scope);
+  return rows.map((r) => ({ ...r, identityKey: stored.get(r.id) ?? null }));
+}
+
+/** Whether `r` is the same task as one identified by `key` or `title`. */
+function sameTask(r: SlotCandidate, key: string | null, title: string) {
+  const k = effectiveKey(r);
+  return key && k ? k === key : r.title === title;
+}
+
+/**
+ * The existing task for a key (or, for rows and drafts without one, a
+ * title), oldest first, preferring the one holding the open slot. Two or
+ * more holding it is a collision: IdentityCollisionError, nothing picked.
+ * Identity rules only (it reads stored keys).
+ */
+export async function findSlotHolder(
+  db: Prisma.TransactionClient | PrismaClient,
+  scope: Scope,
+  title: string,
+  key: string | null,
+): Promise<SlotCandidate | null> {
+  const same = (await rowsWithKeys(db, scope)).filter((r) =>
+    sameTask(r, key, title),
+  );
+  const open = same.filter((r) => OPEN_SLOT.includes(r.status));
+  if (open.length > 1) throw new IdentityCollisionError(open.map((r) => r.id));
+  return open[0] ?? same[0] ?? null;
+}
+
+/**
+ * The row that already holds a completed task's open slot, if any: then it
+ * may not be reopened (section 21; R19). Same task = same key, or the same
+ * title for tasks without one.
+ */
+export function reopenBlockedBy(
+  target: SlotCandidate,
+  rows: SlotCandidate[],
+): SlotCandidate | null {
+  const key = effectiveKey(target);
+  return (
+    rows.find(
+      (r) =>
+        r.id !== target.id &&
+        OPEN_SLOT.includes(r.status) &&
+        sameTask(r, key, target.title),
+    ) ?? null
+  );
+}
+
+/**
+ * A person reopens a completed task (identity rules only): under the
+ * website lock, refused while another row holds its open slot; otherwise
+ * the change and its history are written in the same transaction.
+ */
+export async function reopenTask(
+  db: PrismaClient,
+  change: Scope & { id: string; actorUserId: string },
+): Promise<
+  | { kind: "reopened" }
+  | { kind: "stale" }
+  | { kind: "blocked"; by: SlotCandidate }
+> {
+  const scope = {
+    websiteId: change.websiteId,
+    organizationId: change.organizationId,
+  };
+  return withWebsiteLock(db, scope, async (tx) => {
+    const rows = await rowsWithKeys(tx, scope);
+    const target = rows.find((r) => r.id === change.id);
+    if (target?.status !== "COMPLETED") return { kind: "stale" };
+    const by = reopenBlockedBy(target, rows);
+    if (by) return { kind: "blocked", by };
+    const { count } = await tx.recommendation.updateMany({
+      where: { ...scope, id: change.id, status: "COMPLETED" },
+      data: { status: "PROPOSED" },
+    });
+    if (!count) return { kind: "stale" };
+    await recordEvents(tx, [
+      {
+        ...scope,
+        recommendationId: change.id,
+        type: "STATUS_CHANGED",
+        fromStatus: "COMPLETED",
+        toStatus: "PROPOSED",
+        actorUserId: change.actorUserId,
+      },
+    ]);
+    return { kind: "reopened" };
+  });
+}
+
 /**
  * What UpSiteHealth's recheck rests on, for a task it completes or verifies:
  * the basis and the ids and times it actually recorded (the analysed crawl,
@@ -1236,13 +1656,24 @@ export function verificationEvidence(
   ctx: Pick<
     RecommendationContext,
     "issues" | "evidenceAt" | "integrations" | "crawlRunId"
-  >,
+  > &
+    Partial<Pick<RecommendationContext, "coverage">>,
+  /**
+   * Stage 2 (section 29), only where every capability is present: coverage
+   * records the coverage crawl's own time and the outcome it rested on.
+   */
+  opts: { identity?: boolean } = {},
 ): Record<string, unknown> {
   const basis = recommendationBasis(r);
-  const at = evidenceTime(basis, ctx as RecommendationContext);
+  const coverage = opts.identity && basis.kind === "coverage";
+  const at = coverage
+    ? (ctx.coverage?.crawl?.analyzedAt ?? null)
+    : evidenceTime(basis, ctx as RecommendationContext);
+  const outcome = coverage ? coverageOutcome(r.title, ctx.coverage) : null;
   const out: Record<string, unknown> = {
     basis: basis.kind,
     ...(at ? { observedAt: at.toISOString() } : {}),
+    ...(outcome ? { outcome } : {}),
   };
   switch (basis.kind) {
     case "seo-rule":
@@ -1267,6 +1698,19 @@ export function verificationEvidence(
     default:
       return out;
   }
+}
+
+/** What a coverage task's check rested on: "fulfilled", "covered", "ambiguous"… */
+function coverageOutcome(
+  title: string,
+  c: CoverageResult | null | undefined,
+): string | null {
+  const o = c?.opportunities.find((x) => x.key === title);
+  if (o) return o.state;
+  const n = c?.needs.find(
+    (x) => x.key === title && !PAGE_NEEDS.includes(x.kind),
+  );
+  return n?.status ?? null;
 }
 
 export type RecommendationState =

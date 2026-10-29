@@ -61,7 +61,12 @@ export type StatusChangeOutcome =
   /** No such task for this organization (removed, or not the person's). */
   | { kind: "missing" }
   /** The request did not name a known status. */
-  | { kind: "invalid" };
+  | { kind: "invalid" }
+  /** Reopen refused: a newer task already holds this problem's open slot. */
+  | {
+      kind: "superseded";
+      by: { title: string; status: RecommendationStatus };
+    };
 
 /** The message a person sees for an outcome: plain words, no internals. */
 export function statusChangeFeedback(
@@ -89,5 +94,9 @@ export function statusChangeFeedback(
       };
     case "invalid":
       return { error: "That change wasn't recognised. Nothing was changed." };
+    case "superseded":
+      return {
+        error: `A newer task already tracks this problem: “${o.by.title}” (${STATUS_WORD[o.by.status]}). Nothing was changed.`,
+      };
   }
 }

@@ -186,51 +186,54 @@ describe("re-keying and creation share the website lock (simulated concurrency)"
   });
 
   // Stage 2, D2 (approved): every identity move keeps the row and records an
-  // IDENTITY_CHANGED event with the old and new key and title. Today a move
-  // is only logged (the test above), so this fails until it lands.
-  test.fails(
-    "D2: a move records IDENTITY_CHANGED in the same transaction, where task history exists",
-    async () => {
-      vi.spyOn(log, "info").mockImplementation(() => {});
-      const rows = [{ id: "d", ...scope, title: OLD, status: "DISMISSED" }];
-      const written: Array<Record<string, unknown>> = [];
-      const tx = {
-        recommendation: {
-          findFirst: async () => null,
-          updateMany: async ({ data }: { data: { title: string } }) => {
-            rows[0].title = data.title;
-            return { count: 1 };
-          },
+  // IDENTITY_CHANGED event with the old and new key and title. Step C1b: only
+  // where every capability is present (option A), so the capability is
+  // passed in; without it a move is only logged, as the test above pins.
+  test("D2: a move records IDENTITY_CHANGED in the same transaction, where task history exists", async () => {
+    vi.spyOn(log, "info").mockImplementation(() => {});
+    const rows = [{ id: "d", ...scope, title: OLD, status: "DISMISSED" }];
+    const written: Array<Record<string, unknown>> = [];
+    const tx = {
+      recommendation: {
+        findFirst: async () => null,
+        updateMany: async ({ data }: { data: { title: string } }) => {
+          rows[0].title = data.title;
+          return { count: 1 };
         },
-        recommendationEvent: {
-          createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
-            written.push(...data);
-            return { count: data.length };
-          },
+      },
+      recommendationEvent: {
+        createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
+          written.push(...data);
+          return { count: data.length };
         },
-        $queryRaw: async () => [],
-      };
-      const db = {
-        ...tx,
-        $queryRaw: async () => [{ present: true }],
-        $transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
-      } as unknown as PrismaClient;
-      await applyRekeys(db, scope, {
+      },
+      $queryRaw: async () => [],
+    };
+    const db = {
+      ...tx,
+      $queryRaw: async () => [{ present: true }],
+      $transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+    } as unknown as PrismaClient;
+    await applyRekeys(
+      db,
+      scope,
+      {
         moves: [{ id: "d", from: OLD, to: ACC }],
         ambiguous: [],
-      });
-      expect(rows[0]).toMatchObject({
-        id: "d",
-        title: ACC,
-        status: "DISMISSED",
-      });
-      expect(written).toEqual([
-        expect.objectContaining({
-          recommendationId: "d",
-          type: "IDENTITY_CHANGED",
-          evidence: expect.objectContaining({ fromTitle: OLD, toTitle: ACC }),
-        }),
-      ]);
-    },
-  );
+      },
+      { identity: true },
+    );
+    expect(rows[0]).toMatchObject({
+      id: "d",
+      title: ACC,
+      status: "DISMISSED",
+    });
+    expect(written).toEqual([
+      expect.objectContaining({
+        recommendationId: "d",
+        type: "IDENTITY_CHANGED",
+        evidence: expect.objectContaining({ fromTitle: OLD, toTitle: ACC }),
+      }),
+    ]);
+  });
 });

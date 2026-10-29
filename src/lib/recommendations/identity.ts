@@ -129,6 +129,59 @@ function rawKey(source: RecommendationBasis | BusinessIdentity) {
   }
 }
 
+/** The purpose of each page-opportunity category (category is not identity). */
+const CATEGORY_PURPOSE: Record<string, BusinessPurpose> = {
+  accommodation: "offering-page",
+  food: "offering-page",
+  experience: "offering-page",
+  service: "offering-page",
+  product: "offering-page",
+  facilities: "facilities-page",
+  location: "location-page",
+  contact: "contact-path",
+};
+
+/** The purpose of each non-page coverage need. */
+const NEED_PURPOSE: Record<string, BusinessPurpose> = {
+  "service-areas": "service-areas",
+  "location-mention": "location-mention",
+};
+
+/**
+ * The key of a business opportunity or need, from structured fields only:
+ * its category or need kind (the purpose), its approved fact and, for one
+ * part of a compound fact, that part. Never from its title. Null when the
+ * record cannot name one (a per-fact purpose without exactly one fact).
+ */
+export function businessKey(
+  o:
+    | { category: string; facts: Array<{ id: string }>; part?: string | null }
+    | { kind: string; facts: Array<{ id: string }> },
+): string | null {
+  const purpose =
+    "category" in o ? CATEGORY_PURPOSE[o.category] : NEED_PURPOSE[o.kind];
+  if (!purpose) return null;
+  const perFact = PER_FACT.includes(purpose);
+  if (perFact && o.facts.length !== 1) return null;
+  return identityKey({
+    kind: "business",
+    purpose,
+    factId: perFact ? o.facts[0].id : null,
+    part: "part" in o ? (o.part ?? null) : null,
+  });
+}
+
+/**
+ * Two or more rows hold one open slot, so no row is picked: the caller
+ * refuses (a person's Accept) or skips and logs (the sync).
+ */
+export class IdentityCollisionError extends Error {
+  constructor(readonly ids: string[]) {
+    super("Two tasks exist for this; review them first.");
+    this.name = "IdentityCollisionError";
+  }
+}
+
 /** Statuses that hold a key's one open slot (section 11). */
 export const OPEN_SLOT: RecommendationStatus[] = [
   "PROPOSED",
