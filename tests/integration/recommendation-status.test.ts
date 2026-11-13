@@ -37,6 +37,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
     let action: typeof import("@/app/(app)/o/[orgSlug]/insights-actions").setRecommendationStatusAction;
     const run = uid();
     const orgIds: string[] = [];
+    const userIds: string[] = [];
 
     async function member(slug: string, role: "MEMBER" | "CLIENT") {
       const org =
@@ -46,6 +47,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
       const user = await db.user.create({
         data: { email: `${role.toLowerCase()}-${uid()}@example.test` },
       });
+      userIds.push(user.id);
       await db.organizationMember.create({
         data: { organizationId: org.id, userId: user.id, role },
       });
@@ -89,6 +91,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
     });
     afterAll(async () => {
       await db.organization.deleteMany({ where: { id: { in: orgIds } } });
+      await db.user.deleteMany({ where: { id: { in: userIds } } });
       await db.$disconnect();
     });
 
