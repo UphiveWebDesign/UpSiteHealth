@@ -86,6 +86,8 @@ export async function processDeliveryJobs(
     failed: 0,
     notConfigured: 0,
     errored: 0,
+    /** Not sent: the recipient is a CLIENT member. */
+    skipped: 0,
   };
   const now = () => new Date();
 
@@ -125,10 +127,36 @@ export async function processDeliveryJobs(
             alertEvent: {
               include: { website: { select: { name: true, url: true } } },
             },
-            recipientMember: { include: { user: { select: { email: true } } } },
+            recipientMember: {
+              select: { role: true, user: { select: { email: true } } },
+            },
           },
         });
         const finished = now();
+
+        // Deliveries queued for CLIENT members before they stopped being
+        // recipients (client-limits.ts) are never sent.
+        if (delivery.recipientMember.role === "CLIENT") {
+          await db.notificationDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: "SKIPPED",
+              errorMessage:
+                "Skipped: client members do not receive organization-wide alerts",
+              lastAttemptedAt: finished,
+            },
+          });
+          await db.notificationDeliveryJob.update({
+            where: { id: job.id },
+            data: {
+              status: "COMPLETED",
+              completedAt: finished,
+              lastError: "Skipped: client member",
+            },
+          });
+          counts.skipped++;
+          continue;
+        }
 
         if (!sender) {
           await db.notificationDelivery.update({

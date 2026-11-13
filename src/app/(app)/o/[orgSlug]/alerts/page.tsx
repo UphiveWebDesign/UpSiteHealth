@@ -16,6 +16,7 @@ import {
   humanize,
 } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
+import { canExport } from "@/lib/tenancy/client-limits";
 
 export const metadata: Metadata = { title: "Alerts · UpSiteHealth" };
 
@@ -46,12 +47,14 @@ export default async function AlertsPage({
         title="Alerts"
         subtitle={`${events.length} alerts in the last ${days} days · ${openIncidents} still open`}
         actions={
-          <a
-            href={`/o/${orgSlug}/export/alerts?days=${days}`}
-            className="text-sm underline"
-          >
-            Export CSV
-          </a>
+          canExport(ctx.role) && (
+            <a
+              href={`/o/${orgSlug}/export/alerts?days=${days}`}
+              className="text-sm underline"
+            >
+              Export CSV
+            </a>
+          )
         }
       />
       <FilterTabs

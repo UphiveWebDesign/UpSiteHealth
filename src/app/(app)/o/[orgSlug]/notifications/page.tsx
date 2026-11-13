@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, Empty, PageHeader } from "@/components/ui/layout";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { formatRelative } from "@/lib/format";
+import { loadInbox } from "@/lib/alerts/inbox";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import {
   markAllNotificationsReadAction,
@@ -17,16 +18,8 @@ export default async function NotificationsPage({
 }: PageProps<"/o/[orgSlug]/notifications">) {
   const { orgSlug } = await params;
   const ctx = await requireOrgContext(orgSlug);
-  const items = await ctx.db.notificationDelivery.findMany({
-    where: { recipientMemberId: ctx.memberId, channel: "IN_APP" },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    include: {
-      alertEvent: {
-        include: { website: { select: { id: true, name: true } } },
-      },
-    },
-  });
+  // Own notifications only; none for CLIENT members (client-limits.ts).
+  const items = await loadInbox(ctx.db, ctx.role, ctx.memberId);
   const unread = items.filter((i) => !i.readAt).length;
 
   return (

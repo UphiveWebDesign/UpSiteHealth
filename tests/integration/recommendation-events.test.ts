@@ -218,10 +218,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       expect(await set(slug, t.id, "BOGUS", "PROPOSED")).toHaveProperty(
         "error",
       ); // invalid
+      // CLIENT members are refused like non-members (404, lockdown 14 Nov).
       state.token = (await member(slug, "CLIENT")).token;
-      expect(await set(slug, t.id, "DISMISSED", "PROPOSED")).toHaveProperty(
-        "error",
-      );
+      await expect(
+        set(slug, t.id, "DISMISSED", "PROPOSED"),
+      ).rejects.toMatchObject({ digest: expect.stringContaining("404") });
       const other = `ev-other-${run}`;
       state.token = (await member(other, "MEMBER")).token;
       expect(await set(other, t.id, "DISMISSED", "PROPOSED")).toHaveProperty(

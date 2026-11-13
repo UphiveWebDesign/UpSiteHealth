@@ -92,10 +92,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       );
       state.scheduled = [];
 
+      // CLIENT members are refused like non-members (404), not "forbidden".
       state.token = clientToken;
-      await expect(action(slug, site.id, undefined)).rejects.toBeInstanceOf(
-        ForbiddenError,
-      );
+      await expect(action(slug, site.id, undefined)).rejects.toMatchObject({
+        digest: expect.stringContaining("404"),
+      });
 
       state.token = memberToken; // a member of org A, asking for org B's site
       await expect(action(slug, foreign.id, undefined)).rejects.toBeInstanceOf(

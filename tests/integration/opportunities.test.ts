@@ -381,10 +381,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       expect((await tasks())[CONTACT]).toBe("COMPLETED");
 
+      // CLIENT members are refused like non-members (404, lockdown 14 Nov).
       state.token = await member(org.id, "CLIENT");
       await expect(
         decide(slug, site.id, FOOD, undefined, form("dismiss")),
-      ).rejects.toBeInstanceOf(ForbiddenError);
+      ).rejects.toMatchObject({ digest: expect.stringContaining("404") });
       const other = await setup("other");
       state.token = other.owner; // an owner of another organization
       await expect(

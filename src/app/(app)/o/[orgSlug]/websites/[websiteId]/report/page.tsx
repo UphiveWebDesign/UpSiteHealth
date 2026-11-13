@@ -11,7 +11,7 @@ import {
 } from "@/components/content-plan-picker";
 import { CHANGE_META } from "@/components/crawl-changes";
 import { PrintButton } from "@/components/print-button";
-import { AutoPrint, CopyClientLink } from "@/components/report-handoff";
+import { AutoPrint } from "@/components/report-handoff";
 import {
   BaselineSummary,
   PeriodTechnical,
@@ -41,7 +41,6 @@ import {
   type ContentPlan,
 } from "@/lib/workflow/content-plan";
 import {
-  clientLinkPath,
   handoffQuery,
   parseThrough,
   parseView,
@@ -201,7 +200,6 @@ export default async function SeoReportPage({
   const clientViewHref = (print: boolean) =>
     `${base}/report${handoffQuery({ kind, through, included: requested, selection, view: "client", pdf: print })}`;
   const reviewHref = `${base}/report${handoffQuery({ kind, through: fixed, included: requested, selection })}`;
-  const clientLink = clientLinkPath(`${base}/report`, kind, through);
   const shown = contentPlan?.shown;
   const planSummary =
     included && shown?.state === "ready"
@@ -258,12 +256,9 @@ export default async function SeoReportPage({
             tone="info"
             title="Client-ready view"
             action={
-              <div className="flex flex-wrap items-start gap-2">
-                <LinkButton href={reviewHref} variant="ghost">
-                  Back to team review
-                </LinkButton>
-                <CopyClientLink path={clientLink} />
-              </div>
+              <LinkButton href={reviewHref} variant="ghost">
+                Back to team review
+              </LinkButton>
             }
           >
             Client-visible tasks only
@@ -362,11 +357,9 @@ export default async function SeoReportPage({
                   notes or review controls.
                 </li>
                 <li>
-                  <strong className="text-ink">Client link:</strong> the client
-                  signs in with their own account and sees the report for this
-                  period. The content plan is team-only in the app, so it is
-                  {planSummary ? " only" : ""} in the PDF, never behind the
-                  link.
+                  <strong className="text-ink">Client access:</strong> client
+                  accounts cannot open UpSiteHealth for now, so there is no
+                  client link: send the PDF.
                 </li>
               </ul>
               <div className="mt-3 flex flex-wrap items-start gap-2">
@@ -374,7 +367,6 @@ export default async function SeoReportPage({
                   Preview client view
                 </LinkButton>
                 <LinkButton href={clientViewHref(true)}>Save as PDF</LinkButton>
-                <CopyClientLink path={clientLink} />
               </div>
             </section>
           )}

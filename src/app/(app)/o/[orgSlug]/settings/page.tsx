@@ -8,6 +8,8 @@ import { humanize } from "@/lib/format";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { saveNotificationPreferencesAction } from "../notify-actions";
+import { isTeamRole } from "@/lib/tenancy/client-limits";
+import { listVisibleMembers } from "@/lib/tenancy/members";
 
 export const metadata: Metadata = { title: "Settings · UpSiteHealth" };
 
@@ -31,10 +33,8 @@ export default async function SettingsPage({
   const ctx = await requireOrgContext(orgSlug);
   const [row, members] = await Promise.all([
     ctx.db.notificationPreference.findFirst({}),
-    ctx.db.organizationMember.findMany({
-      orderBy: { createdAt: "asc" },
-      include: { user: { select: { name: true, email: true } } },
-    }),
+    // Everyone for the team; only themselves for CLIENT members.
+    listVisibleMembers(ctx.db, ctx.role, ctx.memberId),
   ]);
   const prefs = row ?? DEFAULT_PREFERENCES;
   const selected = new Set(
@@ -153,7 +153,9 @@ export default async function SettingsPage({
             ))}
           </Table>
           <p className="mt-3 text-xs text-muted">
-            Inviting members is not available yet.
+            {isTeamRole(ctx.role)
+              ? "Inviting members is not available yet."
+              : "Only your own membership is shown."}
           </p>
         </Card>
       </div>

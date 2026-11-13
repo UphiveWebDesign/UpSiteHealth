@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { AlertEventType, IssueSeverity } from "@/generated/prisma/enums";
+import { ALERT_RECIPIENTS } from "@/lib/tenancy/client-limits";
 
 export type Preferences = {
   enabled: boolean;
@@ -68,8 +69,10 @@ export async function fanOutAlerts(
       : DEFAULT_PREFERENCES;
     if (!shouldNotify(prefs, event)) continue;
 
+    // CLIENT members are not recipients: an alert concerns one website and
+    // nothing yet records which client a CLIENT member represents.
     const members = await db.organizationMember.findMany({
-      where: { organizationId: event.organizationId },
+      where: { organizationId: event.organizationId, ...ALERT_RECIPIENTS },
       select: { id: true },
     });
     if (!members.length) continue;

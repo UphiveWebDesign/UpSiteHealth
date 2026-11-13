@@ -14,6 +14,7 @@ import { formatDateTime, formatMs } from "@/lib/format";
 import { organizationReport } from "@/lib/reports/summary";
 import type { FreshnessState } from "@/lib/scoring/freshness";
 import { requireOrgContext } from "@/lib/tenancy/context";
+import { canExport } from "@/lib/tenancy/client-limits";
 
 export const metadata: Metadata = { title: "Reports · UpSiteHealth" };
 
@@ -126,24 +127,26 @@ export default async function ReportsPage({
             </Table>
           )}
         </Card>
-        <Card title="CSV exports">
-          <ul className="grid gap-2 text-sm sm:grid-cols-2">
-            {EXPORTS.map(([dataset, label]) => (
-              <li key={dataset}>
-                <a
-                  href={`/o/${orgSlug}/export/${dataset}?days=${days}`}
-                  className="underline"
-                >
-                  {label}
-                </a>
-                <span className="text-xs text-muted">
-                  {" "}
-                  · CSV, last {days} days where applicable
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {canExport(ctx.role) && (
+          <Card title="CSV exports">
+            <ul className="grid gap-2 text-sm sm:grid-cols-2">
+              {EXPORTS.map(([dataset, label]) => (
+                <li key={dataset}>
+                  <a
+                    href={`/o/${orgSlug}/export/${dataset}?days=${days}`}
+                    className="underline"
+                  >
+                    {label}
+                  </a>
+                  <span className="text-xs text-muted">
+                    {" "}
+                    · CSV, last {days} days where applicable
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
       </div>
     </>
   );

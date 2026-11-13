@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { describeEvent, type HistoryEvent } from "./history";
+import { describeEvent, loadTaskHistory, type HistoryEvent } from "./history";
 
 const event = (over: Partial<HistoryEvent>): HistoryEvent => ({
   id: "e1",
@@ -175,5 +175,55 @@ describe("describeEvent: Stage 2 event types (M1)", () => {
       ESTIMATE_CHANGED: "Estimate changed",
       PLANNED: "Planned",
     });
+  });
+});
+
+describe("who acted, for viewers who may not see it (CLIENT members)", () => {
+  test("a person's change reads as a team member, never their name or email", () => {
+    const d = describeEvent(
+      event({ actor: null, actorUserId: "u1", actorHidden: true }),
+    );
+    expect(d.who).toBe("A team member");
+  });
+
+  test("automatic changes still read as UpSiteHealth", () => {
+    const evidence = { basis: "seo-rule", crawlRunId: "r1" };
+    expect(
+      describeEvent(
+        event({ actor: null, actorUserId: null, actorHidden: true, evidence }),
+      ).who,
+    ).toBe("UpSiteHealth (automatic)");
+  });
+
+  test("loadTaskHistory reads no names or emails when identities are withheld", async () => {
+    const calls: unknown[] = [];
+    const db = {
+      recommendationEvent: {
+        findMany: async (args: unknown) => {
+          calls.push(args);
+          return [
+            {
+              id: "e1",
+              recommendationId: "t1",
+              type: "STATUS_CHANGED",
+              fromStatus: "PROPOSED",
+              toStatus: "IN_PROGRESS",
+              note: null,
+              evidence: null,
+              createdAt: new Date("2026-11-01T00:00:00Z"),
+              actorUserId: "u1",
+            },
+          ];
+        },
+      },
+    } as unknown as Parameters<typeof loadTaskHistory>[0];
+    const out = await loadTaskHistory(db, "w1", ["t1"], { identities: false });
+    expect((calls[0] as { select: { actor: unknown } }).select.actor).toBe(
+      false,
+    );
+    const [e] = out.get("t1")!;
+    expect(e).toMatchObject({ actor: null, actorHidden: true });
+    expect(describeEvent(e).who).toBe("A team member");
+    expect(JSON.stringify(e)).not.toMatch(/@|Asha/);
   });
 });

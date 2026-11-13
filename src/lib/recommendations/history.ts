@@ -21,6 +21,8 @@ export type HistoryEvent = {
   createdAt: Date;
   actorUserId: string | null;
   actor: { name: string | null; email: string } | null;
+  /** Who acted is withheld from this viewer (client-limits.ts). */
+  actorHidden?: boolean;
 };
 
 /** Events of the given tasks, oldest first, by task (tenant-scoped client). */
@@ -28,6 +30,8 @@ export async function loadTaskHistory(
   db: TenantDb,
   websiteId: string,
   recommendationIds: string[],
+  /** Load who acted (names, emails); false for CLIENT members. */
+  { identities = true }: { identities?: boolean } = {},
 ): Promise<Map<string, HistoryEvent[]>> {
   const out = new Map<string, HistoryEvent[]>();
   if (!recommendationIds.length) return out;
@@ -44,11 +48,16 @@ export async function loadTaskHistory(
       evidence: true,
       createdAt: true,
       actorUserId: true,
-      actor: { select: { name: true, email: true } },
+      // Names and emails are read only for viewers who may see them.
+      actor: identities ? { select: { name: true, email: true } } : false,
     },
   });
-  for (const { recommendationId, ...e } of rows)
-    out.set(recommendationId, [...(out.get(recommendationId) ?? []), e]);
+  for (const { recommendationId, ...e } of rows) {
+    const event: HistoryEvent = identities
+      ? { ...e, actor: e.actor ?? null }
+      : { ...e, actor: null, actorHidden: true };
+    out.set(recommendationId, [...(out.get(recommendationId) ?? []), event]);
+  }
   return out;
 }
 
@@ -83,13 +92,16 @@ export function describeEvent(e: HistoryEvent): {
       : null;
   // UpSiteHealth's own status changes always carry their evidence; an empty
   // actor without it is a person whose account was removed since.
-  const who = e.actor
-    ? (e.actor.name ?? e.actor.email)
-    : e.actorUserId
-      ? "Unknown user"
-      : e.type === "STATUS_CHANGED" && !evidence
-        ? "A user who has since been removed"
-        : "UpSiteHealth (automatic)";
+  const who =
+    e.actorHidden && e.actorUserId
+      ? "A team member"
+      : e.actor
+        ? (e.actor.name ?? e.actor.email)
+        : e.actorUserId
+          ? "Unknown user"
+          : e.type === "STATUS_CHANGED" && !evidence
+            ? "A user who has since been removed"
+            : "UpSiteHealth (automatic)";
   const what =
     e.type === "CREATED"
       ? `Added as ${word(e.toStatus)}`

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { markRead } from "@/lib/alerts/inbox";
 import { ForbiddenError, requireOrgContext } from "@/lib/tenancy/context";
 import type { FormState } from "./actions";
 
@@ -18,25 +19,22 @@ const ALERT_TYPES = [
   "CRAWL_COMPLETED_WITH_ERRORS",
 ] as const;
 
-/** Marks one of the current member's own in-app notifications as read. */
+/**
+ * Marks one of the current member's own in-app notifications as read: only
+ * notifications they may see (`markRead`, client-limits.ts).
+ */
 export async function markNotificationReadAction(
   orgSlug: string,
   deliveryId: string,
 ) {
   const ctx = await requireOrgContext(orgSlug);
-  await ctx.db.notificationDelivery.updateMany({
-    where: { id: deliveryId, recipientMemberId: ctx.memberId, readAt: null },
-    data: { readAt: new Date() },
-  });
+  await markRead(ctx.db, ctx.role, ctx.memberId, deliveryId);
   revalidatePath(`/o/${orgSlug}`, "layout");
 }
 
 export async function markAllNotificationsReadAction(orgSlug: string) {
   const ctx = await requireOrgContext(orgSlug);
-  await ctx.db.notificationDelivery.updateMany({
-    where: { recipientMemberId: ctx.memberId, channel: "IN_APP", readAt: null },
-    data: { readAt: new Date() },
-  });
+  await markRead(ctx.db, ctx.role, ctx.memberId);
   revalidatePath(`/o/${orgSlug}`, "layout");
 }
 

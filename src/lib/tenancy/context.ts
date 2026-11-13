@@ -17,13 +17,26 @@ export class ForbiddenError extends Error {
   }
 }
 
+/**
+ * Organization routes are for the agency team. CLIENT members are treated
+ * exactly like non-members (404 for pages and actions, null for route
+ * handlers) on every organization route, until a client-facing route is
+ * reviewed and proven to be safely scoped (none is today; the client gets
+ * reports as PDFs). The role is read from the stored membership on every
+ * request, so existing sessions are covered without signing anyone out.
+ */
+export const hasOrganizationAccess = (role: Role) =>
+  // An allowlist, not "not CLIENT": a role added later is refused until
+  // it is reviewed (an unknown role has no rank).
+  hasRoleAtLeast(role, "MEMBER");
+
 const loadMembership = cache((userId: string, slug: string) =>
   findMembershipBySlug(db(), userId, slug),
 );
 
 /**
- * Resolves the signed-in user's membership in `orgSlug`. Non-members get a
- * 404 so the existence of other organizations is not revealed.
+ * Resolves the signed-in user's membership in `orgSlug`. Non-members and
+ * CLIENT members get a 404 so nothing about the organization is revealed.
  */
 export async function requireOrgContext(
   orgSlug: string,
@@ -31,7 +44,7 @@ export async function requireOrgContext(
 ): Promise<OrgContext> {
   const user = await requireUser();
   const membership = await loadMembership(user.id, orgSlug);
-  if (!membership) notFound();
+  if (!membership || !hasOrganizationAccess(membership.role)) notFound();
   if (!hasRoleAtLeast(membership.role, minimumRole)) throw new ForbiddenError();
   return {
     ...membership,
@@ -48,7 +61,12 @@ export async function findOrgContext(
   const user = await getCurrentUser();
   if (!user) return null;
   const membership = await loadMembership(user.id, orgSlug);
-  if (!membership || !hasRoleAtLeast(membership.role, minimumRole)) return null;
+  if (
+    !membership ||
+    !hasOrganizationAccess(membership.role) ||
+    !hasRoleAtLeast(membership.role, minimumRole)
+  )
+    return null;
   return {
     ...membership,
     user,

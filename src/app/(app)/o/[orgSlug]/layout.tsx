@@ -5,6 +5,7 @@ import { WorkerStatusBanner } from "@/components/worker-status";
 import { CRON_HEARTBEAT, heartbeatStatus } from "@/lib/cron/stages";
 import { db } from "@/lib/db";
 import { requireOrgContext } from "@/lib/tenancy/context";
+import { unreadCount } from "@/lib/alerts/inbox";
 
 export default async function OrgLayout({
   children,
@@ -13,13 +14,7 @@ export default async function OrgLayout({
   const { orgSlug } = await params;
   const ctx = await requireOrgContext(orgSlug);
   const [unread, heartbeat] = await Promise.all([
-    ctx.db.notificationDelivery.count({
-      where: {
-        recipientMemberId: ctx.memberId,
-        channel: "IN_APP",
-        readAt: null,
-      },
-    }),
+    unreadCount(ctx.db, ctx.role, ctx.memberId),
     // Platform-wide heartbeat (not tenant data), read only after membership is confirmed.
     db().schedulerHeartbeat.findUnique({
       where: { component: CRON_HEARTBEAT },

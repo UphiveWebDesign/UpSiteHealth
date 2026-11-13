@@ -16,6 +16,7 @@ import { issueResolution } from "@/lib/monitoring/rules";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { assignIssueAction, setIssueStatusAction } from "../actions";
+import { assigneeInclude, listVisibleMembers } from "@/lib/tenancy/members";
 
 export const metadata: Metadata = { title: "Issues · UpSiteHealth" };
 
@@ -51,12 +52,11 @@ export default async function IssuesPage({
       take: 300,
       include: {
         website: { select: { id: true, name: true } },
-        assignedTo: { select: { id: true, name: true, email: true } },
+        // Who is assigned is team information (client-limits.ts).
+        assignedTo: assigneeInclude(ctx.role),
       },
     }),
-    ctx.db.organizationMember.findMany({
-      include: { user: { select: { id: true, name: true, email: true } } },
-    }),
+    listVisibleMembers(ctx.db, ctx.role, ctx.memberId),
     // Latest passing check per website and type: confirms resolutions.
     view === "resolved"
       ? ctx.db.websiteCheck.groupBy({
@@ -193,7 +193,9 @@ export default async function IssuesPage({
                       <SubmitButton variant="ghost">Save</SubmitButton>
                     </form>
                   ) : (
-                    (i.assignedTo?.name ?? i.assignedTo?.email ?? "—")
+                    (i.assignedTo?.name ??
+                    i.assignedTo?.email ??
+                    (i.assignedToId ? "Assigned" : "—"))
                   )}
                 </td>
               </tr>

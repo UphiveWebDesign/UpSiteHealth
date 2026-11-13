@@ -2,6 +2,114 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-14 — CLIENT lockdown: no organization access for CLIENT members
+
+Uncommitted, on `consolidate/2026-11-13` after `ab4e9c5`, together with
+Phase 1 (below). No schema change, no migration, no per-client model.
+
+- **Rule (one place):** `hasOrganizationAccess(role)` in
+  `src/lib/tenancy/context.ts`, an allowlist (MEMBER and above), so a role
+  added later is refused until reviewed. `requireOrgContext` answers CLIENT members
+  with the non-member 404 whatever the minimum role, and `findOrgContext`
+  returns null for them (route handlers answer 404). Every organization
+  page, the organization layout, every server action (`actions.ts`,
+  `business-actions.ts`, `insights-actions.ts`, `notify-actions.ts`) and
+  the export route call one of the two (checked by a script and by the
+  test's page and action inventory). The role is read from the stored
+  membership on every request, so existing CLIENT sessions are covered at
+  once, without signing anyone out.
+- **Still available to CLIENT members:** sign-in, `/account` (their own
+  password) and `/dashboard`, which now lists only organizations the user
+  can open; a client-only account sees "Your account has client access…"
+  and is no longer redirected into a 404.
+- **Report handoff:** the client link is withdrawn (the report page is an
+  organization route, now closed to CLIENT members; making it safe needs
+  per-client access). "Copy client link" is removed from the share panel
+  and the client-ready view; the panel says to send the PDF. Preview
+  client view and Save as PDF are unchanged (team only).
+- **Phase 1 protections kept** as a second layer: no alert notifications
+  or queued emails for CLIENT members, own membership only, no assignee or
+  task-history identities, exports refused (`client-limits.ts`).
+- **Tests:** unit `src/lib/tenancy/context.test.ts` (4: every role and
+  minimum role, route-handler null, team unchanged). Integration
+  `tests/integration/client-lockdown.test.ts` (9, real sessions and
+  membership on the local database): every organization page (24) and
+  the layout 404 for CLIENT; the report handoff URLs 404; every exported
+  server action (30+) 404 for CLIENT with no database change; CSV exports
+  404 for every dataset with and without a website id; team roles (OWNER,
+  ADMIN, MANAGER, MEMBER) load every page and export; another
+  organization's member, and a foreign website id, 404; a session follows
+  a role change on the next request; dashboard behaviour. Updated:
+  `actions.test.ts`, `recommendation-events.test.ts`,
+  `opportunities.test.ts` (CLIENT now 404 instead of "forbidden"), report
+  page test (no client link). Mutations caught: central rule removed (8
+  tests fail), dashboard filter removed (1). Local `upsitehealth-itest`
+  (backed up first): 12 related files 94 passed, 1 skipped (two-connection
+  test), 1 todo after the expected CLIENT-assertion updates. Live HTTP
+  check (`next dev`, real session cookies, temporary fixture deleted): 28
+  organization, website, report-handoff and export URLs 404 for a CLIENT
+  session with no names in the response; 200 with data for an OWNER.
+  `npm run check` exit 0 (2545 passed, 1 expected fail, 281 skipped, 9
+  todo). Neon and the shared database not contacted.
+- **Limits:** CLIENT accounts have no in-app reporting; reports go to
+  clients as PDFs. Client invitations do not exist, and there is no
+  per-client access mapping. Re-enabling a client route needs per-client
+  access (Phase 2/3 design, not started).
+- **Final review (2026-11-14), re-run:** diff and bypass search (every
+  organization page, layout, route handler and server action passes the
+  rule before any root-client query; no metadata, loading or extra route
+  files; cron needs its bearer secret; health reads `SELECT 1` only).
+  Hardened the rule to the allowlist above (+1 unit test: an unknown role
+  is refused). Targeted unit tests 57/57 (8 files). Local
+  `upsitehealth-itest` (backed up first): the same 12 files 94 passed, 1
+  skipped (two-connection test), 1 todo. `npm run check` exit 0 (2546
+  passed, 1 expected fail, 281 skipped, 9 todo). Branch
+  `consolidate/2026-11-13`, HEAD `ab4e9c5`, all of this uncommitted.
+
+## 2026-11-13 — Phase 1: client-member exposure closed (no per-client access yet)
+
+Uncommitted, on `consolidate/2026-11-13` after `ab4e9c5`. No schema change,
+no migration. Interim rules in one place, `src/lib/tenancy/client-limits.ts`
+(team = MEMBER and above, unchanged):
+
+- **Alert notifications.** `fanOutAlerts` (`src/lib/alerts/notify.ts`) no
+  longer addresses CLIENT members (in-app or email). The email worker
+  (`src/lib/alerts/delivery.ts`) marks emails queued earlier for CLIENT
+  members SKIPPED and never sends them. Inbox reads, the unread badge and
+  both mark-read actions go through `src/lib/alerts/inbox.ts`
+  (`notificationScope`): CLIENT members see, count and mark none (every
+  alert concerns one website, and no website is known to be theirs).
+- **Member information.** Settings and the Issues assignee list use
+  `listVisibleMembers` (`src/lib/tenancy/members.ts`): CLIENT members see
+  only their own membership. Issue assignees (`assigneeInclude`) and task
+  history actors (`loadTaskHistory(..., { identities })`, shown as "A team
+  member") are not read for CLIENT members.
+- **CSV exports.** `export/[dataset]/route.ts` answers CLIENT members with
+  the same 404 as a non-member for every dataset, with or without
+  `websiteId`, and builds nothing; the export links on Alerts and Reports
+  are not shown to them.
+- **Tests:** unit `client-limits.test.ts` (3), route
+  `export/[dataset]/route.test.ts` (3: every dataset and query 404 for
+  CLIENT, identical to a non-member's answer, team roles still export),
+  `history.test.ts` +3 (hidden actor). Integration
+  `tests/integration/client-limits.test.ts` (5: real fan-out via the
+  monitoring worker with email on, email worker skip with a recording
+  sender, inbox read/count/mark, member lists across two organizations,
+  issue assignee). 7 mutations (one per fix) each caught. Local
+  `upsitehealth-itest` (backed up first): client-limits, alerts,
+  reliability, auth-tenancy, recommendation-events, sprint4, workflow,
+  content-plan 57/57 after fixing one assertion in the new test (its
+  other-organization check matched the other organization's own emails).
+  `npm run check` exit 0 (2541 passed, 1 expected fail, 272 skipped, 9
+  todo). Neon and the shared database not contacted.
+- **Superseded by the CLIENT lockdown (2026-11-14, above).** At the time
+  of Phase 1, still visible to CLIENT members: every
+  website of the organization and its pages by URL (findings, tasks,
+  scores, crawls, reports), the Overview, Websites, Clients (other
+  clients' names, companies and emails), Issues, Alerts and Reports pages.
+  Phase 1 left the report handoff unchanged; the lockdown withdrew its
+  client link.
+
 ## 2026-11-13 — Report handoff: client-ready view, PDF and client link
 
 Uncommitted, on `consolidate/2026-11-13` after `38c145b`. No migration,

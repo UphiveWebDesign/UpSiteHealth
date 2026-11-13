@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { buildExport, DATASETS, type Dataset } from "@/lib/reports/exports";
+import { canExport } from "@/lib/tenancy/client-limits";
 import { findOrgContext } from "@/lib/tenancy/context";
 
 /** GET /o/:orgSlug/export/:dataset?days=30&websiteId=… → CSV download. */
@@ -9,8 +10,14 @@ export async function GET(
 ) {
   const { orgSlug, dataset } = await params;
   const ctx = await findOrgContext(orgSlug);
-  // Same response for "not signed in" and "not a member": reveals nothing.
-  if (!ctx || !(DATASETS as readonly string[]).includes(dataset)) {
+  // Same response for "not signed in", "not a member" and CLIENT members
+  // (exports are organization-wide; client-limits.ts): reveals nothing,
+  // whatever the dataset or website asked for.
+  if (
+    !ctx ||
+    !canExport(ctx.role) ||
+    !(DATASETS as readonly string[]).includes(dataset)
+  ) {
     return new Response("Not found", { status: 404 });
   }
 

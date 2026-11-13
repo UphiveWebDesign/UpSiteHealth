@@ -51,6 +51,7 @@ import {
 } from "../../../insights-actions";
 import { startCrawlAction } from "../../../actions";
 import { StartCrawlButton } from "../start-crawl";
+import { canSeeMemberIdentities } from "@/lib/tenancy/client-limits";
 
 export const metadata: Metadata = { title: "Recommendations · UpSiteHealth" };
 
@@ -115,6 +116,7 @@ export default async function RecommendationsPage({
         ctx.db,
         websiteId,
         all.map((r) => r.id),
+        { identities: canSeeMemberIdentities(ctx.role) },
       )
     : null;
   const withState = all.map((r) => {

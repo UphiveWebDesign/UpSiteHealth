@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  within,
-} from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Role } from "@/generated/prisma/enums";
 import type { ContentPlan } from "@/lib/workflow/content-plan";
@@ -544,32 +537,32 @@ describe("client-ready handoff (team)", () => {
     expect(href("Save as PDF")).toBe(
       "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=aaaaaaaaaa&pick=cccccccccc&through=2026-11-12&view=client&pdf=1",
     );
+    // Client accounts have no access (lockdown, 14 Nov): no client link.
     expect(
-      within(panel).getByRole("button", { name: "Copy client link" }),
-    ).toBeTruthy();
-    expect(panel.textContent).toMatch(/signs in with their own account/);
-    expect(panel.textContent).toMatch(/only in the PDF, never behind the link/);
+      within(panel).queryByRole("button", { name: "Copy client link" }),
+    ).toBeNull();
+    expect(panel.textContent).toMatch(
+      /client accounts cannot open UpSiteHealth for now, so there is no client link: send the PDF/,
+    );
     // The review page reads tasks with the team's rules.
     expect(lastLoad()[6]).toEqual({});
   });
 
-  test("the copied client link carries the period only", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      configurable: true,
-    });
+  test("no client link anywhere: neither the share panel nor the client-ready view offers one", async () => {
     await show("OWNER", { content: "include", sel: "1", pick: "aaaaaaaaaa" });
-    await act(async () => {
-      fireEvent.click(
-        within(screen.getByTestId("report-handoff")).getByRole("button", {
-          name: "Copy client link",
-        }),
-      );
-    });
-    expect(writeText).toHaveBeenCalledWith(
-      `${window.location.origin}/o/agency/websites/w1/report?period=28d&through=2026-11-12`,
-    );
+    expect(
+      screen.queryByRole("button", { name: "Copy client link" }),
+    ).toBeNull();
+    cleanup();
+    await show("OWNER", { view: "client" });
+    expect(
+      screen.queryByRole("button", { name: "Copy client link" }),
+    ).toBeNull();
+    expect(
+      within(screen.getByTestId("client-view-bar")).getByRole("link", {
+        name: "Back to team review",
+      }),
+    ).toBeTruthy();
   });
 
   test("client-ready view: client rules on the server, selected plan only, no team UI rendered at all", async () => {
