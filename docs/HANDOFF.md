@@ -5,6 +5,16 @@ lives in [DEVELOPMENT-STATUS.md](DEVELOPMENT-STATUS.md) (top entry, "Sprint 1
 acceptance review"); this file covers what that one does not: architecture,
 environment, open decisions, the Sprint 2 plan and a starting prompt.
 
+> **Update 2026-11-13 — P1 (migration 5) validation status.** Migration
+> `5_finding_resolution_events` is in the repository but has **not** been
+> applied to the shared database. The local targeted integration tests
+> passed (62 passed, 0 failed), but `finding-history` skipped its eight
+> Neon-only tests and the P1 PostgreSQL probe was not run, so migration 5's
+> PostgreSQL behaviour is **unverified** in this validation cycle (gap
+> accepted by the owner). Validating it on the dedicated Neon `itest-ci`
+> branch is a separate future task requiring explicit approval. Details:
+> [DEVELOPMENT-STATUS.md](DEVELOPMENT-STATUS.md), entry of 2026-11-13.
+
 ## A. Summary
 
 Sprint 1 (trustworthy crawl → finding → task lifecycle) is implemented and
@@ -221,12 +231,27 @@ dev` to pick it up). **Never a test target:** in `NEON_SHARED_ENDPOINTS`,
 
 ## F. Database and migrations
 
-| Migration                                                                  | Local itest | Neon `itest-ci`                        | Neon shared manual-testing                              | Production                                                                 |
-| -------------------------------------------------------------------------- | ----------- | -------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `0_baseline`                                                               | Applied     | Applied (`migrate deploy`, 2026-10-26) | Schema present (pushed)                                 | Schema matches, **not marked applied** (needs `migrate resolve`, approval) |
-| `1_business_facts`                                                         | Applied     | Applied (`migrate deploy`, 2026-10-26) | Present (approved `db push`)                            | Not applied                                                                |
-| `2_recommendation_events`                                                  | Applied     | Applied (`migrate deploy`, 2026-10-26) | Not applied                                             | Not applied                                                                |
-| `3_crawl_mode` (crawl modes, [specs/crawl-modes.md](specs/crawl-modes.md)) | Not applied | Applied (`migrate deploy`, 2026-10-26) | SQL applied by hand, 2026-10-27; not in history (below) | Not applied                                                                |
+| Migration                                                                  | Local itest  | Neon `itest-ci`                                                 | Neon shared manual-testing                              | Production                                                                 |
+| -------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `0_baseline`                                                               | Applied      | Applied (`migrate deploy`, 2026-10-26)                          | Schema present (pushed)                                 | Schema matches, **not marked applied** (needs `migrate resolve`, approval) |
+| `1_business_facts`                                                         | Applied      | Applied (`migrate deploy`, 2026-10-26)                          | Present (approved `db push`)                            | Not applied                                                                |
+| `2_recommendation_events`                                                  | Applied      | Applied (`migrate deploy`, 2026-10-26)                          | Not applied                                             | Not applied                                                                |
+| `3_crawl_mode` (crawl modes, [specs/crawl-modes.md](specs/crawl-modes.md)) | Not applied  | Applied (`migrate deploy`, 2026-10-26)                          | SQL applied by hand, 2026-10-27; not in history (below) | Not applied                                                                |
+| `4_recommendation_identity` (Stage 2 M1)                                   | Not recorded | Applied (`migrate deploy`, 2026-10-28; gates passed 2026-10-29) | Not applied                                             | Not applied                                                                |
+
+**Updated 2026-10-30 (from repository records; no database was read).**
+
+- The `4_` row and the `itest-ci` column come from `STAGE2-HANDOFF.md` §0
+  (the M1 apply and gates).
+- The shared column is unchanged since the 27 Oct read-only checks. The
+  local app still uses that database (`.env`), and the guard
+  (`prisma/safety.ts`) refuses Prisma schema writes to it, with no
+  override.
+- To check any column again, read-only, use `npm run db:readiness`
+  ([operations/environment-readiness.md](operations/environment-readiness.md)).
+  Each target's run needs approval. That document also holds the owner's
+  decision brief on the working database, production identity and the
+  migration path.
 
 **Shared manual-testing database, 2026-10-27.**
 

@@ -2,6 +2,1321 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-13 — Local integration validation before consolidation; P1 gap accepted
+
+Run before committing the work on branch `consolidate/2026-11-13` (six
+commits from `main` at `26e71fc`; not pushed).
+
+- **Local targeted integration run** (isolated `prisma dev` database
+  `upsitehealth-itest`, backed up and checksum-verified first; 14 files, run
+  in a clean clone without `.env`): 13 files passed, 1 skipped; 62 tests
+  passed, 0 failed, 8 skipped.
+- **`finding-history` skipped all eight tests.** They are Neon-only by
+  design (need `UPSITEHEALTH_P1_HISTORY=yes` and the `itest-ci` branch), so
+  they were not exercised.
+- **The P1 PostgreSQL probe (`p1-postgres-probe`) was not run.** It refuses
+  any server other than `itest-ci`. The earlier owner run on `itest-ci`
+  (2026-11-02, below) was not repeated in this cycle.
+- **Migration 5 (`5_finding_resolution_events`) is in the repository but
+  has not been applied to the shared database** (nor to `itest-ci`).
+- **Therefore migration 5's PostgreSQL behaviour is unverified in this
+  validation cycle.** The owner accepted this gap on 2026-11-13. Validating
+  it on the dedicated Neon `itest-ci` branch is a separate future task that
+  needs explicit approval.
+- No Neon or shared database was contacted; no migration was applied.
+
+## 2026-11-12 — Content coverage: provenance audit, depth check, internal links
+
+- Audit (Objective 5 sources, dates, confidence): content-rule evidence
+  text is now per rule (`describeContentGap`; every content rule used to
+  read "No analysed page names both"); weak keyword mappings get the same
+  stale-crawl caveat as mapped ones (`staleCrawlCaveat`); Coverage topic
+  rows list the approved facts behind them with their source; content
+  tasks (`(CONTENT_`) are hidden from CLIENT members like business tasks
+  (`recommendationVisibility`): a permissions tightening (reversible) because
+  those tasks name the approved services and locations.
+- Depth: `CONTENT_SERVICE_NOT_DESCRIBED`: a service topic left `partial`
+  because its best page names the service only in its title, H1 or URL, not
+  in its main content. Thin pages stay with `TECH_THIN_CONTENT`; missing
+  topics stay with the existing gap rule. It resolves only when the topic
+  becomes covered.
+- Internal links (`business/links.ts`, `l1`): `CONTENT_INTERNAL_LINK_OPPORTUNITY`:
+  pages whose main content names a covered service but have no link at all
+  to its page (redirects followed, menus counted). Legal, noindex,
+  canonicalised and cut-link-list pages are excluded. Runs only on a complete,
+  fresh crawl. "Poorly connected" = linked from at most one other page and not
+  site-wide. Coverage page shows a new "Internal links to service pages"
+  section. No migration, no crawler change, no paid data, no effect on the
+  health score.
+- Tests: `src/lib/seo/content-depth.test.ts` (14, mutation-checked),
+  `tests/integration/content-depth.test.ts` (4: tasks via real syncs,
+  team vs client, resolved by a fixing crawl, adequate coverage, other
+  organization reads nothing). Local `upsitehealth-itest`: related suites
+  15/15. `npm run check` exit 0 (2453 passed). Guard hashes 0 mismatches.
+- Browser (isolated preview, desktop and 390 px): fresh site shows both
+  tasks, approved-fact sources and the links section; a 90-day-old crawl
+  shows the stale caveat and no links section; client: Coverage 404, no
+  content tasks. No horizontal overflow. Neon not contacted.
+
+## 2026-11-12 — Recommendations page: "What changed?" on returned fixes
+
+- `what-changed.ts` now builds the request itself (`whatChangedRequest`,
+  `whatChangedFor`): a verified fix that came back (`reappearance` with a
+  recorded verifying crawl), an SEO rule about one page value, the evidence
+  crawl that found it again, and the first affected page. The Overview's
+  `markWhatChanged` uses it (no change in behaviour); the Recommendations
+  page calls it once for its returned tasks (tenant-scoped; two queries,
+  only when something reappeared). The comparison rules are unchanged.
+- `RecommendationStateNote` takes `whatChanged` and shows it only inside
+  the "Reappeared" note, as one small line under a divider: "What changed
+  between the two crawls: … (a clue, not proof of the cause)". Status
+  actions, Reopen, history and permissions are untouched.
+- Tests: `recommendation-state-note.test.tsx` (+3: shown on a reappeared
+  task, never on other states, none without evidence),
+  `what-changed.test.ts` (+2: request carries the task's website, first
+  page and the two exact crawls; nothing for unsupported rules, other task
+  kinds or missing evidence), `tests/integration/what-changed.test.ts` (+1:
+  the page's own data path, two websites, each its own comparison). Local
+  `upsitehealth-itest`: related suites 12/12. `npm run check` exit 0 (2439
+  passed).
+- Browser (isolated preview, desktop and 390 px): a truncated title change,
+  a meta description that went to (none), and a returned fix without a
+  verifying page (no comparison); Reopen present; no horizontal overflow.
+  Neon not contacted.
+
+## 2026-11-12 — Overview: "What changed?" for verified fixes that came back
+
+- `src/lib/recommendations/what-changed.ts`: for a returned SEO-rule fix
+  whose rule is about one page value (title rules → `title`, meta
+  description rules → `metaDescription`, `TECH_CANONICAL_EXTERNAL` →
+  `canonicalUrl`; other rules: nothing), the value in the crawl that
+  verified the fix and in the crawl that found it again, on the task's
+  first affected URL. Stored crawl pages only; no request, table or schema
+  change.
+- Reliability rules (otherwise nothing is shown): the verifying crawl is
+  the one the accepted VERIFICATION_RECORDED event recorded (`crawlRunId`,
+  now returned by `reappearance` as `verifiedCrawlRunId`), the other is the
+  current evidence crawl; both belong to the website (tenant-scoped reads)
+  and were analysed exactly at the times the reappearance check used; in
+  each crawl exactly one page has the finding's URL (findings record the
+  crawl page's `url`) and it was parsed as HTML (`CRAWLED`, `h1Count` set),
+  so a null value means the page had none. A failed read shows nothing
+  (logged as `attention.what_changed_unavailable`).
+- Overview entries show "What changed between the two crawls: Page title:
+  “…” → “…” (a clue, not proof of the cause)"; values over 70 characters
+  are cut with "…", missing values read "(none)", unchanged values say
+  "unchanged".
+- Tests: `what-changed.test.ts` (10: rule mapping, changed/unchanged/none,
+  unrelated or missing or unparsed or duplicate pages, long values, other
+  website's or mistimed crawls, same crawl twice, failed read),
+  `reappearance.test.ts` (+1, recorded crawl id), new
+  `tests/integration/what-changed.test.ts` (3, real sync on local
+  `upsitehealth-itest`: changed title; missing or unrelated page gives no
+  comparison; two organizations see only their own values). Attention and
+  reopen suites 15/15. `npm run check` exit 0 (2434 passed).
+- Browser (isolated preview, desktop and 390 px): a long changed title
+  (truncated), a meta description that went to (none), and a returned fix
+  whose verifying crawl has no page (no comparison shown); no horizontal
+  overflow. Neon not contacted.
+
+## 2026-11-12 — Overview: one-click Reopen for verified fixes that came back
+
+- Entries in "Verified fixes that came back" carry `reopen: true` (set
+  nowhere else). For people who may change task status (the Recommendations
+  page's `can.editWebsites`), the Overview passes the existing
+  `setRecommendationStatusAction`, bound per task, and each such entry shows
+  a small secondary Reopen button (`src/components/attention-reopen.tsx`).
+  It submits exactly what the Recommendations page submits (`status`
+  PROPOSED, `from` COMPLETED), so membership and role, tenant scope, the
+  stale-page check, the Stage 2 Reopen guard and the append-only history row
+  all apply unchanged; no new status path, no schema change.
+- The button is disabled ("Reopening…") while its request runs. The result
+  goes to `AttentionNotices` above the list (the refresh that follows a
+  success removes the entry): success with an "Open task" link, the
+  server's refusal, or, if the request itself fails, a message that does
+  not claim nothing changed.
+- Tests: `attention-reopen.test.tsx` (5: exact submission, notice survives
+  the entry, refusal, failed request, pending blocks a second click),
+  `attention.test.ts` (+ Reopen only on returned fixes), new
+  `tests/integration/attention-reopen.test.ts` (4, real action on local
+  `upsitehealth-itest`: reopen succeeds, earlier events unchanged plus one
+  STATUS_CHANGED by the person, Overview moves it to open work; duplicate
+  submission refused with no new event; CLIENT refused; another
+  organization's task refused both ways). Neighbouring suites 43/43.
+  `npm run check` exit 0 (2423 passed, 1 expected fail, 252 skipped, 9 todo).
+- Browser (headless Chrome, isolated preview; desktop and 390 px mobile): a
+  CLIENT member sees the list but no Reopen; the owner's click showed
+  "Reopening…" (disabled), then "Reopened. “Title is too long” is back on
+  the to-do list." with Open task; the counts updated without a reload
+  (returned 2 → 1, high-priority 1 → 2); no horizontal overflow. Neon not
+  contacted.
+
+## 2026-11-12 — Overview: verified fixes that came back, across the portfolio
+
+- **New attention category `reappeared`** ("Verified fixes that came back",
+  `src/lib/insights/attention.ts`), right after site health: completed tasks
+  still detected whose history shows a verification D1 accepts
+  (`reappearance`). They leave "Reported done, still detected", so each
+  task is counted once; a completion never verified stays there. Danger
+  tone; urgency 0 for critical/high tasks, else 1. Each entry links to the
+  task on the website's Recommendations page and carries one line of
+  detail: priority, verified-fixed date, found-again date, first affected
+  URL (+ how many more). The website's client is shown beside its name.
+- **Loader:** `loadPortfolioAttention` computes affected URLs for
+  completed, still-detected tasks only, then `markReappeared` reads their
+  STATUS_CHANGED / VERIFICATION_RECORDED events in one tenant-scoped query
+  for the whole portfolio. No history table, or a failed read (logged as
+  `attention.reappeared_unavailable`): nothing is marked, the tasks stay
+  "still detected" (never a false Reappeared). No schema change.
+- **Fixed:** entries for completed tasks still detected linked to the
+  "Done or dismissed" tab, but the Recommendations page lists them under To
+  do; they now link to To do (unit and integration expectations updated).
+- Tests: `attention.test.ts` +4 (own category with dates and URL; unverified
+  never reappeared; counted once; portfolio counts, filter and client), new
+  `tests/integration/attention-reappeared.test.ts` (2: several websites with
+  a returned verified fix, an unverified completion and open work; another
+  organization's returned fix never read). Local `upsitehealth-itest`:
+  attention, attention-reappeared, reappearance and crawler suites 20/20.
+  `npm run check` exit 0 (2418 passed, 1 expected fail, 248 skipped, 9 todo).
+- Browser (headless Chrome, isolated preview as on 2026-11-12, desktop
+  1366 px and mobile 390 px; seeded: three websites with two clients, a
+  second organization with its own returned fix, a third with nothing):
+  ranking, chip counts (2 tasks · 2 websites), category and client filters,
+  entry details, client labels, empty state; nothing of the other
+  organization shown; no horizontal overflow; the entry link lands on the
+  task's card. Wording made singular for one fix. Neon not contacted.
+
+## 2026-11-12 — Remediation workflow: fixes that came back, recheck from the task list
+
+- **Reappeared fixes.** A completed task that a recheck had verified fixed
+  (D1's `verifiedForRecurrence`) and that later evidence finds again is now
+  shown as **Reappeared** instead of the plain "Still detected" a fix that
+  never worked gets: `src/lib/recommendations/reappearance.ts` (pure, reuses
+  `verifiedForRecurrence` and `detectedAfterVerification`; display only, no
+  writes; the D1 follow-up task stays unimplemented). Recommendations page:
+  a "fixed problems came back" callout linking to each task, a Reappeared
+  badge and note (`src/components/recommendation-state-note.tsx`, moved out
+  of the page). Progress and report: `taskActivity` reports `reappeared`
+  per item and in total (one extra history query, only for still-detected
+  tasks and only when `recommendation_events` exists); the report lists
+  them apart from "not confirmed yet"; the activity summary shows the count
+  when it is above 0.
+- **Recheck from the task list.** `CrawlWaitNotice` takes a `startCrawl`
+  control; the Recommendations and SEO plan pages pass "Start a recheck
+  crawl" (MEMBER and above, the existing `startCrawlAction`) where tasks
+  wait for a crawl the website will not start itself.
+- **Needs task history with Stage 2 identity:** the sync records
+  `rowUpdatedAt` in VERIFICATION_RECORDED only when M1 is present, so on a
+  database without M1 (the shared database until reconciliation stage 8)
+  no task shows as reappeared; they keep "Still detected". No schema change.
+- Run: `npm run check` exit 0 (2414 passed, 1 expected fail, 244 skipped,
+  9 todo); new tests: `reappearance.test.ts` (8),
+  `recommendation-state-note.test.tsx` (6), `charts.test.tsx` (+1).
+- **Local validation (2026-11-12, owner-approved, `upsitehealth-itest`
+  only, localhost:51218, PGlite 17.5, marker `integration-tests`):** the
+  stale schema was refreshed with `prisma db push --accept-data-loss`
+  (additive only; the warning was the new empty `recurrenceOfId` unique
+  index; 308 leftover test users kept and backed up to the session
+  scratchpad), then the hand-written sections of migrations 4 and 5
+  (checks, triggers, RLS) were applied; drift 0. Neon was not contacted.
+- **Integration:** new `tests/integration/reappearance.test.ts` (2):
+  verified by a clean crawl then found again → Reappeared with both dates
+  and `taskActivity.reappeared` 1; marked done without verification → never
+  Reappeared. Full suite: 279 passed; 6 failed only in
+  `analysis-recovery` and `crawl-reliability` (a different subset each run,
+  PGlite protocol errors 08P01/34000 under concurrent workers; no crawler
+  or analysis code changed).
+- **Browser (headless Chrome, isolated `next dev` on :3100 with its own
+  build folder and a preview-only one-connection `pg` shim for PGlite;
+  desktop 1366 px and mobile 390 px):** Recommendations shows the "came
+  back" callout, the Reappeared badge and note with both dates, plain
+  "Still detected" for an unverified completion, the waiting notice with
+  "Start a recheck crawl"; Done tab, SEO plan notice, empty state and 404
+  render; no horizontal overflow. Clicking the button showed "Crawl
+  started." and created one crawl (which failed: the demo domain is
+  `.example`). Fixed while checking: on mobile the shared `Callout`
+  squeezed its text into a one-word column beside actions (text now has a
+  minimum basis, actions wrap below), and the callout wording is singular
+  for one item. Report and progress periods end at today's UTC midnight,
+  so today's seeded completions do not appear there yet (by design; the
+  data path is covered by the integration test).
+
+## 2026-11-01 — Closeout and handoff (docs only)
+
+- `docs/TOMORROW-STARTING-POINT.md` rewritten at the top: section "P1
+  Finding History — Ready for Database Validation" (status, migration 5
+  hash `24c220bd75d2fb37923f510bc7a77850767fba6a9909c0d74c1e1642466d8f26`,
+  the eight test scenarios, the approval sequence, limitations), refreshed
+  repository and verification facts, and a fresh-conversation prompt.
+- Runbook approvals split (A baseline and pre-flight; B migration; C
+  post-checks; D1 finding-history run; D2 each lifecycle file; F final
+  comparison; E rollback).
+- **Date correction:** entries below labelled 2026-11-01 and 2026-11-02
+  were written between 31 October ~14:50 and 1 November ~00:45 (file
+  timestamps); most of that work was on 31 October. Labels left as written.
+- No database contact, SQL, migration, test run, code or schema change.
+
+## 2026-11-02 — Finding-history integration tests prepared (not run)
+
+New `tests/integration/finding-history.test.ts`: the runbook's eight cases
+through the real findings and recommendation syncs, plus atomic rollback
+(unique key), tenant isolation and duplicate refusal. Opt-in
+`UPSITEHEALTH_P1_HISTORY=yes`; refuses unless the server is `itest-ci` and
+migration 5 is applied; expected refusals run inside `BEGIN … ROLLBACK`.
+Skips offline (8 skipped). Migration 5 still not applied; no database
+contact.
+
+## 2026-11-02 — Phase A protected from migration 5; P1 audited; runbook (docs only)
+
+- **Phase A:** `deploy` (`prisma migrate deploy`) applies every pending
+  migration and its manifest hash covers every directory, so it would apply
+  4 and 5. Phase A now uses the existing hash-verified `sql` (reviewed copy
+  of 4, `d336…`) and `resolve-applied 4` (`0a8d…`); no tooling, allowlist or
+  migration change. Docs: `rehearsal-target.md` (plans A and B),
+  `TOMORROW-STARTING-POINT.md` (sections 0, 9, 13). Drift expectations now
+  include migration 5's objects until 5 is applied.
+- **P1 audit:** schema diff 64 additions, 0 deletions; migration 5's
+  generated section equals a fresh schema-to-schema diff; foreign keys,
+  triggers (pinned search path, no security definer), checks, unique key and
+  RLS as designed; callers pass the finalised run, so `crawlStatus` is the
+  final status. No issue requiring a code change.
+- **Runbook:** `docs/operations/p1-migration-runbook.md` (not executed).
+- No database contact, SQL, migration, schema or code change.
+
+## 2026-11-02 — P1 implemented (code, schema, migration 5); not applied
+
+The corrected probe passed on `itest-ci` (owner, 24/24); PLAN chosen.
+
+- **Schema:** `SeoFindingEvent` + two enums (64 lines added). **Migration**
+  `5_finding_resolution_events`: generated offline (`migrate diff`, schema
+  to schema, placeholder database URL) plus the reviewed hand-written
+  section; creates objects only. **Not applied anywhere.**
+- **Code:** findings sync locks reopened and still-OPEN findings and writes
+  REOPENED/RESOLVED events (reason, closing crawl and status, versions) in
+  its transaction; without the table, the earlier statements run unchanged.
+  Recommendations prefer recorded reasons, fall back for legacy findings,
+  and add `closedBy` from recorded closing crawls only.
+  `SeoFindingEvent` registered as tenant data.
+- **Tooling:** readiness knows migration 5's objects (its test checks them
+  against the SQL); two migration-list expectations extended.
+- **Rehearsal impact:** Phase A's `deploy` would now apply 4 and 5 (noted in
+  `docs/TOMORROW-STARTING-POINT.md`); no rehearsal file changed.
+- **Not run:** integration tests (need migration 5 on `itest-ci`, approval).
+
+## 2026-11-02 — P1 probe failures diagnosed; probe corrected (not rerun)
+
+First probe run (owner, `itest-ci`): 21 passed, 3 failed. Plan: the
+RESTRICT expectation was wrong (RESTRICT also lets the website cascade
+through; corrected to assert that, plus 23001 on a direct delete). Deferred:
+TRUNCATE and ALTER TABLE refused because the fixture's deferred checks were
+never flushed in the uncommitted transaction (probe flaw; now checked once
+after the fixture). Plan variant recommended. New open point: `ON UPDATE
+CASCADE` on the event's organization/website references conflicts with the
+no-update guard. No database contact; probe not rerun.
+
+## 2026-11-02 — P1 decisions final; PostgreSQL safety probe prepared (not run)
+
+- P1 plan: NOT_APPLICABLE stands unless the rule fires again;
+  FIX_CONFIRMED only with positive evidence; separate technical, topic and
+  coverage versions with a bump rule (golden-hash pinning proposed); crawl
+  runs, findings and events kept for the website's lifetime; 90-day
+  crawl-page retention proposed with exemptions (baseline, comparison,
+  integration history, last-seen crawls of open site findings).
+- Unproven: whether non-deferrable NO ACTION survives a website cascade
+  (nested cascade queries). The new opt-in probe
+  `tests/integration/p1-postgres-probe.test.ts` (24 cases, skipped offline;
+  needs `UPSITEHEALTH_P1_PROBE=yes` and approval) runs both variants in one
+  rolled-back transaction in temporary schemas.
+- No database contact, migration, schema or application change.
+
+## 2026-11-02 — P1 design finalised (docs only)
+
+`docs/specs/finding-resolution-provenance.md` revised: events immutable (no
+update, no delete except with their website or organization, no truncate);
+`crawlRunId` NOT NULL, the crawl that actually closed or reopened the
+finding; finding and crawl-run references ON DELETE NO ACTION (cascade-safe
+for website/organization deletion, refuses partial deletion), replacing the
+draft's SET NULL; unique `(seoFindingId, crawlRunId, type)`; NOT_APPLICABLE
+reopened only by renewed detection; ignore/unignore deferred; rule-set
+version stored as a label only. The PostgreSQL cascade behaviours it relies
+on must be proven on `itest-ci` before use. No schema, migration, code,
+test or database change.
+
+## 2026-11-02 — Lifecycle policies decided; P1 provenance planned (docs only)
+
+- `docs/specs/recommendation-lifecycle.md`: the owner's five policies
+  (no-longer-applies held for a person; partial crawls close only rechecked
+  pages and never complete tasks; recurrence after a verified fix to be
+  distinguished; pages leaving scope are unobserved, not fixed; dismissed
+  identity kept). Four are implemented; the recurrence display is not.
+- New plan `docs/specs/finding-resolution-provenance.md` (**P1**, named so to
+  avoid confusion with rehearsal Phase A): append-only `seo_finding_events`
+  (RESOLVED with reason, closing crawl and its status; REOPENED), migration
+  `5_finding_resolution_events` (SQL drafted in the plan, not created), no
+  backfill (legacy = no matching event). Must follow rehearsal Phase A.
+- No schema, migration, code, test or database change.
+
+## 2026-11-02 — Lifecycle tests run; specification audited (docs only)
+
+- `tests/integration/recommendation-lifecycle.test.ts` was run on `itest-ci`
+  by the owner: 3 passed, 0 failed (133 s). A read-only check afterwards
+  found no remaining test records; row counts, relations, columns, marker and
+  migrations matched the last snapshot (taken after the previous run; no
+  snapshot was taken immediately before this one).
+- `docs/specs/recommendation-lifecycle.md` rewritten from an audit of the
+  code: persisted versus derived state, transition table, verification
+  rules, invariants with their tests, limitations, roadmap. Corrections to
+  the earlier text: page findings **are** resolved by a partial crawl that
+  re-analysed the page (the task is still held); "not applicable" and
+  "unknown" apply to thin/placeholder and duplicate rules only; there is no
+  database constraint against duplicate tasks; recurrence after a verified
+  fix is displayed like a failed fix. No code or tests changed.
+
+## 2026-11-02 — Lifecycle integration gaps: tests prepared, not run
+
+**No database connection.** New `tests/integration/recommendation-lifecycle.test.ts`
+(3 tests, skipped offline): A "no longer applies" through the real findings
+sync and recommendation sync, A control (genuine fix, `fix-confirmed`
+evidence), B older completed PageSpeed task beside an active one (second
+row inserted as fixture data: the creation API never makes it). Offline
+mirrors in `lifecycle.test.ts` (35 passing). Finding: for SEO rules the
+stale-row state is already held by open findings; the `planSync` guard
+matters for PageSpeed and AI Search. `npm run check` exit 0 (1,807 passed).
+Awaiting approval to run the new file on `itest-ci`.
+
+## 2026-11-02 — Lifecycle integration tests on `itest-ci` (approved, only target)
+
+- **Identity, proven read-only before and after** (server-reported):
+  endpoint `ep-long-surf-b4hm6pyi`, branch `br-noisy-glade-b4rjvu65`,
+  database `upsitehealth_test`, role `upsitehealth_tester`; bound marker
+  present; repository guard accepted the URL (direct host, `sslmode` only);
+  settings file `0600` in a `0700` folder.
+- **Command:** `node --env-file="$HOME/.config/upsitehealth/neon-itest.env"
+node_modules/vitest/vitest.mjs run tests/integration/recommendation-events.test.ts
+tests/integration/stage2-decisions.test.ts`
+- **Result:** 2 files passed; 26 passed, 1 expected fail (D1 follow-up
+  creation, approved but not implemented), 3 to-do, 0 failed; 715 s.
+  Includes test "4, 10" with the new `outcome: "fix-confirmed"` evidence.
+- **Isolation:** row counts of 15 tables, the marker, migration history
+  (0–4 finished) and schema/column digests identical before and after. 196
+  users and 196 sessions without organizations predate the run (historical
+  leftovers; not touched).
+- No other database, no migration or schema change, no code change, no Git
+  operation. Other integration files that call sync were not run.
+
+## 2026-11-02 — Recommendation lifecycle audit and fixes (offline)
+
+**No schema, migration, database contact or Git operation.** Design and
+audit: `docs/specs/recommendation-lifecycle.md`.
+
+- **Fixed:**
+  - a task whose findings disappeared because the rule stopped applying
+    (now noindex for indexable-only rules, duplicates now noindex or
+    canonicalised, page now redirects) or because the rule was retired was
+    completed and verified as fixed; it is now held as "no longer applies"
+    (derived from the latest crawl, `recommendations/lifecycle.ts`), never
+    completed or verified automatically;
+  - an older COMPLETED row sharing an identity with an active row was
+    verified while the problem was still detected (`planSync`);
+  - a DISMISSED task detected again now says so ("Dismissed · still
+    detected"); it stays dismissed;
+  - D1 recurrence eligibility requires a confirmed-fix outcome;
+  - a resolution whose page the latest crawl no longer analyses is
+    "unknown" and held as unverified, never fixed.
+- SEO verifications now record `outcome: "fix-confirmed"` (additive).
+- Plan and Recommendations pages show the new states.
+- **Tests:** `src/lib/recommendations/lifecycle.test.ts` (32), scenarios
+  A–F; two expectations updated (dismissed `detected`, D1 evidence
+  `outcome`).
+- **Not run:** integration tests (need `itest-ci`, separate approval).
+- **Needs schema** (proposal in the spec): persisted finding resolution
+  reason and resolving crawl, finding event history, migration 2 on the
+  shared database.
+
+## 2026-11-01 (late) — UI refinement pass (presentation only)
+
+`env -u TEST_DATABASE_URL npm run check`: exit 0, 1,772 passed, 1 expected
+fail, 209 skipped. No database, logic or Git operation.
+
+- Recommendations: priority shown once, in the group heading ("High
+  priority · Do next"); no per-card priority badge (every view is grouped
+  by priority). Key facts as labelled pairs; larger titles; actions in three
+  weights (main step solid, other steps outlined, Dismiss a quiet separated
+  text button).
+- Organic Growth: two-column task rows on wide screens (content | status,
+  verification method, check time); 15 px titles; stage headers with a
+  progress meter; stage navigator with per-stage meters and a done mark.
+- Overview: larger score and label, Next steps marked with a top rule,
+  shorter aligned card descriptions, Workspaces as a card.
+- Not browser-verified by Claude (no browser tools in the session).
+
+## 2026-11-01 (evening) — UI/UX sprint: design tokens, overview, growth, recommendations (offline)
+
+**Presentation only:** no schema, migration, query, rule, score or
+permission change; no sign-in or database contact. `env -u
+TEST_DATABASE_URL npm run check`: 1,768 passed, 1 expected fail, 209
+skipped, exit 0.
+
+- **Tokens** (`globals.css`): green-grey neutrals, deep green brand
+  (`#123B36`), gold brand accent (`#D5A34A`, new `gold-*`, never a status),
+  `accent` retuned to slate-blue so it is not read as a warning, new `tint`
+  replacing every `slate-*` utility; flatter cards (`rounded-lg`, lighter
+  shadow). Geist and Geist Mono self-hosted by `next/font` (CSP
+  `font-src 'self'` unaffected).
+- **Primitives:** `PageHeader` (actions stack on mobile), `Card`, `Badge`
+  (+`gold` tone), buttons, inputs, `FilterTabs` (solid active state), gold
+  active-tab indicator; new `SectionHeader`, `TextLink`, `UrlText` (mono,
+  wraps anywhere), `ui/disclosure.tsx` (`Disclosure`, `Chevron`), status
+  icons (`CircleIcon`, `HalfCircleIcon`, `LockIcon`, `UserCheckIcon`,
+  `MinusCircleIcon`). Website navigation grouped (work · findings · setup),
+  same links and permission rule.
+- **Website overview:** summary row (health score, Organic Growth, next
+  steps), full-width health breakdown, one monitoring strip with an icon per
+  state, SEO and issues side by side, compact performance, workspace links
+  last. Same data and actions.
+- **Organic Growth Starter:** overview buckets (verified by checks, owner
+  confirmed, needs attention, waiting on the owner, to do, blocked) with a
+  stacked bar; stage navigator; stage sections; task rows with a distinct
+  icon and label per status and the verification method; details behind one
+  disclosure.
+- **Recommendations / SEO findings:** compact card summary (priority,
+  status, affected pages, confidence, effort, benefit, what to do, recheck
+  state) with evidence, how-to-fix, verification and history behind one
+  disclosure; actions in a footer. Path-first mono URLs on findings.
+- **Accessibility:** next-step urgency shown as text, not only icon colour;
+  external links announce "(opens in a new tab)" with correct spacing.
+- **Not verified in a browser.** The running dev server (started 31 Oct)
+  serves components live but still serves its pre-sprint stylesheet; the
+  new CSS compiles correctly with the project's Tailwind. Restart `npm run
+dev` before reviewing.
+
+## 2026-11-01 (later) — Sitemap accessibility rule, lifecycle fixes, growth wording (offline)
+
+**No database contact, sign-in, migration or Git operation.** Migration
+files and rehearsal hashes unchanged.
+
+- **New rule `TECH_SITEMAP_UNREACHABLE`** (k4; MEDIUM, confidence medium):
+  a sitemap listed in robots.txt or an index that the crawl could not read.
+  Each file is classified: 404/410 not found, 401/403 access refused,
+  429 rate limited, 5xx server error, no response, or 200 that is not
+  sitemap XML. One finding per site (stable fingerprint). Raised and
+  resolved only from crawls that recorded responses; resolution also needs
+  a completed crawl that read robots.txt. Catalogue, playbook, baseline
+  category, golden `rule-outputs.k4.json` (k3 kept).
+- **Crawler:** a 200 response that is not `<urlset>`/`<sitemapindex>` is no
+  longer counted as a read (empty) sitemap. It previously could make
+  recheck close an open "missing sitemap" finding as fixed.
+- **Deduplication:** the integration probe's sitemap MISSING, BROKEN and
+  FILE_ERRORS problems stay visible but are no longer separate tasks once
+  the latest crawl records sitemap responses (the SEO findings own them).
+- **Lifecycle bugs fixed** (`recommendations/generate.ts`):
+  - an integration task whose problem was still detected, but no longer
+    drafted, was completed by sync (`heldReason` returned null); now held;
+  - `recommendationState` called such a task "verified"; now
+    "awaiting-recheck", or "still-detected" if completed.
+- **Audited, not changed:** page findings stay open when a page is
+  skipped, fails or errors; site findings need a COMPLETED crawl; open
+  findings below the threshold block completion; a partial crawl never
+  completes a task (tested). **Known limitation:** when a rule's scope
+  narrows (for example duplicates ignoring noindex/canonicalised pages),
+  the finding resolves exactly as if fixed; telling the two apart needs a
+  resolution reason, which the schema does not hold. Finding evidence is
+  overwritten on refresh; crawl pages per run remain the history.
+- **Organic Growth Starter:** sitemap task falls back to the crawl's
+  reading when no integration check has run; Search Console, GA4 and
+  owner-confirmed wording says what a token, tag or approved fact does not
+  prove; blocked tasks say what unblocks them; Business Profile review
+  text lists Google's ineligible cases. Checklist extracted to
+  `components/growth-checklist.tsx` (expand hint, wrapping long URLs,
+  "and N more" evidence) with jsdom render tests.
+- **Profile proposal:** industry and target market need a migration
+  (`BusinessFactKind` is an enum); see `docs/operations/organic-growth-starter.md`.
+- **Browser verification:** not done (no sign-in); plan in the same doc.
+
+## 2026-11-01 — Recommendation accuracy fixes; Organic Growth Starter v1 (offline)
+
+**No database contact and no migration. The rehearsal allowlist is still
+empty.** `env -u TEST_DATABASE_URL npm run check`: 1,730 passed, 1 expected
+fail, 209 skipped, 9 to-do, exit 0.
+
+- **Detection accuracy** (`src/lib/seo/`, tests in `accuracy.test.ts`):
+  - `TECH_SITEMAP_MISSING` only when conclusive: robots.txt read and lists
+    none, and `/sitemap.xml` answered 404/410 (`seo/sitemap.ts`). A listed
+    but unreadable sitemap, a 5xx, 403 or timeout is no longer "missing".
+    New crawls record each unread sitemap's status and the probe
+    (`DiscoveryEvidence.fetches`, `.conventional`). Crawls without that
+    record keep the old reading, so stored findings do not flip.
+  - Recheck: an open "missing sitemap" is not resolved by an inconclusive
+    crawl (new gap `sitemap-inconclusive`).
+  - Duplicate titles/descriptions ignore noindex pages and pages whose
+    canonical names another URL. **Data effect:** the next crawl resolves
+    duplicate findings that only existed because of such pages.
+  - `TECH_HTTP_ERROR` evidence adds `errorClass` (404/410 not found, 401/403
+    possibly crawler-only, 429/5xx possibly temporary), `foundVia` and
+    `linkedFrom`; `TECH_NOINDEX` adds `listedInSitemap`. Shown on the SEO
+    page. Finding text (stored, identity-bearing) is unchanged; golden file
+    updated for the one evidence key.
+  - Considered and rejected: skipping snippet rules on noindex pages; it
+    would auto-resolve open findings as if fixed.
+- **Organic Growth Starter** (`docs/operations/organic-growth-starter.md`):
+  page `/websites/<id>/growth`, nav link, overview card. Profile from
+  approved business facts (types `saas`, `national-service`, `other`
+  added). Owner-mark persistence is designed but not migrated.
+- **Not verified in a browser:** every page needs a login, and signing in
+  writes a session row to the shared database. Routes compile (dev server
+  redirects unauthenticated requests to `/login`).
+
+## 2026-10-31 — `manual-backup` connection details checked offline; end of day
+
+**No database contact, no settings file, the allowlist is still empty, no
+code changed.** Handoff for the next session:
+`docs/TOMORROW-STARTING-POINT.md`.
+
+- **Owner-supplied details (no password):**
+  - endpoint `ep-empty-dream-b4t4xm17`
+    (`ep-empty-dream-b4t4xm17.c-6.us-east-2.aws.neon.tech`);
+  - database `upsitehealth_test`, user `upsitehealth_tester`;
+  - `sslmode=require&channel_binding=require`.
+  - The branch ID `br-aged-boat-b437p0gm` is still from documentation only.
+- **Checked offline** (pure functions, a placeholder password in memory, an
+  in-memory list):
+  - the URL passes for read and write with `readRole = writeRole =
+upsitehealth_tester`;
+  - `channel_binding=require` is accepted and kept, including in the
+    read-only URL; `sslmode=require` stays mandatory;
+  - the repository's `.env*` files do not name the endpoint;
+  - with the entry present, the endpoint is refused as `test` and as
+    `app`, and a Prisma write without an attestation is refused;
+  - the role name does not match a schema name, so the 27 October
+    `search_path` trap does not apply.
+- **Limit:** `channel_binding` is enforced only on the Prisma engine's
+  connections (drift, `status`, `deploy`, `resolve`, `db execute`).
+  node-postgres, used by readiness, definitions and the wrapper's identity
+  proofs, ignores it in the URL.
+- **Still to do in the Neon console:**
+  - verify the branch name, ID and parent;
+  - verify the endpoint (read-write) and the database and role;
+  - reset the inherited password;
+  - decide on a read-only role;
+  - establish the restore options.
+- **Repository at end of day:** `main` at `26e71fc`, 19 modified and 25
+  untracked, nothing staged. That is the 34 checkpoint paths, all
+  preserved, plus 9 from the rehearsal target and the audit, plus the
+  handoff file.
+  `~/.config/upsitehealth/` is unchanged. A scan found no credentials in
+  repository files, only test fixtures and the local `prisma dev`
+  placeholder.
+
+## 2026-10-31 — Migration safety audit before any Neon access (offline)
+
+**No database contact. The rehearsal allowlist is still empty. Migration
+files are unchanged.**
+
+- **Confirmed** (SQL, installed CLI and engine; pinned by the new
+  `tests/migration-prerequisites.test.ts`, 11 tests):
+  - every foreign key in 0–4 has an exactly matching unique key created
+    before it. Migration 4's composite keys rest on migration 2's
+    `recommendations_id_websiteId_organizationId_key`; the primary key on
+    `id` alone would not do;
+  - 2 and 3 are independent;
+  - 2 and 4 touch no existing row: the new columns are nullable without
+    defaults, and the new constraints hold for NULLs;
+  - no backfill is needed;
+  - the CLI's migrate and `db execute` use the native schema engine
+    (`simple_query`), never the pg adapter, whose `executeScript` splits on
+    `;`.
+- **Unproven, so planned around:**
+  - whether each migration runs all-or-nothing;
+  - whether `deploy` accepts 2 pending after 3 is recorded;
+  - whether the engine pins `search_path` on the shared branch, where the
+    role and a schema are both `upsitehealth_test`.
+- **Corrections:**
+  - the wrapper's SQL screen refused a foreign key's `ON DELETE …`; it now
+    refuses `DELETE FROM` (tests both ways);
+  - new reviewed artifacts `prisma/rehearsal/2_recommendation_events.sql`
+    and `4_recommendation_identity.sql`: each migration byte for byte,
+    wrapped in `BEGIN; SET LOCAL search_path = public; … COMMIT;`, kept
+    identical by a test.
+- **Plans** (`docs/operations/rehearsal-target.md`, "Migration plans"):
+  - A, `manual-backup`: marker, then `deploy` (only 4);
+  - B, a child branch of `integration-tests`: the ordered sequence, which
+    resolves 0 and 1, runs the 2 copy, resolves 2 and 3, then runs the 4
+    copy and resolves 4;
+  - C, the shared database: the same as B after B passes, which needs a
+    guard decision first.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,681 passed, 1
+  expected fail, 209 skipped and 9 to-do.
+
+## 2026-10-31 — Guarded `rehearsal` target for `manual-backup` (offline; no database contact)
+
+**New, uncommitted, on `main` at `26e71fc`. No database was connected. The
+allowlist ships empty, so every rehearsal use is refused until the owner
+verifies the branch.**
+
+- **What changed:** see `docs/operations/rehearsal-target.md`.
+  - **`prisma/safety.ts`:**
+    - new: `NEON_REHEARSAL_TARGETS` (endpoint, branch, database, read
+      role, write role; empty), `rehearsalListProblem`,
+      `rehearsalUrlProblem`, `REHEARSAL_MARKER`, attestation reading and
+      `rehearsalWriteProblem`;
+    - the test-host check refuses rehearsal endpoints;
+    - the Prisma write guard routes rehearsal URLs to the attestation
+      check (a variable alone is refused) and allows only `migrate
+deploy`, `migrate resolve` and `db execute`;
+    - Studio is refused there.
+  - **`scripts/crawl-worker/database.ts`:**
+    - new: `DatabaseTarget` (the worker's `WorkerTarget` is unchanged),
+      `TARGET_SETTINGS_FILES`, `chooseRehearsalDatabase`,
+      `chooseDatabase`, `rehearsalServerProblem`, `rehearsalMarkerState`;
+    - `readSettings` requires `0600` for rehearsal too.
+  - **`scripts/db-readiness/run.ts`:** `proveTarget`, the one server proof
+    now shared by readiness, scoped drift and definitions. The `test` and
+    `app` query sequence is unchanged.
+  - **Diagnostics:** readiness, drift and definitions accept
+    `--target=rehearsal` (read URL, marker required; no `--settings`). The
+    drift child also strips rehearsal variables.
+  - **New wrapper:** `scripts/db-rehearsal.ts` and `scripts/db-rehearsal/run.ts`
+    (`npm run db:rehearsal`).
+    - Read-only: `preflight` (bootstrap, no marker), `preflight --write`,
+      `status`.
+    - Writes: `create-marker`, `deploy`, `resolve-applied`, `sql`. Each
+      needs the exact branch ID and the approved SHA-256, a fresh live
+      proof, an attestation (Prisma commands) and a check afterwards.
+  - **Smaller changes:**
+    - the comparison's inventory names the rehearsal marker schema;
+    - three existing test files call the new chooser, and two pinned
+      texts were updated;
+    - `package.json` has one script;
+    - docs: README, testing, readiness, fingerprint.
+- **Tests:** `tests/db-rehearsal.test.ts`, 125 tests on a scripted server,
+  with nothing connecting. With the regressions (readiness, drift,
+  definitions, Prisma safety, worker, test guard): 451 passed.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,666 passed, 1
+  expected fail, 209 skipped and 9 to-do (1,538 before; 125 new rehearsal
+  tests; 3 more from the readiness static check, which now covers the new
+  marker queries).
+- **Run end to end:** refusal paths only. `db:rehearsal -- preflight` and
+  `reset`, and `db:readiness`/`db:drift:scoped` with `--target=rehearsal`,
+  were all refused before any connection (no settings file).
+- **Migration analysis (offline):** migrations 2 and 4 are additive. They
+  change no existing rows and need no backfill. 4 depends on 2. The shared
+  database needs baselining (resolve 0, 1 and 3) before any deploy, and
+  the order must be rehearsed on a child branch of `integration-tests`,
+  not on `manual-backup`. Writes to the shared database remain impossible
+  under the current guards.
+- **Not done:** no identity verification, no settings file, no allowlist
+  entry, no marker, no migration on any database.
+
+## 2026-10-31 — `manual-backup` assessed as a rehearsal branch (no database contact)
+
+**No code, configuration or database was touched.**
+
+- **Identity:** known from `STAGE2-HANDOFF.md` only, not verified live.
+  - Branch `br-aged-boat-b437p0gm`, endpoint `ep-empty-dream-b4t4xm17`.
+  - Created from `itest-ci` before M1, with history 0–3 and empty.
+- **Guards:** checked offline, with a placeholder URL in pure functions.
+  - Refused for `--target=app`, and for `--target=test` even with the host
+    approved.
+  - Refused for `migrate deploy` and `migrate resolve`.
+  - Only read-only Prisma commands would pass, through an unapproved URL.
+- **Value for rehearsal:** its history 0–3 includes migration 2, so only 4
+  is pending, and 4 on that exact pre-M1 state already succeeded on
+  `itest-ci`.
+  - It cannot rehearse 2, baselining, the shared database's
+    3-without-2 history, or real data.
+  - Migration 4 depends on 2: the enum values and the unique index on
+    `recommendations`.
+  - 2 and 3 are independent.
+- **Recovery:** it is `itest-ci`'s untested recovery point. No backup of it
+  is documented.
+- **Prerequisite:** any live use needs an approved guarded target for it.
+- Details: `docs/operations/environment-readiness.md`, "`manual-backup` as
+  a rehearsal branch".
+
+## 2026-10-31 — Neon environment inventory (read-only)
+
+**No code or configuration changed.** The only database contact was one
+`db:readiness` run each on `itest-ci` and the shared database.
+
+- **Configuration (sanitised, values not printed):**
+  - The active `.env` names only the shared database
+    (`ep-dark-rain-b4ve04n3`). Its commented lines name Supabase, a local
+    database and Neon `ep-square-mud-b4ito98o` (production list).
+  - `neon-itest.env` names `itest-ci`.
+  - `neon-test.sh` names the shared database, and still stores its
+    password.
+  - `env.before-2026-10-25` shows the app once used `ep-long-surf` with
+    database `neondb`.
+  - **No file names a third Neon branch.**
+- **Third branch, documented only:** `manual-backup`
+  (`br-aged-boat-b437p0gm`, endpoint `ep-empty-dream-b4t4xm17`), created from
+  `itest-ci` before M1 as its recovery point (`STAGE2-HANDOFF.md`).
+  - It is on no allowlist and in no settings file, so no existing guarded
+    tool can reach it. It was not accessed.
+  - A second owner backup branch, created before the 27 October hand
+    migration on the shared database, has no recorded identity.
+- **Live runs:**
+  - `itest-ci` (20:18 UTC) and the shared database (20:19 UTC) both
+    exited 0.
+  - Each is identical to that database's earlier run today, row counts
+    included.
+- **Rehearsal verdict:** `manual-backup` is not suitable as identified. It
+  is a copy of `itest-ci` (history 0–3 recorded, empty), not of the shared
+  database's state, and it is `itest-ci`'s only recovery point. A new
+  branch of `integration-tests` is recommended instead, subject to
+  separate approvals.
+
+## 2026-10-31 — Definitions fingerprints compared offline: shared against `itest-ci`
+
+**No code changed, and no database was connected.** Two local files were
+read.
+
+- **Inputs:** both validated, with SHA-256 equal to the recorded values
+  (`itest-ci` `aa97fd73…5e9fbbcb`, shared `53b6ac28…cbf81a`) before and
+  after.
+- **Command:** `npm run db:definitions:compare` gave `different`, exit 2.
+  - All 10 categories were compared.
+  - 0 EXTRA and 0 DIFFERENT.
+  - 67 MISSING: 37 constraints, 14 indexes, 3 triggers, 3 functions,
+    3 row-security entries, 3 relations, 4 types.
+- **Attribution (migration SQL):** migration 2 accounts for 20 objects,
+  migration 4 for 38, and `_prisma_migrations` for 9. Nothing is
+  unexplained.
+- **Migration 1:** its CHECK definitions, RLS and indexes match exactly.
+- **`upsitehealth_test` schema:** matches on both sides. On the shared
+  database it is the old purpose-only marker recorded on 2026-10-25;
+  its contents were not re-verified.
+- Details: `docs/operations/database-definitions-fingerprint.md`.
+
+## 2026-10-31 — Definitions fingerprint collected from the shared database (one approved run)
+
+**No code changed in this step.** The only database contact was one
+read-only collection on the shared database.
+
+- **Preflight:**
+  - offline target check with the CLI's own functions, with decoy
+    production, `itest-ci` and Supabase URLs exported in the shell. `.env`
+    `DATABASE_URL` resolved to `ep-dark-rain-b4ve04n3` (direct),
+    `upsitehealth_test`, `upsitehealth_test`, on the shared allowlist, read-only
+    option applied;
+  - the output path was new;
+  - definitions, readiness and drift tests: 191 passed;
+  - network: DNS 3/3, HTTPS 9/9.
+- **Run:** `npm run db:definitions -- --target=app
+--out=$HOME/UpSiteHealth-backups/definitions-fingerprint-shared-2026-10-31.json`,
+  once at 19:51 UTC on 30 October, with shell database variables unset.
+  - Exit 0 in about 12 s.
+  - stderr: only pg's `sslmode` notice.
+- **Identity:** the server reported branch `br-noisy-dust-b4i1uvhg` and
+  role `upsitehealth_test`, the recorded shared identity. For `app`, the CLI
+  itself proves only the endpoint and database; the branch and role were
+  checked in the artifact afterwards.
+- **Artifact:** mode `0600`, one link, complete version 1. It contains no
+  URL, password or user:password. SHA-256 `53b6ac28…cbf81a`, unchanged
+  after validation.
+- **Unmodelled objects (4):** migration 1's two CHECKs and RLS, and a
+  schema named `upsitehealth_test`, which is unexplained (contents not
+  collected). Counts are in the fingerprint doc.
+- **Not done:** no comparison with the `itest-ci` fingerprint.
+
+## 2026-10-31 — Definitions fingerprint collected from `itest-ci` (one approved run)
+
+**No code changed in this step.** The only database contact was one
+read-only collection on `itest-ci`.
+
+- **Preflight:**
+  - offline target check with the CLI's own functions, with decoy
+    production, shared and Supabase URLs exported in the shell: resolved to
+    `ep-long-surf-b4hm6pyi` (direct), `upsitehealth_test`,
+    `upsitehealth_tester`, on the test allowlist, read-only option applied;
+  - the output path was new;
+  - definitions, readiness and drift tests: 191 passed;
+  - network: DNS 3/3, HTTPS 9/9.
+- **Run:** `npm run db:definitions -- --target=test
+--out=$HOME/UpSiteHealth-backups/definitions-fingerprint-itest-ci-2026-10-31.json`,
+  once at 19:41 UTC on 30 October, with shell database variables unset.
+  - Exit 0 in about 11 s.
+  - stderr: only pg's `sslmode` notice.
+  - The server reported branch `br-noisy-glade-b4rjvu65` and PostgreSQL
+    18.6.
+- **Artifact:** mode `0600`, one link (the temporary file was removed),
+  complete version 1. It contains no URL, password or user:password.
+  Counts and the inventory are in
+  `docs/operations/database-definitions-fingerprint.md`, "Collections":
+  15 unmodelled objects, all from migrations 1, 2 or 4, Prisma Migrate or
+  the test marker.
+- **Not done:** no collection from the shared database, and no comparison.
+
+## 2026-10-31 — `npm run db:definitions`: fingerprint collection command (offline; not run on any database)
+
+**New, uncommitted, on `main` at `26e71fc`. No database was connected or
+queried, and no fingerprint was collected.**
+
+- **What it does:**
+  `npm run db:definitions -- --target=<test|app> --out=<absolute path>`
+  (`scripts/db-definitions.ts`). See
+  `docs/operations/database-definitions-fingerprint.md`.
+  - **Arguments:** both required, each exactly once. There are no other
+    flags, no database URL arguments, no `--settings`, and no shell
+    `DATABASE_URL` or `DIRECT_URL`. The database comes from the target's
+    settings file, with the existing refusals.
+  - **Errors** name a rejected flag, never its value.
+  - **Output path:** must be absolute, in an existing folder, and not
+    exist (not even as a symbolic link). This is checked before the
+    settings are read.
+  - **Save:** the fingerprint must read back as a complete version 1
+    fingerprint with no URL or password. It is written to a hidden
+    temporary file (exclusive create, mode `0600`, flushed), hard-linked
+    to the final name (which fails if the name exists), and the temporary
+    file is removed.
+  - **Stdout:** four summary lines, never the fingerprint.
+- **New:** `scripts/db-readiness/secure-output.ts` and
+  `scripts/db-definitions.ts`.
+- **Changed:**
+  - `scripts/db-readiness/definitions-run.ts`: its own argument parser,
+    the output checks, and save instead of print.
+  - `package.json`: one script.
+  - `README.md`: one row.
+  - The fingerprint and readiness docs.
+  - The static test now requires exactly these two `definitions`
+    commands, with only the entry script calling the collector.
+- **Unchanged:**
+  - `db:readiness`, `db:drift`, `db:drift:scoped` and
+    `db:definitions:compare`;
+  - target allowlists and guards;
+  - `.env`, `prisma.config.ts` and `prisma/safety.ts`.
+- **Tests:** `tests/db-definitions.test.ts` has 116 tests (80 before).
+  They cover:
+  - argument validation;
+  - refusals before any connection, for bad output paths, existing files
+    and symbolic links, and every refused target;
+  - the 0600 mode under any umask, valid JSON, and an incomplete
+    fingerprint never saved;
+  - temporary-file cleanup, and a file appearing mid-run left
+    untouched;
+  - each file-system call failing, with safe errors;
+  - no secrets or definitions on stdout or stderr;
+  - shell decoy variables, and a saved file read by the compare command.
+    The tests use a scripted server and a temporary folder; nothing
+    connects.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,538 passed, 1
+  expected fail, 209 skipped and 9 to-do. The readiness, drift and
+  definitions suites: 191 passed.
+- **Run end to end:** only the refusal paths ran, all before any
+  settings were read: an unknown target, a relative `--out`, a `--url`
+  argument, and an existing file.
+- **Not done:** no collection from `itest-ci` or the shared database. Each
+  needs its own approval.
+
+## 2026-10-30 — Database definitions fingerprint (offline; not run on any database)
+
+**New, uncommitted, on `main` at `26e71fc`. No database was connected or
+queried.**
+
+- **Why:** the drift checks compare only what Prisma models. Before any
+  baselining decision, the definitions it does not model need comparing
+  between the shared database and the migration-built `itest-ci`. These
+  are CHECKs, triggers, functions, RLS and policies, index predicates and
+  unmodelled objects.
+- **What it does:** see `docs/operations/database-definitions-fingerprint.md`.
+  - **New code:**
+    - `scripts/db-readiness/definitions.ts` holds the version 1 format,
+      ten catalog categories, row mapping and the collector.
+    - `scripts/db-readiness/definitions-run.ts` holds `runDefinitions`.
+    - `scripts/db-readiness/compare-definitions.ts` holds the pure
+      comparison, the inventory and `runCompare`.
+    - `scripts/db-definitions-compare.ts` is the entry point for
+      comparing local files.
+  - **Collector:** reuses E1's target choice, refusals, identity proof and
+    read-only transaction, plus the drift wrapper's read-only startup
+    option. It pins `search_path = pg_catalog` and fails closed on any
+    query or row problem. **It has no command.** A static test fails if
+    one is added before a collection is approved.
+  - **Comparison:** statuses are MATCH, MISSING, EXTRA and DIFFERENT, with
+    exact field-level descriptions. A category not collected on either side
+    makes the result `incomplete`, never a match.
+- **Unchanged:** `db:readiness`, `db:drift`, `db:drift:scoped`, allowlists,
+  guards, `.env`, `prisma.config.ts` and `prisma/safety.ts`.
+- **Additions:** one `package.json` script (`db:definitions:compare`), one
+  README row.
+- **Tests:** `tests/db-definitions.test.ts`, 80 tests, with no database.
+  They cover:
+  - mapping;
+  - the format (order-independence, sorted keys, version, normalisation
+    limits);
+  - the 18 comparison fixtures;
+  - the compare command;
+  - the collector on a scripted server: refusals before connecting,
+    refusals after identity with no catalog query, fail-closed
+    categories, scrubbing;
+  - static read-only and offline checks.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,502 passed, 1
+  expected fail, 209 skipped and 9 to-do (1,422 before, plus the 80 new
+  tests).
+- **Not done:** no fingerprint was collected from `itest-ci` or the shared
+  database, and nothing real was compared. Each collection needs a separate
+  approval.
+
+## 2026-10-30 — Scoped drift check on `itest-ci`: the migration-built schema matches `schema.prisma`
+
+**Uncommitted, on `main` at `26e71fc`. No code changed in this step.**
+
+- **Before the run:**
+  - `tests/db-drift.test.ts`: 24 passed.
+  - `env -u TEST_DATABASE_URL npm run check`: 1,422 passed, 1 expected
+    fail, 209 skipped, 9 to-do.
+  - Network: 9 of 9 HTTPS requests succeeded.
+  - Wrapper and target (offline):
+    - The settings file `$HOME/.config/upsitehealth/neon-itest.env` is
+      `0600`.
+    - The target resolves to `ep-long-surf-b4hm6pyi` (allowlisted),
+      database `upsitehealth_test`, role `upsitehealth_tester`.
+    - Decoy `DATABASE_URL`, `DIRECT_URL`, `TEST_DATABASE_URL` and
+      `PRISMA_*` variables change nothing.
+    - The Prisma child resolves exactly the proven read-only URL.
+    - Production, shared as test, Supabase, unknown hosted and
+      existing-`options` URLs were refused through `runDrift` with no
+      connection.
+- **The run.** `npm run db:drift:scoped -- --target=test` at 14:45 UTC ran
+  once and exited 0: "No difference detected."
+  - Server: endpoint `ep-long-surf-b4hm6pyi`, branch
+    `br-noisy-glade-b4rjvu65`, database `upsitehealth_test`, role
+    `upsitehealth_tester`, PostgreSQL 18.6. The marker was accepted.
+  - The identity connection's server reported
+    `default_transaction_read_only = on` before the diff. The diff session
+    is read-only by configuration only.
+- **Meaning.** `itest-ci` was built from empty by `prisma migrate deploy`
+  (26 Oct entry below), and its recorded checksums equal today's files. So
+  the migration files produce `schema.prisma` for every object Prisma
+  models.
+  - Together with the shared run (14:29), this means: on the shared
+    database, `0_baseline`, `1_business_facts` and `3_crawl_mode` match
+    what the files build, and only 2 and 4 are missing, for Prisma-modelled
+    objects.
+- **Still open:**
+  - definitions of CHECK constraints, triggers, functions, RLS and
+    partial-index predicates;
+  - unmodelled objects on the shared database that no migration creates;
+  - intermediate history (only final states were compared).
+
+## 2026-10-30 — Scoped drift check on the shared database: only migrations 2 and 4 differ
+
+**Uncommitted, on `main` at `26e71fc`. No code changed in this step.**
+
+- **Before the run:**
+  - `tests/db-drift.test.ts`: 24 passed.
+  - `env -u TEST_DATABASE_URL npm run check`: 1,422 passed, 1 expected
+    fail, 209 skipped, 9 to-do.
+  - Network: 9 of 9 HTTPS requests succeeded.
+  - Target: `.env` is `0600`, and the target resolves to
+    `ep-dark-rain-b4ve04n3`. Decoy shell variables are ignored.
+- **Wrapper review (offline).** Every safety point was re-checked against
+  the source. In the child's environment, `process.loadEnvFile` keeps the
+  process value over `.env`, so the URL `prisma.config.ts` resolves is
+  exactly the proven one, with `options=-c default_transaction_read_only=on`.
+  No decoys or `PRISMA_*` variables remain, and the guard allows the diff.
+- **The run.** `npm run db:drift:scoped -- --target=app` at 14:29 UTC ran
+  once and exited 2, meaning drift was found. That is a result, not a
+  failure.
+  - Server: endpoint `ep-dark-rain-b4ve04n3`, branch
+    `br-noisy-dust-b4i1uvhg`, database `upsitehealth_test`, role
+    `upsitehealth_test`, PostgreSQL 18.6.
+  - The identity connection's server reported
+    `default_transaction_read_only = on` before the diff. The diff's own
+    session is read-only by configuration only; the server did not report
+    it for that session.
+  - All 28 differences are objects that `2_recommendation_events` (9) or
+    `4_recommendation_identity` (19) create. The full mapping is in
+    `docs/operations/environment-readiness.md`, under "Drift runs".
+  - Nothing else differs: no changed column types, nullability, defaults,
+    keys, indexes or enums, and no objects missing from `schema.prisma`.
+- **Gaps:**
+  - It is not proven that the migration files produce `schema.prisma`.
+  - CHECK, trigger, function, RLS and partial-index definitions are not
+    compared.
+  - It is not proven that 1 and 3 were applied exactly as written.
+
+## 2026-10-30 — Scoped drift check `npm run db:drift:scoped` (offline; not run on a database)
+
+**New, uncommitted, on `main` at `26e71fc`. No database was connected.**
+
+- **Why:** `npm run db:drift` follows shell `DIRECT_URL` or `DATABASE_URL`,
+  and no guard refuses its target (see the entry below). The owner chose a
+  scoped wrapper before any drift run.
+- **What it does:** `scripts/db-drift.ts` and `scripts/db-drift/run.ts`.
+  - The database is chosen as `db:readiness` chooses it, with the same
+    refusals before connecting.
+  - The URL gets `options=-c default_transaction_read_only=on`.
+  - One identity connection with that URL checks the endpoint and database
+    (plus the marker, branch and role for `test`). It also requires the
+    server to report `default_transaction_read_only = on`.
+  - The unchanged `prisma migrate diff … --exit-code` then runs without a
+    shell, in an environment stripped of database and `PRISMA_*`
+    variables, with `DIRECT_URL` and `DATABASE_URL` set to the proven URL.
+  - Output is scrubbed of URLs and passwords.
+  - Exit codes: 0 no drift, 2 drift, 1 refused or failed.
+- **Unchanged:** `.env`, `prisma.config.ts`, `prisma/safety.ts` and
+  `db:drift`. `scripts/db-readiness/run.ts` now exports `ServerRefusal`
+  and `reason` for reuse. New script line in `package.json`, one README
+  row.
+- **Tests:** `tests/db-drift.test.ts`, 24 tests, with a scripted server and
+  diff. They cover:
+  - refusals before connecting (production, Supabase, `itest-ci` as `app`,
+    unknown hosted, shared as `test`);
+  - decoy shell variables;
+  - refusals after the identity check, where the diff never runs (wrong
+    endpoint or database, read-only option ignored, transaction not read
+    only, marker missing, wrong branch);
+  - ordering (rollback and disconnect before the diff);
+  - exit-code mapping and output scrubbing.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,422 passed, 1
+  expected fail, 209 skipped and 9 to-do. Only the usage path was run end
+  to end.
+- **Unproven until an approved run:**
+  - that Neon's direct endpoint applies the startup option. If it does
+    not, the wrapper refuses.
+  - that Prisma's own session receives it.
+
+## 2026-10-30 — Shared database drift check: stopped at preflight, not executed
+
+**Uncommitted, on `main` at `26e71fc`. No database was connected; no code
+changed.**
+
+- **Approved:** one run of `npm run db:drift` against the shared database.
+- **Command:**
+  `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code`.
+  Prisma's help says it "is a read-only
+  command that does not write to your datasource(s)". With these flags it
+  needs no shadow database and writes no file. `--exit-code` returns 2
+  when the schemas differ.
+- **Target today (offline):** `.env` `DIRECT_URL` (`0600`, git-ignored)
+  resolves to `ep-dark-rain-b4ve04n3` (direct), database
+  `upsitehealth_test`, role `upsitehealth_test`. That is the same server
+  and database as `DATABASE_URL`. The shell has neither variable set.
+- **Blocker:**
+  - `prisma.config.ts` takes `DIRECT_URL` and `DATABASE_URL` from the
+    process environment before `.env`.
+  - `prismaCliDecision` allows read-only commands against any target.
+  - A decoy `DIRECT_URL` naming Neon production `ep-square-mud` resolved
+    as the target and was allowed (checked offline; nothing connected).
+  - Nothing checks the server's identity, or a read-only session, after it
+    connects.
+  - The approval required that decoys could not override the target and
+    that the command not be modified, so it was not run.
+- **Scope, if it is run later:** it compares tables, columns (types,
+  nullability, defaults), primary keys, unique constraints, indexes,
+  foreign keys and enums with `schema.prisma`. It does not see CHECK
+  constraints, triggers, functions or RLS (in migrations 1, 2 and 4).
+  `0_baseline` has none of those, so the diff can assess it structurally.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` was not re-run;
+  docs changed only.
+
+## 2026-10-30 — E1 on the shared database: report matches the recorded state
+
+**Uncommitted, on `main` at `26e71fc`. No code changed in this step.**
+
+- **Before the run:**
+  - `tests/db-readiness.test.ts`: 51 passed.
+  - `env -u TEST_DATABASE_URL npm run check`: 1,398 passed, 1 expected
+    fail, 209 skipped, 9 to-do.
+  - Network: 3 DNS lookups and 9 of 9 HTTPS requests succeeded (rule fixed
+    in advance).
+  - Offline preflight:
+    - `.env` is `0600` and git-ignored.
+    - `--target=app` resolves to `ep-dark-rain-b4ve04n3` (direct), database
+      `upsitehealth_test`, with `sslmode` only.
+    - Neon production, Supabase, `itest-ci` as `app`, and an unknown hosted
+      URL are all refused.
+    - Decoy `DATABASE_URL` and `DIRECT_URL` shell variables do not change
+      the target.
+- **The run.** `npm run db:readiness -- --target=app` at 13:48 UTC exited 0. It ran once.
+  - Server: endpoint `ep-dark-rain-b4ve04n3`, branch
+    `br-noisy-dust-b4i1uvhg`, database `upsitehealth_test`, role
+    `upsitehealth_test`, PostgreSQL 18.6.
+  - Transaction: the server reported read only (repeatable read).
+  - No `_prisma_migrations` table.
+  - Objects: `1_business_facts` 42/42, `3_crawl_mode` 7/7 (present, not
+    recorded); `2_recommendation_events` 0/29 and
+    `4_recommendation_identity` 0/61 (absent, none partly applied). Nothing
+    was found outside schema `public`, so the 27 Oct `search_path` repair
+    holds.
+  - `historyAvailable()` is unavailable. `identityCapabilities()` is off,
+    with all six parts missing.
+  - M2 identity collisions: not applicable (no `identityKey` column).
+    Open-title duplicates: 0 groups.
+  - Rows: organizations 1, websites 3, crawl runs 13, recommendations 10,
+    business facts 59. The events and evidence tables do not exist.
+  - stderr held only pg's `sslmode` notice and the two capability log lines.
+- **Result:** no discrepancies with `docs/HANDOFF.md` §F or the expectations
+  in `docs/operations/environment-readiness.md`.
+- **Gaps:**
+  - Rollback and disconnect follow from the code path; the server did not
+    report them.
+  - `0_baseline`'s objects are not checked, and objects are matched by name
+    only.
+  - The open-title zero comes from a small sample.
+  - The guard refuses `migrate resolve` and `migrate deploy` on this
+    endpoint.
+
+## 2026-10-30 — E1 validated on `itest-ci`: the readiness report matches the expected state
+
+**Uncommitted, on `main` at `26e71fc`. No code changed in this step.**
+
+- **Before the run:**
+  - `tests/db-readiness.test.ts`: 51 passed.
+  - `env -u TEST_DATABASE_URL npm run check`: 1,398 passed, 1 expected
+    fail, 209 skipped, 9 to-do.
+  - Network: DNS resolved github.com, www.google.com and neon.tech. Nine
+    HTTPS requests (3 rounds × 3 hosts) all succeeded in under 1 s. The
+    pass rule was fixed before checking.
+  - Offline preflight: the settings file is `0600`, and the target resolves
+    to `ep-long-surf-b4hm6pyi` / `upsitehealth_test` /
+    `upsitehealth_tester`. Decoy `TEST_DATABASE_URL` and
+    `UPSITEHEALTH_TEST_DB_HOST` shell variables do not change the target.
+- **The run.** `npm run db:readiness -- --target=test` at 10:01 UTC
+  exited 0, with nothing on stderr except pg's `sslmode` notice. It ran
+  once.
+  - Server: endpoint `ep-long-surf-b4hm6pyi`, branch
+    `br-noisy-glade-b4rjvu65`, database `upsitehealth_test`, role
+    `upsitehealth_tester`, PostgreSQL 18.6.
+  - Transaction: the server reported read only (repeatable read).
+  - History: 5 rows. 0–4 are all finished, and each checksum matches its
+    repository file.
+  - Objects: `1_business_facts` 42/42, `2_recommendation_events` 29/29,
+    `3_crawl_mode` 7/7, `4_recommendation_identity` 61/61.
+  - `historyAvailable()` is available, and `identityCapabilities()` is
+    enabled.
+  - M2 identity collisions: 0 groups (0 rows keyed). Open-title
+    duplicates: 0 groups.
+  - Rows: 0 in every counted table.
+- **Result:** no discrepancies.
+- **Gaps:**
+  - Rollback and disconnect follow from the code path; the server did not
+    report them.
+  - The duplicate checks ran on empty tables.
+  - `--target=app` has not been run.
+
+## 2026-10-30 — E1 on `itest-ci`: safety review passed; the approved run timed out
+
+**Uncommitted, on `main` at `26e71fc`. No report was obtained.**
+
+- **Safety review (offline).** Target selection, refusals before
+  connecting, the read-only transaction and the output guard were all
+  confirmed in code. Prisma 7.10.1's pg adapter sends `BEGIN` and then the
+  report's `SET TRANSACTION … READ ONLY` first. On a thrown callback it
+  sends `ROLLBACK` and releases the connection.
+- **Hardening.** For `test`, the reported Neon branch and role must now
+  equal the recorded ones (`TEST_TARGET_IDENTITY` in
+  `scripts/db-readiness/expected.ts`). Before this, they were only printed.
+  A new test covers it, so `tests/db-readiness.test.ts` now has 51 tests.
+- **Preflight (offline, no connection).** The default settings file is
+  `0600`. It resolves to `ep-long-surf-b4hm6pyi` (direct), database
+  `upsitehealth_test`, role `upsitehealth_tester`, `sslmode` only.
+- **The approved run.** `npm run db:readiness -- --target=test` exited 1
+  with the refusal "the database could not be read (ETIMEDOUT)" and no
+  report. This was a TCP connect timeout. At the time, this machine's
+  internet access was intermittent and differed by host: github.com timed
+  out every time, while google.com worked. No session or query is
+  expected, and nothing was retried. A new run needs new approval.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,398 passed, 1
+  expected fail, 209 skipped and 9 to-do.
+
+## 2026-10-30 — E1: read-only database readiness report and environment brief (offline)
+
+**New, uncommitted; no database was used.**
+
+- `npm run db:readiness -- --target=<test|app> [--json]`
+  (`scripts/db-readiness.ts`, `scripts/db-readiness/{expected,report,run}.ts`).
+- **How it chooses the database:** the same way the crawl worker does
+  (`readSettings`, `chooseWorkerDatabase`, `serverProblem`). Production,
+  other hosted databases and unknown targets are refused before a
+  connection is opened.
+- **How it reads:** one transaction marked
+  `REPEATABLE READ, READ ONLY` by its first statement and confirmed by the
+  server, always rolled back.
+- **What it reports:**
+  - the server identity;
+  - migration history, with checksum prefixes and whether they match the
+    files;
+  - the objects of migrations 1–4, with an assessment of each;
+  - `historyAvailable()` and `identityCapabilities()`;
+  - M2 identity collisions and open-title duplicates, as counts;
+  - row counts.
+
+  Output is counts, booleans and names only, and is withheld if it would
+  contain a URL or the password.
+
+- **Tests:** `tests/db-readiness.test.ts`, 50 tests. They check:
+  - the expected objects equal what each `migration.sql` creates (a
+    mutation check, removing one column, fails it);
+  - every query is a SELECT or a transaction-local SET;
+  - every refusal opens no connection;
+  - the read-only statement comes first, and the transaction ends in a
+    rollback;
+  - marker and identity refusals;
+  - redaction.
+- **Smoke test with all network denied (`sandbox-exec`):**
+  - an unknown target or no target gives exit 2;
+  - production in the settings file, the shared database as the test
+    target, and a missing settings file give exit 1, "No connection was
+    opened".
+- **Not done:** no run against any database (each target needs approval).
+- **Docs:**
+  - new `docs/operations/environment-readiness.md` (how to run the report;
+    the owner's decision brief: the working database, production identity,
+    the migration path, the D9 sequence);
+  - `STAGE2-HANDOFF.md` §0;
+  - `docs/HANDOFF.md` §F;
+  - a README row;
+  - `package.json` script `db:readiness`.
+- `env -u TEST_DATABASE_URL npm run check`: exit 0; 73 files passed, 27
+  skipped; **1,397 passed**, 1 expected-fail, 209 skipped, 9 to-do.
+
+## 2026-10-30 — S11a: remediation playbooks and WordPress/WooCommerce detection (uncommitted)
+
+- **Playbooks:** one per technical SEO rule (21, `SEO_RULE_IDS`), with
+  WordPress and WooCommerce steps.
+- **Platform signals:** stored per crawled page (`result.platform`).
+  Detection reads the latest analysed crawl, at most 20 pages, `platform`
+  key only, with an explicit organization filter.
+- **"How to fix" panel** on the Recommendations page.
+- **Review fixes:**
+  - uploaded media is no longer WordPress evidence;
+  - the payload is cut;
+  - the panel is a labelled group;
+  - four wording corrections.
+- **Check:** `env -u TEST_DATABASE_URL npm run check` gave 1,347 passed,
+  1 expected-fail, 209 skipped, 9 to-do.
+- **`itest-ci`:** `crawler.test.ts -t "platform signals"`, 1 passed (11
+  filtered out), exit 0. A read-only snapshot before and after was
+  identical.
+- **Not done:** not checked in a browser or on a real client site. Crawls
+  stored before this show "not recorded" until the site is crawled again.
+
+## 2026-10-29 — Integration tests delete the users they create (uncommitted)
+
+- **Change:** `actions`, `finding-status`, `recommendation-status` and
+  `recommendation-events` integration tests record the users they create
+  and delete them in `afterAll` (3 lines each).
+- **`itest-ci`:** those 4 files, 21/21 passed. The read-only snapshot
+  before and after was identical: 196 users, the same id and row
+  fingerprints, migrations 0–4, every other count 0.
+- **Not done:** the 196 users left by earlier runs are not deleted; that is
+  a separate decision.
+
+## 2026-10-29 — M1 integration gates passed on `itest-ci`; Stage 2 committed
+
+- **Gates** (as recorded in commit `26e71fc`):
+  - Gate 1: 20/20;
+  - Gate 2: 10 files, 105 passed and 2 failures. One was an outdated
+    assertion, since fixed; the other a local Wi-Fi outage. Both passed
+    their targeted reruns.
+  - Gate 3: 17 files, 154/154.
+- **Commits:** on the branch `stage2-m1-verified`: `4246f66`, `f2af645`,
+  `3df437d`, `6c90277`, `26e71fc`.
+- **Adopted on `main`:** a guarded `update-ref` and `reset --mixed`, after
+  the tag `backup/main-before-stage2-m1` and backups. Not pushed.
+
 ## 2026-10-28 — Stage 2 M1 applied to `itest-ci`; integration tests updated (not run)
 
 **Applied: migration `4_recommendation_identity`, to `itest-ci` only.**

@@ -8,12 +8,81 @@ changing anything. Nothing below authorises implementation.
   (a Claude Doc; read it with the docs connector, not a web fetch).
   Sections 28–34 = final decision record; 35 = Step 2a; 36 = Step 2b.
 - **Earlier handoff:** `docs/HANDOFF.md` (2026-10-25, Sprint 2 objective 2) and
-  `docs/DEVELOPMENT-STATUS.md`. Both untracked, not updated today.
+  `docs/DEVELOPMENT-STATUS.md`. Both are committed (in `26e71fc`);
+  `DEVELOPMENT-STATUS.md` has the latest entries.
 
-## 0. Latest status — M1 applied to `itest-ci` (updated 2026-10-29)
+## 0. Latest status (updated 2026-10-30)
 
-Read this first. Sections 1–6 below are the morning checkpoint of 28 Oct,
-kept as history. Design document sections 37–39 record the same.
+Read this first. The 30 Oct block is the current state. The 29 Oct block
+below it, and sections 1–6 (the morning checkpoint of 28 Oct), are kept as
+history. Design document sections 37–39 record the Stage 2 steps.
+
+### 30 Oct: gates passed, committed; S11a and E1 uncommitted
+
+**Committed on `main` (HEAD `26e71fc`, not pushed).**
+
+- The Stage 2 work was committed on the branch `stage2-m1-verified` in five
+  commits: `4246f66` (pre-Stage-2 baseline), `f2af645` (C1a), `3df437d`
+  (C1b), `6c90277` (M1) and `26e71fc` (the integration tests and docs).
+- `main` was then moved to it with a guarded `update-ref` and
+  `reset --mixed`, after a backup tag `backup/main-before-stage2-m1` and
+  backups in `~/UpSiteHealth-backups/`.
+- The branch and its worktree (in the session scratchpad) are kept.
+
+**The M1 integration gates passed on `itest-ci`.** Recorded in the `26e71fc`
+commit message:
+
+- Gate 1: `recommendation-identity-schema.test.ts`, 20/20.
+- Gate 2: the 10-file Stage 2 set, 105 passed with two failures:
+  - an outdated assertion, since fixed;
+  - a local Wi-Fi outage.
+
+  Both tests passed their targeted reruns.
+
+- Gate 3: the remaining 17 files, 154/154.
+
+All 28 integration files have passed against M1.
+
+**Test-user cleanup (uncommitted, validated).**
+
+- `tests/integration/{actions,finding-status,recommendation-status,recommendation-events}.test.ts`
+  now delete the users they create.
+- Run on `itest-ci` on 29 Oct: 4 files, 21/21 passed.
+- A read-only snapshot before and after was identical: 196 users with the
+  same id and row fingerprints, migrations 0–4, every other count 0.
+- The 196 users left by earlier runs are **not** deleted; that is a
+  separate decision.
+
+**S11a, remediation playbooks and WordPress/WooCommerce detection
+(uncommitted, validated).**
+
+- Offline check on 30 Oct: 1,347 passed, 1 expected-fail, 209 skipped,
+  9 to-do.
+- The `crawler.test.ts` "platform signals" test passed on `itest-ci`
+  (1 test; snapshot identical before and after).
+- Not yet seen in a browser or on a real client site.
+
+**D6 is decided.** Design doc §37: "Every superseded evidence set is kept
+for now; revisited after step 4 measures the volume." It is also in the
+§32 decision record, as decided on 28 Oct.
+
+**E1, working-environment readiness (uncommitted).** The read-only report is
+`npm run db:readiness` (`scripts/db-readiness.ts`), with the decision brief
+in `docs/operations/environment-readiness.md`. It is unit-tested offline and
+has **not been run against any database**: each run needs approval.
+
+**Still blocking Stage 2 for real clients.**
+
+- The app's working database is the shared manual-testing database
+  (`ep-dark-rain-b4ve04n3`, per `.env`). It has no migration history, and
+  migrations 2 and 4 are not applied. The guard refuses Prisma schema
+  writes there, with no override.
+- Production is ambiguous: Supabase per the README and RECOVERY, or the
+  Neon `production` branch per `prisma/safety.ts`.
+- Still open: D5 (with the P3 marker), D7, D8, D9, decision 13, CR1/CR2, B1,
+  M2 and step 4.
+
+### 29 Oct: M1 applied to `itest-ci`
 
 **Done since that checkpoint (each step approved by the owner):**
 
@@ -77,7 +146,8 @@ kept as history. Design document sections 37–39 record the same.
 - Never "reset from parent" on `manual-backup`.
 
 **C1b is now active on `itest-ci`, and the integration tests have not been
-run since M1.** The tests were updated (code only) on 29 Oct:
+run since M1** (superseded: all three gates passed, see 30 Oct). The tests
+were updated (code only) on 29 Oct:
 
 - the seven "today:" tests run with the capability forced off (option A); the
   eighth already uses the option A path;
@@ -95,8 +165,8 @@ Unit check on 29 Oct: 1,179 passed, 1 expected-fail, 208 skipped, 9 to-do.
 
 **Not authorised, each a separate decision:** D5 (with the P3 retirement
 marker), D7, D8, D9, decision 13, CR1/CR2, B1, M2, and step 4 (follow-ups,
-suggestions and the review queue). The next gate is the `itest-ci`
-integration run.
+suggestions and the review queue). The next gate was the `itest-ci`
+integration run (passed; see 30 Oct).
 
 **Local notes.**
 
@@ -104,7 +174,7 @@ integration run.
   `.env`. It cannot reach `itest-ci`.
 - A peer Claude session (`upsitehealth-4f`) exists; it must not run
   `itest-ci` tests during gates.
-- Nothing is staged or committed.
+- Nothing was staged or committed on 29 Oct (since committed; see 30 Oct).
 
 ## 1. Repository state (inspected 2026-10-28, not changed)
 
@@ -179,7 +249,8 @@ Notes:
 
 ## 4. Undecided (owner approval required; do not assume)
 
-- **D5** collision resolution · **D6** evidence retention · **D7** legacy
+- **D5** collision resolution · **D6** evidence retention (decided 28 Oct;
+  see §0) · **D7** legacy
   closed rows · **D8** engagement-workflow spec · **D9** any environment
   beyond `itest-ci` (each write separately).
 - Tightening today's completion rules for AI search, integration probes and
