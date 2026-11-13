@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { BusinessFactKind } from "@/generated/prisma/enums";
-import { findingVisibility } from "@/lib/business/visibility";
+import {
+  findingVisibility,
+  recommendationVisibility,
+} from "@/lib/business/visibility";
 import { syncRecommendations } from "@/lib/recommendations/generate";
 import { buildExport } from "@/lib/reports/exports";
 import { LINK_RULE, NOT_DESCRIBED_RULE } from "@/lib/seo/content";
@@ -13,6 +16,7 @@ import {
   loadContentPlan,
   type ContentPlan,
 } from "@/lib/workflow/content-plan";
+import { loadReport } from "@/lib/workflow/report";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
 
 /**
@@ -271,6 +275,82 @@ describe.skipIf(!TEST_DATABASE_URL)("content plan (local database)", () => {
       ids: [ids(pa)[1]],
     });
     expect(ready(one.shown).groups.map((g) => g.kind)).toEqual(["link"]);
+  });
+
+  test("client-ready report data: fixed period, evidence dates, client rules for tasks, other organizations get nothing", async () => {
+    const s = await florist("handoff");
+    const run = await crawl(s, [HOME(), WEDDING, funeral(VAGUE)]);
+    await syncRecommendations(db, {
+      id: s.id,
+      organizationId: s.organizationId,
+    });
+    // A later crawl that did not complete.
+    const later = new Date(Date.now() + 60_000);
+    await db.crawlRun.create({
+      data: {
+        organizationId: s.organizationId,
+        websiteId: s.id,
+        status: "PARTIAL",
+        maxPages: 100,
+        maxDepth: 3,
+        maxDiscoveredUrls: 1000,
+        userAgent: "test",
+        seoAnalyzedAt: later,
+      },
+    });
+    const analysed = (await db.crawlRun.findUnique({ where: { id: run.id } }))!
+      .seoAnalyzedAt!;
+    const tdb = tenantDb(db, s.organizationId);
+    const end = new Date("2026-11-01T00:00:00Z");
+    const report = async (
+      visible: ReturnType<typeof recommendationVisibility>,
+      periodEnd?: Date,
+    ) =>
+      (await loadReport(
+        tdb,
+        db,
+        s.organizationId,
+        s.id,
+        "28d",
+        new Date(),
+        visible,
+        periodEnd,
+      ))!;
+    const titles = (r: Awaited<ReturnType<typeof report>>) =>
+      [
+        ...r.plan["fix-first"],
+        ...r.plan.continue,
+        ...r.plan.next,
+        ...r.plan.waiting,
+      ].map((i) => i.title);
+
+    const fixed = await report(recommendationVisibility("CLIENT"), end);
+    expect(fixed.period).toEqual({
+      start: new Date("2026-10-04T00:00:00Z"),
+      end,
+    });
+    expect(fixed.evidence).toEqual({
+      complete: { at: analysed, stale: false },
+      laterIncomplete: later,
+    });
+    expect(titles(fixed).some((t) => t.includes("(CONTENT_"))).toBe(false);
+    const teamView = await report(recommendationVisibility("MEMBER"));
+    expect(titles(teamView).some((t) => t.includes("(CONTENT_"))).toBe(true);
+    expect(teamView.period.end.getTime()).toBeGreaterThan(end.getTime());
+
+    const other = await florist("handoff-other");
+    expect(
+      await loadReport(
+        tenantDb(db, other.organizationId),
+        db,
+        other.organizationId,
+        s.id,
+        "28d",
+        new Date(),
+        recommendationVisibility("CLIENT"),
+        end,
+      ),
+    ).toBeNull();
   });
 
   test("another organization's scope reads nothing of this website", async () => {

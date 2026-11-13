@@ -28,6 +28,7 @@ export function ContentPlanPicker({
   stale,
   allHref,
   noneHref,
+  through = null,
 }: {
   /** The report path (no query). */
   action: string;
@@ -39,6 +40,8 @@ export function ContentPlanPicker({
   stale: number;
   allHref: string;
   noneHref: string;
+  /** A fixed reporting period's last day, kept when the form is sent. */
+  through?: string | null;
 }) {
   const on = new Set(selected);
   return (
@@ -79,6 +82,7 @@ export function ContentPlanPicker({
         <input type="hidden" name="period" value={period} />
         <input type="hidden" name="content" value="include" />
         <input type="hidden" name="sel" value="1" />
+        {through && <input type="hidden" name="through" value={through} />}
         <div className="flex flex-col gap-3">
           {groups.map((g) => (
             <fieldset key={g.title} className="min-w-0">

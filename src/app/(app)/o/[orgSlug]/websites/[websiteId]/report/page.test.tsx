@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Role } from "@/generated/prisma/enums";
 import type { ContentPlan } from "@/lib/workflow/content-plan";
@@ -13,12 +20,22 @@ import type { ContentPlan } from "@/lib/workflow/content-plan";
 const state = vi.hoisted(() => ({
   role: "MEMBER" as Role,
   loadContentPlan: vi.fn(),
+  loadReportArgs: [] as unknown[][],
+  replace: vi.fn(),
+  evidence: {
+    complete: { at: new Date("2026-11-10T09:00:00Z"), stale: false },
+    laterIncomplete: null as Date | null,
+  } as {
+    complete: { at: Date; stale: boolean } | null;
+    laterIncomplete: Date | null;
+  },
 }));
 
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");
   },
+  useRouter: () => ({ replace: state.replace }),
 }));
 vi.mock("@/lib/db", () => ({ db: () => ({}) }));
 vi.mock("@/lib/tenancy/context", () => ({
@@ -66,51 +83,55 @@ const item = (id: string, title: string, code: string) => ({
 });
 vi.mock("@/lib/workflow/report", () => ({
   executiveSummary: () => ["Summary line."],
-  loadReport: async () => ({
-    organization: { name: "Agency" },
-    client: { name: "Bloom", company: null },
-    website: { name: "Bloom", url: "https://bloom.example/" },
-    kind: "28d",
-    period: {
-      start: new Date("2026-10-16T00:00:00Z"),
-      end: new Date("2026-11-13T00:00:00Z"),
-    },
-    generatedAt: new Date("2026-11-13T12:00:00Z"),
-    baseline: {},
-    technical: {
-      state: "not-comparable",
-      reason: "no-start",
-      incompleteInPeriod: 0,
-    },
-    openAtStart: null,
-    openAtEnd: null,
-    endBySeverity: {},
-    fixed: [],
-    newFindings: [],
-    recurring: [],
-    activity: { items: [], reportedDone: 0, verifiedNow: 0 },
-    plan: {
-      "fix-first": [],
-      continue: [],
-      next: [
-        item("t1", "Fix missing titles", "TECH_MISSING_TITLE"),
-        item(
-          "t2",
-          "Service page does not describe the service",
-          "CONTENT_SERVICE_NOT_DESCRIBED",
-        ),
-      ],
-      waiting: [],
-      summary: {
-        open: 2,
-        highPriority: 0,
-        inProgress: 0,
-        awaitingVerification: 0,
+  loadReport: async (...args: unknown[]) => (
+    state.loadReportArgs.push(args),
+    {
+      organization: { name: "Agency" },
+      client: { name: "Bloom", company: null },
+      website: { name: "Bloom", url: "https://bloom.example/" },
+      kind: "28d",
+      period: {
+        start: new Date("2026-10-16T00:00:00Z"),
+        end: new Date("2026-11-13T00:00:00Z"),
       },
-    },
-    sources: [],
-    gaps: ["A gap."],
-  }),
+      generatedAt: new Date("2026-11-13T12:00:00Z"),
+      baseline: {},
+      technical: {
+        state: "not-comparable",
+        reason: "no-start",
+        incompleteInPeriod: 0,
+      },
+      openAtStart: null,
+      openAtEnd: null,
+      endBySeverity: {},
+      fixed: [],
+      newFindings: [],
+      recurring: [],
+      activity: { items: [], reportedDone: 0, verifiedNow: 0 },
+      plan: {
+        "fix-first": [],
+        continue: [],
+        next: [
+          item("t1", "Fix missing titles", "TECH_MISSING_TITLE"),
+          item(
+            "t2",
+            "Service page does not describe the service",
+            "CONTENT_SERVICE_NOT_DESCRIBED",
+          ),
+        ],
+        waiting: [],
+        summary: {
+          open: 2,
+          highPriority: 0,
+          inProgress: 0,
+          awaitingVerification: 0,
+        },
+      },
+      sources: [],
+      gaps: ["A gap."],
+      evidence: state.evidence,
+    }
+  ),
 }));
 
 const PLAN: ContentPlan = {
@@ -477,5 +498,207 @@ describe("client members with selection parameters", () => {
       cleanup();
     }
     expect(state.loadContentPlan).not.toHaveBeenCalled();
+  });
+});
+
+const CLIENT_RULES = {
+  AND: [
+    { NOT: { title: { contains: "(BIZ_" } } },
+    { NOT: { title: { contains: "(CONTENT_" } } },
+  ],
+};
+const lastLoad = () => state.loadReportArgs[state.loadReportArgs.length - 1];
+const TEAM_ONLY = [
+  "content-plan-team-notes",
+  "content-plan-picker",
+  "report-handoff",
+] as const;
+
+describe("client-ready handoff (team)", () => {
+  beforeEach(() => {
+    state.loadReportArgs = [];
+    state.replace.mockReset();
+    state.evidence = {
+      complete: { at: new Date("2026-11-10T09:00:00Z"), stale: false },
+      laterIncomplete: null,
+    };
+  });
+
+  test("review: the share panel states period and plan, and links to the client view, the PDF and a client link", async () => {
+    await show("MEMBER", {
+      content: "include",
+      sel: "1",
+      pick: ["aaaaaaaaaa", "cccccccccc"],
+    });
+    const panel = screen.getByTestId("report-handoff");
+    expect(panel.closest(".print\\:hidden")).not.toBeNull();
+    expect(panel.textContent).toMatch(/Period: 2026-10-16 to 2026-11-12/);
+    expect(panel.textContent).toMatch(
+      /Content plan: 1 action and 1 new page \(2 of 3 items selected\)/,
+    );
+    const href = (name: string) =>
+      within(panel).getByRole("link", { name }).getAttribute("href");
+    expect(href("Preview client view")).toBe(
+      "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=aaaaaaaaaa&pick=cccccccccc&through=2026-11-12&view=client",
+    );
+    expect(href("Save as PDF")).toBe(
+      "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=aaaaaaaaaa&pick=cccccccccc&through=2026-11-12&view=client&pdf=1",
+    );
+    expect(
+      within(panel).getByRole("button", { name: "Copy client link" }),
+    ).toBeTruthy();
+    expect(panel.textContent).toMatch(/signs in with their own account/);
+    expect(panel.textContent).toMatch(/only in the PDF, never behind the link/);
+    // The review page reads tasks with the team's rules.
+    expect(lastLoad()[6]).toEqual({});
+  });
+
+  test("the copied client link carries the period only", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    await show("OWNER", { content: "include", sel: "1", pick: "aaaaaaaaaa" });
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByTestId("report-handoff")).getByRole("button", {
+          name: "Copy client link",
+        }),
+      );
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/o/agency/websites/w1/report?period=28d&through=2026-11-12`,
+    );
+  });
+
+  test("client-ready view: client rules on the server, selected plan only, no team UI rendered at all", async () => {
+    const { container } = await show("MEMBER", {
+      content: "include",
+      sel: "1",
+      pick: "bbbbbbbbbb",
+      through: "2026-11-12",
+      view: "client",
+    });
+    // Tasks are loaded with the client's rules and the fixed period.
+    expect(lastLoad()[6]).toEqual(CLIENT_RULES);
+    expect(lastLoad()[7]).toEqual(new Date("2026-11-13T00:00:00Z"));
+    // Team-only parts are not in the DOM (not merely hidden).
+    for (const id of TEAM_ONLY) expect(screen.queryByTestId(id)).toBeNull();
+    expect(screen.queryByText(/Review the content plan/)).toBeNull();
+    expect(
+      screen.queryByRole("navigation", { name: /Content plan/ }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("navigation", { name: "Report period" }),
+    ).toBeNull();
+    expect(container.querySelectorAll("input[type=checkbox]")).toHaveLength(0);
+    // The bar says what this is and links back; it is never printed.
+    const bar = screen.getByTestId("client-view-bar");
+    expect(bar.className).toContain("print:hidden");
+    expect(bar.textContent).toMatch(/with the content plan \(1 action\)/);
+    expect(
+      within(bar)
+        .getByRole("link", { name: "Back to team review" })
+        .getAttribute("href"),
+    ).toBe(
+      "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=bbbbbbbbbb&through=2026-11-12",
+    );
+    // The report: section 11 with exactly the selected action, metadata says so.
+    const sec = s11();
+    expect(
+      within(sec).getByText("1. Link to the Wedding flowers page"),
+    ).toBeTruthy();
+    expect(sec.textContent).not.toMatch(/Funeral|Cottages/);
+    expect(container.querySelector("article")!.textContent).toMatch(
+      /Content planIncluded: 1 action \(section 11\)/,
+    );
+    expect(container.querySelector("article")!.textContent).not.toMatch(
+      /Team only|Left out|dismissed|selected for this report/,
+    );
+    expect(state.replace).not.toHaveBeenCalled();
+  });
+
+  test("client-ready view without the plan says so and has no section 11", async () => {
+    await show("MEMBER", { view: "client" });
+    expect(section11()).toBeNull();
+    expect(screen.getByTestId("client-view-bar").textContent).toMatch(
+      /without a content plan/,
+    );
+    expect(screen.queryByText(/Content planIncluded/)).toBeNull();
+  });
+
+  test("an invalid or future fixed period is ignored (rolling period)", async () => {
+    for (const through of ["2099-01-01", "2026-02-30", "x"]) {
+      state.loadReportArgs = [];
+      await show("MEMBER", { through, view: "client" });
+      expect(lastLoad()[7]).toBeUndefined();
+      cleanup();
+    }
+  });
+});
+
+describe("client members and the handoff parameters", () => {
+  beforeEach(() => {
+    state.loadReportArgs = [];
+  });
+
+  test("view, pdf, plan and selection parameters change nothing: client rules, no plan, no team UI", async () => {
+    for (const search of [
+      { view: "client" },
+      {
+        view: "client",
+        pdf: "1",
+        content: "include",
+        sel: "1",
+        pick: "aaaaaaaaaa",
+      },
+      { through: "2026-11-12", content: "include" },
+    ]) {
+      const { container } = await show("CLIENT", search);
+      for (const id of [...TEAM_ONLY, "client-view-bar"])
+        expect(screen.queryByTestId(id)).toBeNull();
+      expect(section11()).toBeNull();
+      expect(container.textContent).not.toMatch(
+        /Content plan|Funeral|Cottages/,
+      );
+      cleanup();
+    }
+    expect(state.loadContentPlan).not.toHaveBeenCalled();
+  });
+
+  test("a valid fixed period applies to clients too (the link they receive)", async () => {
+    await show("CLIENT", { period: "28d", through: "2026-11-12" });
+    expect(lastLoad()[7]).toEqual(new Date("2026-11-13T00:00:00Z"));
+  });
+});
+
+describe("report metadata: evidence dates", () => {
+  test("the latest complete crawl is named; stale and incomplete evidence is not presented as current", async () => {
+    state.evidence = {
+      complete: { at: new Date("2026-08-01T09:00:00Z"), stale: true },
+      laterIncomplete: new Date("2026-11-12T09:00:00Z"),
+    };
+    await show("CLIENT");
+    expect(screen.getByTestId("report-evidence").textContent).toBe(
+      "Latest complete crawl 2026-08-01 (older than 60 days: the site may have changed since); a later crawl on 2026-11-12 did not complete and is not used.",
+    );
+    cleanup();
+    state.evidence = { complete: null, laterIncomplete: null };
+    await show("CLIENT");
+    expect(screen.getByTestId("report-evidence").textContent).toBe(
+      "No complete crawl yet.",
+    );
+  });
+});
+
+describe("print layout of the report header (browser check, 13 Nov)", () => {
+  test("the metadata prints in three columns; evidence and plan rows span them", async () => {
+    await show("MEMBER", { content: "include", view: "client" });
+    const meta = screen.getByTestId("report-meta");
+    expect(meta.className).toContain("print:grid-cols-3");
+    expect(
+      screen.getByTestId("report-evidence").parentElement!.className,
+    ).toContain("print:col-span-3");
   });
 });

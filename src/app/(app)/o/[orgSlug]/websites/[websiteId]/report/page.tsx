@@ -11,6 +11,7 @@ import {
 } from "@/components/content-plan-picker";
 import { CHANGE_META } from "@/components/crawl-changes";
 import { PrintButton } from "@/components/print-button";
+import { AutoPrint, CopyClientLink } from "@/components/report-handoff";
 import {
   BaselineSummary,
   PeriodTechnical,
@@ -19,10 +20,14 @@ import {
   TaskActivitySummary,
 } from "@/components/workflow";
 import { Badge } from "@/components/ui/badge";
-import { FilterTabs, PageHeader } from "@/components/ui/layout";
+import { Callout } from "@/components/ui/feedback";
+import { FilterTabs, LinkButton, PageHeader } from "@/components/ui/layout";
 import { Stat } from "@/components/ui/metric";
 import { WebsiteNav } from "@/components/website-nav";
-import { recommendationVisibility } from "@/lib/business/visibility";
+import {
+  canSeeBusiness,
+  recommendationVisibility,
+} from "@/lib/business/visibility";
 import { db } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import type { ChangeItem } from "@/lib/seo/compare";
@@ -33,9 +38,15 @@ import { ACTIVITY, CURRENT_WORK, FINDINGS } from "@/lib/workflow/labels";
 import {
   loadContentPlan,
   reportContentPlan,
-  reportQuery,
   type ContentPlan,
 } from "@/lib/workflow/content-plan";
+import {
+  clientLinkPath,
+  handoffQuery,
+  parseThrough,
+  parseView,
+  throughOf,
+} from "@/lib/workflow/report-handoff";
 import { executiveSummary, loadReport } from "@/lib/workflow/report";
 
 export const metadata: Metadata = { title: "SEO report · UpSiteHealth" };
@@ -45,6 +56,7 @@ const KINDS: Array<{ kind: PeriodKind; label: string }> = [
   { kind: "7d", label: "Last 7 days" },
 ];
 const day = (d: Date) => d.toISOString().slice(0, 10);
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const pathOf = (url: string) => {
   try {
     return new URL(url).pathname;
@@ -134,17 +146,33 @@ export default async function SeoReportPage({
   searchParams,
 }: PageProps<"/o/[orgSlug]/websites/[websiteId]/report">) {
   const { orgSlug, websiteId } = await params;
-  const { period: raw, content, sel, pick } = await searchParams;
+  const {
+    period: raw,
+    content,
+    sel,
+    pick,
+    through: rawThrough,
+    view,
+    pdf,
+  } = await searchParams;
   const kind = KINDS.find((k) => k.kind === raw)?.kind ?? "28d";
   const ctx = await requireOrgContext(orgSlug);
+  const now = new Date();
+  const periodEnd = parseThrough(rawThrough, now);
+  // The client-ready view is a team view of what the client receives: tasks
+  // are read with the client's rules here on the server, and no team-only
+  // control or note is rendered. Client members always get client rules.
+  const team = canSeeBusiness(ctx.role);
+  const clientView = team && parseView(view) === "client";
   const report = await loadReport(
     ctx.db,
     db(),
     ctx.organization.id,
     websiteId,
     kind,
-    undefined,
-    recommendationVisibility(ctx.role),
+    now,
+    recommendationVisibility(clientView ? "CLIENT" : ctx.role),
+    periodEnd ?? undefined,
   );
   if (!report) notFound();
   // Team only, decided here on the server: for other roles neither the plan
@@ -158,13 +186,35 @@ export default async function SeoReportPage({
   const included = contentPlan?.included ?? false;
   const selection = contentPlan?.selection ?? { explicit: false, ids: [] };
   const base = `/o/${orgSlug}/websites/${websiteId}`;
+  const { period, technical, activity, plan } = report;
+  // The period's last day: kept in team links only when the URL fixed it;
+  // always used for the client-ready view, the PDF and the client link.
+  const through = throughOf(period);
+  const fixed = periodEnd ? through : null;
   // Every link keeps the team's choices, so a copied URL reproduces the report.
   const reportHref = (
     k: PeriodKind,
     withPlan: boolean,
     chosen: { explicit: boolean; ids: string[] } = selection,
-  ) => `${base}/report${reportQuery(k, withPlan, chosen)}`;
-  const { period, technical, activity, plan } = report;
+  ) =>
+    `${base}/report${handoffQuery({ kind: k, through: fixed, included: withPlan, selection: chosen })}`;
+  const clientViewHref = (print: boolean) =>
+    `${base}/report${handoffQuery({ kind, through, included: requested, selection, view: "client", pdf: print })}`;
+  const reviewHref = `${base}/report${handoffQuery({ kind, through: fixed, included: requested, selection })}`;
+  const clientLink = clientLinkPath(`${base}/report`, kind, through);
+  const shown = contentPlan?.shown;
+  const planSummary =
+    included && shown?.state === "ready"
+      ? [
+          shown.total ? plural(shown.total, "action") : null,
+          shown.newPages.length
+            ? plural(shown.newPages.length, "new page")
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" and ")
+      : null;
+  const evidence = report.evidence;
   const verified = activity.items.filter((i) => i.state === "verified");
   const cameBack = activity.items.filter((i) => i.reappeared);
   const unverified = activity.items.filter(
@@ -184,65 +234,152 @@ export default async function SeoReportPage({
             { label: report.website.name, href: base },
             { label: "Report" },
           ]}
-          title="SEO report"
-          subtitle="A preview built only from recorded data. Check it before sharing."
-          actions={<PrintButton />}
+          title={clientView ? "SEO report: client-ready view" : "SEO report"}
+          subtitle={
+            clientView
+              ? "Exactly what the client receives in the PDF."
+              : "A preview built only from recorded data. Check it before sharing."
+          }
+          actions={
+            team && !clientView ? (
+              <LinkButton href={clientViewHref(true)} variant="secondary">
+                Save as PDF
+              </LinkButton>
+            ) : (
+              <PrintButton />
+            )
+          }
         />
       </div>
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
-      <div className="print:hidden">
-        <FilterTabs
-          label="Report period"
-          items={KINDS.map((k) => ({
-            href: reportHref(k.kind, requested),
-            label: k.label,
-            active: k.kind === kind,
-          }))}
-        />
-        {contentPlan && (
-          <div className="mb-4 flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-x-3">
-              <p className="mb-4 text-sm font-medium text-ink">
-                Content plan (team only)
-              </p>
-              <FilterTabs
-                label="Content plan in this report (team only)"
-                items={[
-                  {
-                    href: reportHref(kind, false),
-                    label: "Not included",
-                    active: !requested,
-                  },
-                  {
-                    href: reportHref(kind, true),
-                    label: "Included",
-                    active: requested,
-                  },
-                ]}
+      {clientView ? (
+        <div className="mb-4 print:hidden" data-testid="client-view-bar">
+          <Callout
+            tone="info"
+            title="Client-ready view"
+            action={
+              <div className="flex flex-wrap items-start gap-2">
+                <LinkButton href={reviewHref} variant="ghost">
+                  Back to team review
+                </LinkButton>
+                <CopyClientLink path={clientLink} />
+              </div>
+            }
+          >
+            Client-visible tasks only
+            {planSummary
+              ? `, with the content plan (${planSummary})`
+              : ", without a content plan"}
+            . Team notes, review controls and internal tasks are not part of it.
+            Use “Print or save as PDF” to save it.
+          </Callout>
+          {pdf === "1" && <AutoPrint cleanHref={clientViewHref(false)} />}
+        </div>
+      ) : (
+        <div className="print:hidden">
+          <FilterTabs
+            label="Report period"
+            items={KINDS.map((k) => ({
+              href: reportHref(k.kind, requested),
+              label: k.label,
+              active: k.kind === kind,
+            }))}
+          />
+          {contentPlan && (
+            <div className="mb-4 flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-x-3">
+                <p className="mb-4 text-sm font-medium text-ink">
+                  Content plan (team only)
+                </p>
+                <FilterTabs
+                  label="Content plan in this report (team only)"
+                  items={[
+                    {
+                      href: reportHref(kind, false),
+                      label: "Not included",
+                      active: !requested,
+                    },
+                    {
+                      href: reportHref(kind, true),
+                      label: "Included",
+                      active: requested,
+                    },
+                  ]}
+                />
+              </div>
+              <ContentPlanTeamNotes
+                plan={contentPlan.plan}
+                requested={requested}
+                included={included}
+                selection={contentPlan.selection}
               />
+              {requested && contentPlan.selection.available > 0 && (
+                <ContentPlanPicker
+                  action={`${base}/report`}
+                  period={kind}
+                  groups={pickerGroups(contentPlan.plan)}
+                  selected={contentPlan.selection.ids}
+                  available={contentPlan.selection.available}
+                  explicit={contentPlan.selection.explicit}
+                  stale={contentPlan.selection.stale}
+                  allHref={reportHref(kind, true, { explicit: false, ids: [] })}
+                  noneHref={reportHref(kind, true, { explicit: true, ids: [] })}
+                  through={fixed}
+                />
+              )}
             </div>
-            <ContentPlanTeamNotes
-              plan={contentPlan.plan}
-              requested={requested}
-              included={included}
-              selection={contentPlan.selection}
-            />
-            {requested && contentPlan.selection.available > 0 && (
-              <ContentPlanPicker
-                action={`${base}/report`}
-                period={kind}
-                groups={pickerGroups(contentPlan.plan)}
-                selected={contentPlan.selection.ids}
-                available={contentPlan.selection.available}
-                explicit={contentPlan.selection.explicit}
-                stale={contentPlan.selection.stale}
-                allHref={reportHref(kind, true, { explicit: false, ids: [] })}
-                noneHref={reportHref(kind, true, { explicit: true, ids: [] })}
-              />
-            )}
-          </div>
-        )}
-      </div>
+          )}
+          {team && (
+            <section
+              aria-labelledby="handoff-title"
+              className="mb-5 rounded-lg border border-line bg-surface p-4"
+              data-testid="report-handoff"
+            >
+              <h2 id="handoff-title" className="text-sm font-semibold text-ink">
+                Share with the client
+              </h2>
+              <dl className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="inline text-muted">Period: </dt>
+                  <dd className="inline font-medium text-ink">
+                    {day(period.start)} to {through}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="inline text-muted">Content plan: </dt>
+                  <dd className="inline font-medium text-ink">
+                    {planSummary && contentPlan
+                      ? `${planSummary} (${contentPlan.selection.selected} of ${contentPlan.selection.available} items selected)`
+                      : "not included"}
+                  </dd>
+                </div>
+              </dl>
+              <ul className="mt-2 list-disc pl-5 text-xs text-ink-2">
+                <li>
+                  <strong className="text-ink">PDF:</strong> the client-ready
+                  view, with client-visible tasks only
+                  {planSummary ? " and the selected content plan" : ""}. No team
+                  notes or review controls.
+                </li>
+                <li>
+                  <strong className="text-ink">Client link:</strong> the client
+                  signs in with their own account and sees the report for this
+                  period. The content plan is team-only in the app, so it is
+                  {planSummary ? " only" : ""} in the PDF, never behind the
+                  link.
+                </li>
+              </ul>
+              <div className="mt-3 flex flex-wrap items-start gap-2">
+                <LinkButton href={clientViewHref(false)} variant="secondary">
+                  Preview client view
+                </LinkButton>
+                <LinkButton href={clientViewHref(true)}>Save as PDF</LinkButton>
+                <CopyClientLink path={clientLink} />
+              </div>
+            </section>
+          )}
+        </div>
+      )}
 
       <article className="flex flex-col gap-5 print:gap-6">
         <header className="rounded-lg border border-line bg-surface p-6 shadow-card print:border-0 print:p-0 print:shadow-none">
@@ -256,7 +393,10 @@ export default async function SeoReportPage({
             {new URL(report.website.url).host}
             {report.client && ` · prepared for ${report.client.name}`}
           </p>
-          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+          <dl
+            className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3 print:grid-cols-3"
+            data-testid="report-meta"
+          >
             <div>
               <dt className="text-xs uppercase tracking-wide text-muted">
                 Reporting period
@@ -281,6 +421,37 @@ export default async function SeoReportPage({
                 {report.organization.name}
               </dd>
             </div>
+            <div className="sm:col-span-2 lg:col-span-3 print:col-span-3">
+              <dt className="text-xs uppercase tracking-wide text-muted">
+                Crawl evidence
+              </dt>
+              <dd className="text-ink" data-testid="report-evidence">
+                {evidence.complete ? (
+                  <>
+                    <span className="font-medium">
+                      Latest complete crawl {day(evidence.complete.at)}
+                    </span>
+                    {evidence.complete.stale &&
+                      " (older than 60 days: the site may have changed since)"}
+                  </>
+                ) : (
+                  <span className="font-medium">No complete crawl yet</span>
+                )}
+                {evidence.laterIncomplete &&
+                  `; a later crawl on ${day(evidence.laterIncomplete)} did not complete and is not used`}
+                .
+              </dd>
+            </div>
+            {planSummary && (
+              <div className="sm:col-span-2 lg:col-span-3 print:col-span-3">
+                <dt className="text-xs uppercase tracking-wide text-muted">
+                  Content plan
+                </dt>
+                <dd className="text-ink">
+                  Included: {planSummary} (section 11)
+                </dd>
+              </div>
+            )}
           </dl>
           <div className="mt-5 rounded-lg border border-line bg-subtle p-4">
             <p className="text-sm font-semibold text-ink">Summary</p>
@@ -536,7 +707,7 @@ export default async function SeoReportPage({
             <ContentPlanBody plan={contentPlan.shown} />
           </Section>
         )}
-        {contentPlan && !requested && (
+        {contentPlan && !requested && !clientView && (
           <details className="rounded-lg border border-dashed border-line-strong bg-surface p-5 print:hidden">
             <summary className="cursor-pointer text-sm font-semibold text-ink">
               Review the content plan (team only, not in this report)

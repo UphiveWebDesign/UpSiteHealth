@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { IssueSeverity } from "@/generated/prisma/enums";
 import { SEVERITY_WEIGHT } from "@/lib/insights/seo";
+import { EVIDENCE_MAX_AGE_DAYS } from "@/lib/scoring/freshness";
 import type { ChangeItem } from "@/lib/seo/compare";
 import type { TenantDb } from "@/lib/tenancy/scope";
 import { BASELINE_NOT_MEASURED, loadBaseline, type Baseline } from "./baseline";
@@ -42,6 +43,16 @@ export type ReportModel = {
   plan: Plan;
   sources: Array<{ label: string; detail: string }>;
   gaps: string[];
+  /**
+   * The crawl evidence behind the report: the latest complete crawl (its
+   * analysis date and whether it is older than the crawl evidence limit)
+   * and a later crawl that did not complete, if any. Not the generation
+   * date, and never presented as current when stale.
+   */
+  evidence: {
+    complete: { at: Date; stale: boolean } | null;
+    laterIncomplete: Date | null;
+  };
 };
 
 const LIST_LIMIT = 10;
@@ -63,6 +74,8 @@ export async function loadReport(
   kind: PeriodKind,
   now = new Date(),
   visible: Prisma.RecommendationWhereInput = {},
+  /** Fixes the reporting period (its exclusive end day); default: `now`. */
+  periodEnd?: Date,
 ): Promise<ReportModel | null> {
   const website = await tdb.website.findFirst({
     where: { id: websiteId },
@@ -75,12 +88,41 @@ export async function loadReport(
   });
   if (!website) return null;
   const scope = { websiteId, organizationId };
-  const { current: period } = comparablePeriods(kind, now);
+  const { current: period } = comparablePeriods(kind, periodEnd ?? now);
   // Sequential: the local single-connection database cannot interleave.
   const baseline = (await loadBaseline(tdb, websiteId))!;
   const technical = await technicalProgress(tdb, websiteId, period);
   const activity = await taskActivity(root, scope, period, visible);
   const plan = await loadPlan(root, scope, visible);
+  const [latestComplete, latestAny] = await Promise.all([
+    tdb.crawlRun.findFirst({
+      where: { websiteId, status: "COMPLETED", seoAnalyzedAt: { not: null } },
+      orderBy: { seoAnalyzedAt: "desc" },
+      select: { seoAnalyzedAt: true },
+    }),
+    tdb.crawlRun.findFirst({
+      where: { websiteId, seoAnalyzedAt: { not: null } },
+      orderBy: { seoAnalyzedAt: "desc" },
+      select: { seoAnalyzedAt: true, status: true },
+    }),
+  ]);
+  const completeAt = latestComplete?.seoAnalyzedAt ?? null;
+  const evidence: ReportModel["evidence"] = {
+    complete: completeAt
+      ? {
+          at: completeAt,
+          stale:
+            now.getTime() - completeAt.getTime() >
+            EVIDENCE_MAX_AGE_DAYS.TECHNICAL_SEO * 86_400_000,
+        }
+      : null,
+    laterIncomplete:
+      latestAny?.status !== "COMPLETED" &&
+      latestAny?.seoAnalyzedAt &&
+      (!completeAt || latestAny.seoAnalyzedAt > completeAt)
+        ? latestAny.seoAnalyzedAt
+        : null,
+  };
   const [uptimeChecks, perfTests, lastProbe] = await Promise.all([
     tdb.websiteCheck.count({
       where: {
@@ -200,6 +242,7 @@ export async function loadReport(
     plan,
     sources,
     gaps,
+    evidence,
   };
 }
 

@@ -2,6 +2,65 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-13 — Report handoff: client-ready view, PDF and client link
+
+Uncommitted, on `consolidate/2026-11-13` after `38c145b`. No migration,
+no new table, no sharing token, no external service.
+
+- **Sharing approach:** authenticated client access (option A). There is
+  no public or token link. Client members see every website of their
+  organization (`docs/specs/client-access.md`), so the content plan stays
+  team-only in the app: it reaches the client in the PDF only, never
+  behind the link. Putting the plan behind a client link needs per-client
+  access or share tokens, both a migration (owner decision pending).
+- **Share panel** (team, never printed): period, content plan status
+  ("2 actions (2 of 4 items selected)"), what the PDF and the link contain,
+  and Preview client view / Save as PDF / Copy client link.
+- **Client-ready view** (`view=client`, team only; ignored for client
+  members): tasks are read on the server with the client's rules
+  (`recommendationVisibility("CLIENT")`, so business and content tasks are
+  left out of sections 3, 8 and 10); the picker, team notes, review panel,
+  period tabs and share panel are not rendered at all. A never-printed bar
+  states what the client receives, with Back to team review and Copy client
+  link. Section 11 holds exactly the selected items.
+- **Save as PDF:** opens the client-ready view with `pdf=1`; the print
+  dialog opens once (guarded against double effects) and `pdf=1` is
+  removed from the URL. Browser print-to-PDF, A4, header metadata in three
+  columns, headings kept with their content.
+- **Fixed period:** `through=YYYY-MM-DD` (the period's last day) fixes the
+  period for the client view, the PDF and the client link; invalid, future
+  or >400-day-old values are ignored. `loadReport` takes it as `periodEnd`;
+  the generation time stays the real time.
+- **Client link:** `…/report?period=28d&through=YYYY-MM-DD` only: no
+  plan, selection, view or print parameters. Copy feedback says nothing
+  was sent; on failure the link is shown to copy by hand.
+- **Metadata:** "Crawl evidence: Latest complete crawl DATE", flagged when
+  older than 60 days, and a later incomplete crawl named as not used;
+  "Content plan: Included: N actions and M new pages (section 11)".
+- **Tests:** unit `report-handoff.test.ts` (6), component
+  `report-handoff.test.tsx` (3: copy success/failure, print once under
+  StrictMode), report page +9 (share panel links, copied link, client view
+  with client rules and no team UI in the DOM, plan excluded, invalid
+  periods, CLIENT with every parameter, fixed period for clients, evidence
+  text, print grid); 5 mutations each caught. Integration +1 (`loadReport`:
+  fixed period, evidence incl. a later PARTIAL crawl, client rules exclude
+  content tasks, other organization gets null). Local `upsitehealth-itest`
+  (backed up first): content-plan, content-depth, business, workflow,
+  opportunities 46 passed, 1 skipped (two-connection test), 1 todo.
+  `npm run check` exit 0 (2532 passed, 1 expected fail, 267 skipped, 9
+  todo).
+- **Browser (headless Chrome, local only, temporary fixture deleted):**
+  team review and client view at 1280 px and 390 px (no horizontal
+  scroll); copy link read back from the clipboard (period only); Save as
+  PDF printed once and cleaned the URL; client view PDFs: excluded 3 pages,
+  partial 5 (2 chosen actions only), all 6; CLIENT member opening the
+  copied link: fixed period, no plan, 3-page PDF; CLIENT with
+  `view=client&pdf=1&content=include…`: nothing changes, no print. Fixed:
+  the copy button stretched with its message; the printed header fell to
+  two columns. No console errors.
+- **Limits:** the client link shows the report without the content plan;
+  nothing records what was shared or when; Safari/Firefox not checked.
+
 ## 2026-11-13 — Content Plan: choose which items a report shares
 
 Uncommitted, on `consolidate/2026-11-13` after `d0b20b4`. No migration,
