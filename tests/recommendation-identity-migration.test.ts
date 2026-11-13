@@ -41,6 +41,8 @@ describe("migration 4_recommendation_identity: order and scope", () => {
       "2_recommendation_events",
       "3_crawl_mode",
       NAME,
+      // P1, after it (docs/specs/finding-resolution-provenance.md).
+      "5_finding_resolution_events",
     ]);
     expect(
       readFileSync(join(migrations, "migration_lock.toml"), "utf8"),

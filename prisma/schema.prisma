@@ -401,6 +401,7 @@ model Organization {
   crawlRuns                CrawlRun[]
   crawlPages               CrawlPage[]
   seoFindings              SeoFinding[]
+  seoFindingEvents         SeoFindingEvent[]
   issues                   Issue[]
   recommendations          Recommendation[]
   recommendationEvents     RecommendationEvent[]
@@ -486,6 +487,7 @@ model Website {
   crawlRuns               CrawlRun[]
   crawlPages              CrawlPage[]
   seoFindings             SeoFinding[]
+  seoFindingEvents        SeoFindingEvent[]
   issues                  Issue[]
   recommendations         Recommendation[]
   scoreSnapshots          WebsiteScoreSnapshot[]
@@ -624,6 +626,7 @@ model CrawlRun {
   pages        CrawlPage[]
   seoFindings  SeoFinding[]
   recommendationEvidence RecommendationEvidence[]
+  findingEvents          SeoFindingEvent[]
 
   @@index([organizationId])
   @@index([status])
@@ -712,6 +715,7 @@ model SeoFinding {
   crawlRun     CrawlRun     @relation(fields: [crawlRunId], references: [id], onDelete: Cascade)
   crawlPage    CrawlPage?   @relation(fields: [crawlPageId], references: [id], onDelete: SetNull)
   recommendationEvidence RecommendationEvidence[]
+  events                 SeoFindingEvent[]
 
   @@unique([websiteId, fingerprint])
   @@index([crawlRunId])
@@ -1195,4 +1199,64 @@ model RecommendationEvidence {
   @@index([seoFindingId])
   @@index([businessFactId])
   @@map("recommendation_evidence")
+}
+
+// ─── P1: finding resolution provenance (5_finding_resolution_events) ───────
+// docs/specs/finding-resolution-provenance.md. Written only by the findings
+// sync (seo/sync.ts), behind a table check, so the same code runs on
+// databases without this migration.
+
+/// Lifecycle events of an SEO finding. Append-only: no update, no delete
+/// except with its website or organization, no truncate (database triggers).
+enum SeoFindingEventType {
+  RESOLVED
+  REOPENED
+}
+
+/// Why a finding closed, decided by the analysis that closed it.
+enum FindingResolutionReason {
+  /// Rechecked while the rule applied, and it no longer fires.
+  FIX_CONFIRMED
+  /// Rechecked, but the rule no longer applies to the page(s).
+  NOT_APPLICABLE
+  /// The rule is no longer in the catalogue.
+  RULE_RETIRED
+  /// Closed by a recheck, but the reason could not be established.
+  UNKNOWN
+}
+
+model SeoFindingEvent {
+  id               String                   @id @default(cuid())
+  organizationId   String
+  websiteId        String
+  seoFindingId     String
+  type             SeoFindingEventType
+  /// RESOLVED only (database CHECK).
+  reason           FindingResolutionReason?
+  /// The crawl whose analysis closed or reopened the finding.
+  crawlRunId       String
+  /// That crawl's status at the time (PARTIAL may close page findings).
+  crawlStatus      CrawlRunStatus
+  /// KNOWLEDGE_VERSION of the technical rules that decided.
+  technicalVersion String
+  /// TOPIC_VERSION and COVERAGE_VERSION; content-gap closures only.
+  topicVersion     String?
+  coverageVersion  String?
+  /// The reason in words and what it rested on; at most 4 KB (database CHECK).
+  detail           Json?
+  /// The analysis time: equal to the resolvedAt / lastSeenAt it set.
+  occurredAt       DateTime
+  createdAt        DateTime                 @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  seoFinding   SeoFinding   @relation(fields: [seoFindingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  crawlRun     CrawlRun     @relation(fields: [crawlRunId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([seoFindingId, crawlRunId, type])
+  @@index([seoFindingId, occurredAt])
+  @@index([websiteId, occurredAt])
+  @@index([organizationId])
+  @@index([crawlRunId])
+  @@map("seo_finding_events")
 }

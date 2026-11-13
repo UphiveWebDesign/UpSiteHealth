@@ -17,6 +17,7 @@ export const TENANT_MODELS = new Set([
   "CrawlRun",
   "CrawlPage",
   "SeoFinding",
+  "SeoFindingEvent",
   "Issue",
   "Recommendation",
   "RecommendationEvent",
