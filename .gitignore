@@ -16,6 +16,9 @@ supabase/.temp/
 *.dump
 backups/
 
+# Shared-reconciliation halt file (local stop signal; never commit)
+/.reconcile-shared.halt
+
 # Next.js / build output
 .next/
 .next-*/
