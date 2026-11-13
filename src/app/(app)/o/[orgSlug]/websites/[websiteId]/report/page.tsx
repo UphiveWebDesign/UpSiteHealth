@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { notFound } from "next/navigation";
+import {
+  ContentPlanBody,
+  ContentPlanTeamNotes,
+} from "@/components/content-plan";
 import { CHANGE_META } from "@/components/crawl-changes";
 import { PrintButton } from "@/components/print-button";
 import {
@@ -22,6 +26,10 @@ import { requireOrgContext } from "@/lib/tenancy/context";
 import type { PeriodKind } from "@/lib/workflow/progress";
 import { splitTitle } from "@/lib/workflow/plan";
 import { ACTIVITY, CURRENT_WORK, FINDINGS } from "@/lib/workflow/labels";
+import {
+  loadContentPlan,
+  reportContentPlan,
+} from "@/lib/workflow/content-plan";
 import { executiveSummary, loadReport } from "@/lib/workflow/report";
 
 export const metadata: Metadata = { title: "SEO report · UpSiteHealth" };
@@ -35,18 +43,24 @@ const day = (d: Date) => d.toISOString().slice(0, 10);
 function Section({
   n,
   title,
+  long = false,
   children,
 }: {
   n: number;
   title: string;
+  /** Longer than a page: may break across pages (its parts keep together). */
+  long?: boolean;
   children: ReactNode;
 }) {
   return (
     <section
       aria-labelledby={`s-${n}`}
-      className="rounded-lg border border-line bg-surface p-5 shadow-card print:break-inside-avoid print:border-0 print:p-0 print:shadow-none"
+      className={`rounded-lg border border-line bg-surface p-5 shadow-card print:border-0 print:p-0 print:shadow-none ${long ? "" : "print:break-inside-avoid"}`}
     >
-      <h2 id={`s-${n}`} className="mb-3 text-base font-semibold text-ink">
+      <h2
+        id={`s-${n}`}
+        className="mb-3 text-base font-semibold text-ink print:break-after-avoid"
+      >
         {n}. {title}
       </h2>
       {children}
@@ -76,7 +90,7 @@ export default async function SeoReportPage({
   searchParams,
 }: PageProps<"/o/[orgSlug]/websites/[websiteId]/report">) {
   const { orgSlug, websiteId } = await params;
-  const { period: raw } = await searchParams;
+  const { period: raw, content } = await searchParams;
   const kind = KINDS.find((k) => k.kind === raw)?.kind ?? "28d";
   const ctx = await requireOrgContext(orgSlug);
   const report = await loadReport(
@@ -89,17 +103,25 @@ export default async function SeoReportPage({
     recommendationVisibility(ctx.role),
   );
   if (!report) notFound();
+  // Team only, decided here on the server: for other roles the plan is never
+  // read, whatever the URL says.
+  const contentPlan = await reportContentPlan(ctx.role, content, () =>
+    loadContentPlan(ctx.db, websiteId),
+  );
+  const included = contentPlan?.included ?? false;
   const base = `/o/${orgSlug}/websites/${websiteId}`;
+  const reportHref = (k: PeriodKind, withPlan: boolean) =>
+    `${base}/report?period=${k}${withPlan ? "&content=include" : ""}`;
   const { period, technical, activity, plan } = report;
   const verified = activity.items.filter((i) => i.state === "verified");
   const cameBack = activity.items.filter((i) => i.reappeared);
   const unverified = activity.items.filter(
     (i) => i.state !== "verified" && !i.reappeared,
   );
-  const nextUp = [...plan["fix-first"], ...plan.continue, ...plan.next].slice(
-    0,
-    5,
-  );
+  // With the content plan included, content tasks are listed there, not twice.
+  const nextUp = [...plan["fix-first"], ...plan.continue, ...plan.next]
+    .filter((i) => !included || !i.code?.startsWith("CONTENT_"))
+    .slice(0, 5);
 
   return (
     <>
@@ -120,11 +142,36 @@ export default async function SeoReportPage({
         <FilterTabs
           label="Report period"
           items={KINDS.map((k) => ({
-            href: `${base}/report?period=${k.kind}`,
+            href: reportHref(k.kind, included),
             label: k.label,
             active: k.kind === kind,
           }))}
         />
+        {contentPlan && (
+          <div className="mb-4 flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-x-3">
+              <p className="mb-4 text-sm font-medium text-ink">
+                Content plan (team only)
+              </p>
+              <FilterTabs
+                label="Content plan in this report (team only)"
+                items={[
+                  {
+                    href: reportHref(kind, false),
+                    label: "Not included",
+                    active: !included,
+                  },
+                  {
+                    href: reportHref(kind, true),
+                    label: "Included",
+                    active: included,
+                  },
+                ]}
+              />
+            </div>
+            <ContentPlanTeamNotes plan={contentPlan.plan} included={included} />
+          </div>
+        )}
       </div>
 
       <article className="flex flex-col gap-5 print:gap-6">
@@ -407,7 +454,28 @@ export default async function SeoReportPage({
           ) : (
             <p className="text-sm text-muted">No open work.</p>
           )}
+          {included && (
+            <p className="mt-2 text-xs text-muted">
+              Content improvements are listed in the content plan below.
+            </p>
+          )}
         </Section>
+
+        {contentPlan && included && (
+          <Section n={11} title="Content plan" long>
+            <ContentPlanBody plan={contentPlan.plan} />
+          </Section>
+        )}
+        {contentPlan && !included && (
+          <details className="rounded-lg border border-dashed border-line-strong bg-surface p-5 print:hidden">
+            <summary className="cursor-pointer text-sm font-semibold text-ink">
+              Review the content plan (team only, not in this report)
+            </summary>
+            <div className="mt-3">
+              <ContentPlanBody plan={contentPlan.plan} />
+            </div>
+          </details>
+        )}
 
         <details className="rounded-lg border border-line bg-surface p-5 shadow-card print:hidden">
           <summary className="cursor-pointer text-sm font-semibold text-ink">

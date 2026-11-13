@@ -2,6 +2,74 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-13 — Content Plan in the Report (team-only, off by default)
+
+Uncommitted, on `consolidate/2026-11-13` (working tree). No migration, no
+crawler change, no new data collection, no paid service; content findings
+stay outside the health score.
+
+- **Plan** (`src/lib/workflow/content-plan.ts`): built only from stored
+  evidence: OPEN content findings (`CONTENT_SERVICE_NOT_DESCRIBED`,
+  `CONTENT_INTERNAL_LINK_OPPORTUNITY`, `CONTENT_SERVICE_LOCATION_GAP`), the
+  approved facts they rest on (re-read now), the content tasks' status and
+  open `BIZ_` new-page tasks. Three groups (explain each service on its page;
+  link to service pages; say where each service is offered), each action
+  with why, what to do, pages to change (with the passage that already names
+  the service, for links), link target, what to confirm with the client,
+  priority and its reason, "done when" and the crawl it was seen in. One
+  service missing from several locations is one action.
+- **Left out, never presented as a problem** (listed for the team only):
+  evidence older than 60 days, a fact since rejected/deleted/pending,
+  evidence missing its page, target or facts, and items whose task the team
+  dismissed; ignored findings are counted. An incomplete or old latest crawl
+  is flagged on the plan and on each action it did not recheck.
+- **Report:** a team-only control ("Content plan not included" / "Include
+  content plan", `?content=include`, kept across period tabs). Excluded by
+  default: the team reviews it in a panel that is never printed. Included:
+  section 11 "Content plan"; section 10 then leaves out content tasks
+  (listed in the plan). Sections 1–10 are otherwise unchanged.
+- **Permissions:** decided on the server (`reportContentPlan`): for CLIENT
+  members the plan is never loaded, whatever the URL. Closed two existing
+  leaks found while auditing: the SEO findings page and the `seo-findings`
+  CSV export showed content findings (which name approved services and
+  locations) to CLIENT members; both now use `findingVisibility(role)`.
+- **Tests:** unit `content-plan.test.ts` (23), component
+  `content-plan.test.tsx` (5), Report page rendering `report/page.test.tsx`
+  (4: client with and without the parameter, team excluded, team included,
+  empty plan); mutation-checked (server gate, finding filter, section 10
+  dedupe each make a test fail). Integration `content-plan.test.ts` (5: real
+  syncs, rejected fact, dismissed and completed tasks, other organization,
+  client export and findings filter). Local `upsitehealth-itest` (run in a
+  clean clone, no `.env`): content-plan, content-depth, business, workflow,
+  opportunities: 44 passed, 1 skipped (two-connection contention test, by
+  design on PGlite), 1 todo. `npm run check` exit 0 (2485 passed, 1 expected
+  fail, 265 skipped, 9 todo). Neon and the shared database not contacted.
+- **Browser check (13 Nov, headless Chrome 157 over CDP, `next dev` on
+  127.0.0.1 from a clean clone without `.env`, local `upsitehealth-itest`
+  only, backed up first):** a temporary fixture (one organization, an
+  OWNER and a CLIENT member with sessions only and no passwords, two
+  websites built by the real SEO and recommendation syncs) was seeded and
+  deleted afterwards. Checked at 1280 px and 390 px and as A4 PDF: team
+  excluded (10 sections, review panel, nothing team-only printed, 3 pages),
+  team included (section 11, section 10 without content tasks, period tabs
+  keep the choice, 5 pages), an incomplete latest crawl with stale and
+  dismissed items (warning, notes), client with and without
+  `?content=include` (no plan, control or notes; SEO page without content
+  findings; Coverage 404; 3 pages). No horizontal page scroll, no console
+  errors. Fixed: the mobile control wrapped unevenly (now a label with
+  "Not included" / "Included"); the plan summary dated the actions by the
+  latest (incomplete) crawl instead of the complete crawl they were seen in
+  (`seen`); group and section headings could print alone at a page end and
+  a lone list item spilled onto an otherwise blank page (headings kept with
+  their content, section 11 may break across pages). Regression tests +3;
+  `npm run check` exit 0 (2488 passed, 1 expected fail, 265 skipped, 9
+  todo); integration content-plan + content-depth 9/9 on the local database.
+- **Not done:** the plan is not in any CSV
+  export; open-finding counts on the website overview and portfolio still
+  include content findings (counts only, no names); approved facts do not
+  record which services are offered where, so location actions always ask
+  for the client's confirmation.
+
 ## 2026-11-13 — Local integration validation before consolidation; P1 gap accepted
 
 Run before committing the work on branch `consolidate/2026-11-13` (six

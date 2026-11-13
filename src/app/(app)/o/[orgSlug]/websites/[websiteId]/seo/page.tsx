@@ -10,6 +10,7 @@ import { Chevron } from "@/components/ui/disclosure";
 import { Card, FilterTabs, PageHeader, UrlText } from "@/components/ui/layout";
 import { WebsiteNav } from "@/components/website-nav";
 import { formatRelative } from "@/lib/format";
+import { findingVisibility } from "@/lib/business/visibility";
 import { isContentRule } from "@/lib/knowledge/catalogue";
 import {
   describeEvidence,
@@ -63,10 +64,12 @@ export default async function SeoFindingsPage({
     select: { id: true, name: true },
   });
   if (!website) notFound();
+  // Content findings are team-only, like content tasks.
+  const visible = findingVisibility(ctx.role);
 
   const [rows, statusCounts, severityCounts, lastCrawl] = await Promise.all([
     ctx.db.seoFinding.findMany({
-      where: { websiteId, status },
+      where: { websiteId, status, ...visible },
       orderBy: { lastSeenAt: "desc" },
       take: MAX_ROWS,
       select: {
@@ -86,12 +89,12 @@ export default async function SeoFindingsPage({
     }),
     ctx.db.seoFinding.groupBy({
       by: ["status"],
-      where: { websiteId },
+      where: { websiteId, ...visible },
       _count: true,
     }),
     ctx.db.seoFinding.groupBy({
       by: ["severity"],
-      where: { websiteId, status },
+      where: { websiteId, status, ...visible },
       _count: true,
     }),
     ctx.db.crawlRun.findFirst({

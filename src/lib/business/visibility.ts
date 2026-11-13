@@ -1,5 +1,6 @@
 import type { Prisma } from "@/generated/prisma/client";
 import type { Role } from "@/generated/prisma/enums";
+import { CONTENT_RULE_IDS } from "@/lib/knowledge/catalogue";
 import { can } from "@/lib/tenancy/roles";
 
 /**
@@ -18,6 +19,15 @@ export const CONTENT_TASK_MARK = "(CONTENT_";
 
 /** Whether a member may see business facts, coverage and their tasks. */
 export const canSeeBusiness = (role: Role) => can.editWebsites(role);
+
+/**
+ * SEO finding filter for what `role` may see (empty: everything). Content
+ * findings name the same approved services and locations as content tasks,
+ * so CLIENT members see neither.
+ */
+export function findingVisibility(role: Role): Prisma.SeoFindingWhereInput {
+  return canSeeBusiness(role) ? {} : { ruleId: { notIn: CONTENT_RULE_IDS } };
+}
 
 /** Recommendation filter for what `role` may see (empty: everything). */
 export function recommendationVisibility(

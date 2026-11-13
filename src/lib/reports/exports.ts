@@ -4,7 +4,10 @@ import type {
   RecommendationStatus,
   Role,
 } from "@/generated/prisma/enums";
-import { recommendationVisibility } from "@/lib/business/visibility";
+import {
+  findingVisibility,
+  recommendationVisibility,
+} from "@/lib/business/visibility";
 import {
   loadRecommendationContext,
   recommendationMeta,
@@ -327,7 +330,8 @@ export async function buildExport(
     }
     case "seo-findings": {
       const rows = await db.seoFinding.findMany({
-        where: site,
+        // Content findings are team-only, like content tasks.
+        where: { AND: [site, findingVisibility(role ?? "CLIENT")] },
         orderBy: [{ severity: "asc" }, { ruleId: "asc" }],
         take,
         include: { website: { select: { domain: true } } },
