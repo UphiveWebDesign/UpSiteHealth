@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CrawlRunStatus,
   RecommendationStatus,
@@ -54,6 +55,11 @@ export type Progress = "to-do" | "in-progress" | "awaiting-check";
 export type ContentAction = {
   /** Stable key: the finding fingerprint(s). */
   key: string;
+  /**
+   * Short id for report selections (URL): stable while the action exists,
+   * different on every website (`selectionId`).
+   */
+  id: string;
   kind: ActionKind;
   /** The approved service it is about. */
   service: string;
@@ -98,6 +104,7 @@ export type ContentGroup = {
 };
 
 export type HeldBack = { label: string; reason: string };
+export type NewPage = { id: string; title: string; progress: Progress };
 
 export type ContentPlan =
   | { state: "unavailable"; reason: string }
@@ -105,7 +112,7 @@ export type ContentPlan =
       state: "ready";
       groups: ContentGroup[];
       /** New pages already in the SEO plan (BIZ_ tasks not done or dismissed). */
-      newPages: Array<{ title: string; progress: Progress }>;
+      newPages: NewPage[];
       /** Team-only: left out of the plan, and why. */
       heldBack: HeldBack[];
       /** Team-only: content items whose task the team dismissed. */
@@ -146,6 +153,8 @@ export type ContentPlanInput = {
   /** The latest crawl with an SEO analysis, of any status. */
   latestCrawl: { analyzedAt: Date; status: CrawlRunStatus } | null;
   now: Date;
+  /** The website the plan is for: salts selection ids (`selectionId`). */
+  websiteId?: string;
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -253,6 +262,26 @@ function confirmNote(facts: Fact[], extra?: string): string | null {
 
 type Draft = Omit<ContentAction, "progress" | "notRecheckedSince" | "seenAt">;
 
+/** Ids are hex; a selection lists at most this many (longer lists are cut). */
+export const SELECTION_ID = /^[0-9a-f]{10}$/;
+export const MAX_SELECTION = 200;
+
+/**
+ * A short, opaque id for an action or new page on one website: the same
+ * finding gives the same id on every crawl, but never the same id on
+ * another website, so a selection copied between websites selects nothing.
+ * Location mentions are keyed by their service, so the id survives a new
+ * location joining the action.
+ */
+export function selectionId(websiteId: string, key: string): string {
+  return createHash("sha256")
+    .update(`${websiteId}\u0000${key}`)
+    .digest("hex")
+    .slice(0, 10);
+}
+const idKey = (a: Pick<ContentAction, "kind" | "key" | "service">) =>
+  a.kind === "mention" ? `mention|${a.service.toLowerCase()}` : a.key;
+
 /** One finding's action, or why it cannot be shown. */
 function draftOf(
   ruleId: string,
@@ -274,6 +303,7 @@ function draftOf(
       const words = num(e.mainWords);
       return {
         key: fingerprint,
+        id: "",
         kind: "describe",
         service,
         locations: [],
@@ -308,6 +338,7 @@ function draftOf(
       const poorly = e.poorlyConnected === true;
       return {
         key: fingerprint,
+        id: "",
         kind: "link",
         service,
         locations: [],
@@ -343,6 +374,7 @@ function draftOf(
         };
       return {
         key: fingerprint,
+        id: "",
         kind: "mention",
         service,
         locations: [location],
@@ -490,7 +522,11 @@ export function buildContentPlan(input: ContentPlanInput): ContentPlan {
     });
   }
 
-  const merged = mergeMentions(actions);
+  const site = input.websiteId ?? "";
+  const merged = mergeMentions(actions).map((a) => ({
+    ...a,
+    id: selectionId(site, idKey(a)),
+  }));
   const rank = (a: ContentAction) => (a.priority === "high" ? 0 : 1);
   const groups: ContentGroup[] = ORDER.map((kind) => ({
     kind,
@@ -507,26 +543,11 @@ export function buildContentPlan(input: ContentPlanInput): ContentPlan {
         (t.status === "PROPOSED" || t.status === "IN_PROGRESS"),
     )
     .map((t) => ({
+      id: selectionId(site, `page|${t.title}`),
       title: splitTitle(t.title).displayTitle,
       progress: progressOf(t.status),
     }))
     .sort((a, b) => a.title.localeCompare(b.title));
-
-  const usedFacts = new Map<string, Fact>();
-  const factIds = new Set(
-    input.findings.flatMap((f) =>
-      (Array.isArray(rec(f.evidence).facts)
-        ? (rec(f.evidence).facts as unknown[])
-        : []
-      )
-        .map((x) => str(rec(x).id))
-        .filter((x): x is string => !!x),
-    ),
-  );
-  for (const fact of input.facts)
-    if (fact.status === "APPROVED" && factIds.has(fact.id))
-      usedFacts.set(fact.id, fact);
-  const open = [...usedFacts.values()].filter((f) => !clientConfirmed(f));
 
   let note: string | null = null;
   if (latestCrawl) {
@@ -546,12 +567,22 @@ export function buildContentPlan(input: ContentPlanInput): ContentPlan {
     heldBack,
     dismissed,
     ignored: input.ignored,
-    total: groups.reduce((n, g) => n + g.actions.length, 0),
-    pagesToChange: new Set(
-      groups.flatMap((g) => g.actions.flatMap((a) => a.pages.map(trim))),
-    ).size,
-    seen: seenRange(groups.flatMap((g) => g.actions)),
     crawl: latestCrawl ? { analyzedAt: latestCrawl.analyzedAt, note } : null,
+    ...summary(groups),
+  };
+}
+
+/** Counts and notes that depend on which actions are in the plan. */
+function summary(groups: ContentGroup[]) {
+  const actions = groups.flatMap((g) => g.actions);
+  const facts = new Map(
+    actions.flatMap((a) => a.basis).map((f) => [f.id, f] as const),
+  );
+  const open = [...facts.values()].filter((f) => !clientConfirmed(f));
+  return {
+    total: actions.length,
+    pagesToChange: new Set(actions.flatMap((a) => a.pages.map(trim))).size,
+    seen: seenRange(actions),
     unconfirmed: open.length
       ? `Some details come from our team, not yet from the client: ${open.map((f) => `“${f.value}”`).join(", ")}. Confirm them before publishing.`
       : null,
@@ -603,6 +634,7 @@ export async function loadContentPlan(
       ? { analyzedAt: latest.seoAnalyzedAt!, status: latest.status }
       : null,
     now,
+    websiteId,
   });
 }
 
@@ -610,16 +642,135 @@ export async function loadContentPlan(
 export const includeParam = (raw: unknown) => raw === "include";
 
 /**
+ * Which actions a report shows, from its URL. Without `sel=1` every action
+ * is selected (the default, and what a plain "Included" link gives). With
+ * `sel=1`, only the `pick` ids, so a copied link reproduces the report and
+ * actions found later are not added on their own. Ids are checked against
+ * the actions available now (`applySelection`); anything else is ignored.
+ */
+export type Selection = { explicit: false } | { explicit: true; ids: string[] };
+
+export function parseSelection(sel: unknown, pick: unknown): Selection {
+  if (sel !== "1") return { explicit: false };
+  const raw =
+    typeof pick === "string" ? [pick] : Array.isArray(pick) ? pick : [];
+  const ids = [
+    ...new Set(
+      raw.filter(
+        (x): x is string => typeof x === "string" && SELECTION_ID.test(x),
+      ),
+    ),
+  ].slice(0, MAX_SELECTION);
+  return { explicit: true, ids };
+}
+
+export type AppliedSelection = {
+  explicit: boolean;
+  /** Ids selected, in plan order (only ids that exist now). */
+  ids: string[];
+  /** Actions and new pages available to choose from. */
+  available: number;
+  /** How many of them are selected for this report. */
+  selected: number;
+  /** Ids in the URL that match nothing available (resolved, changed, foreign). */
+  stale: number;
+};
+
+/** The plan restricted to the selection, with its counts recomputed. */
+export function applySelection(
+  plan: ContentPlan,
+  selection: Selection,
+): { shown: ContentPlan; applied: AppliedSelection } {
+  if (plan.state !== "ready")
+    return {
+      shown: plan,
+      applied: {
+        explicit: selection.explicit,
+        ids: [],
+        available: 0,
+        selected: 0,
+        stale: 0,
+      },
+    };
+  const all = [
+    ...plan.groups.flatMap((g) => g.actions.map((a) => a.id)),
+    ...plan.newPages.map((p) => p.id),
+  ];
+  const wanted = new Set(selection.explicit ? selection.ids : all);
+  const keep = (id: string) => wanted.has(id);
+  const groups = plan.groups
+    .map((g) => ({ ...g, actions: g.actions.filter((a) => keep(a.id)) }))
+    .filter((g) => g.actions.length > 0);
+  const ids = all.filter(keep);
+  return {
+    shown: {
+      ...plan,
+      groups,
+      newPages: plan.newPages.filter((p) => keep(p.id)),
+      ...summary(groups),
+    },
+    applied: {
+      explicit: selection.explicit,
+      ids,
+      available: all.length,
+      selected: ids.length,
+      stale: selection.explicit
+        ? selection.ids.filter((id) => !all.includes(id)).length
+        : 0,
+    },
+  };
+}
+
+/** The report's query string for a period, inclusion and selection. */
+export function reportQuery(
+  period: string,
+  included: boolean,
+  selection: { explicit: boolean; ids: string[] },
+): string {
+  const q = new URLSearchParams({ period });
+  if (included) q.set("content", "include");
+  if (selection.explicit) {
+    q.set("sel", "1");
+    for (const id of selection.ids) q.append("pick", id);
+  }
+  return `?${q.toString()}`;
+}
+
+export type ReportContentPlan = {
+  /** The whole plan, for the team's review and choices. */
+  plan: ContentPlan;
+  /** What the report shows: the selected actions only. */
+  shown: ContentPlan;
+  /** The team asked for the plan in the report (`content=include`). */
+  requested: boolean;
+  /** It is in the report: requested and at least one item selected. */
+  included: boolean;
+  selection: AppliedSelection;
+};
+
+/**
  * The plan for the Report page, decided on the server: null for anyone
- * who may not see business content (the plan is never read for them,
- * whatever the URL says); otherwise the plan and whether it is included
- * in the report (it is always available to the team for review).
+ * who may not see business content (the plan and the selection parameters
+ * are never read for them, whatever the URL says); otherwise the plan, the
+ * selected part and whether it is in the report.
  */
 export async function reportContentPlan(
   role: Role,
-  raw: unknown,
+  params: { content?: unknown; sel?: unknown; pick?: unknown },
   load: () => Promise<ContentPlan>,
-): Promise<{ plan: ContentPlan; included: boolean } | null> {
+): Promise<ReportContentPlan | null> {
   if (!canSeeBusiness(role)) return null;
-  return { plan: await load(), included: includeParam(raw) };
+  const plan = await load();
+  const { shown, applied } = applySelection(
+    plan,
+    parseSelection(params.sel, params.pick),
+  );
+  const requested = includeParam(params.content);
+  return {
+    plan,
+    shown,
+    requested,
+    included: requested && plan.state === "ready" && applied.selected > 0,
+    selection: applied,
+  };
 }

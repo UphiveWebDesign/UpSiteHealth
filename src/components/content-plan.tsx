@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Callout } from "@/components/ui/feedback";
 import type {
+  AppliedSelection,
   ContentAction,
   ContentPlan,
   Progress,
@@ -205,9 +206,15 @@ export function ContentPlanBody({ plan }: { plan: ContentPlan }) {
 export function ContentPlanTeamNotes({
   plan,
   included,
+  requested = included,
+  selection,
 }: {
   plan: ContentPlan;
+  /** In the report: requested, and at least one item selected. */
   included: boolean;
+  /** The team chose "Included". */
+  requested?: boolean;
+  selection?: Pick<AppliedSelection, "selected" | "available">;
 }) {
   const left =
     plan.state === "ready"
@@ -227,8 +234,18 @@ export function ContentPlanTeamNotes({
     <div className="print:hidden" data-testid="content-plan-team-notes">
       <Callout tone="info" title="Team only">
         {included
-          ? "The content plan is included in this report. Client members never see it in the app; it reaches the client only when you share or print this report."
-          : "Not included in the report. Review it below; it is printed only after you choose Included."}
+          ? `The content plan is included in this report${
+              selection
+                ? ` with ${selection.selected} of ${selection.available} items`
+                : ""
+            }. Client members never see it in the app; it reaches the client only when you share or print this report.`
+          : !requested
+            ? "Not included in the report. Review it below; it is printed only after you choose Included."
+            : plan.state !== "ready"
+              ? plan.reason
+              : selection && selection.available > 0
+                ? "No items are selected, so the report has no content plan section. Tick items below to add them."
+                : "There are no content actions to share, so the report has no content plan section."}
         {left.length > 0 && (
           <>
             <span className="mt-2 block font-medium">

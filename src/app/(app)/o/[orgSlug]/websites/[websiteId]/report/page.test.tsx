@@ -30,6 +30,20 @@ vi.mock("@/lib/tenancy/context", () => ({
 }));
 vi.mock("@/components/website-nav", () => ({ WebsiteNav: () => null }));
 vi.mock("@/components/print-button", () => ({ PrintButton: () => null }));
+// next/form needs the app router; a plain GET form is what it renders.
+vi.mock("next/form", () => ({
+  default: ({
+    action,
+    children,
+  }: {
+    action: string;
+    children: import("react").ReactNode;
+  }) => (
+    <form action={action} method="get">
+      {children}
+    </form>
+  ),
+}));
 vi.mock("@/components/workflow", () => ({
   BaselineSummary: () => null,
   PeriodTechnical: () => null,
@@ -109,6 +123,7 @@ const PLAN: ContentPlan = {
       actions: [
         {
           key: "k1",
+          id: "aaaaaaaaaa",
           kind: "describe",
           service: "Funeral flowers",
           locations: [],
@@ -131,13 +146,45 @@ const PLAN: ContentPlan = {
         },
       ],
     },
+    {
+      kind: "link",
+      title: "Help visitors reach service pages",
+      intro: "Intro.",
+      actions: [
+        {
+          key: "k2",
+          id: "bbbbbbbbbb",
+          kind: "link",
+          service: "Wedding flowers",
+          locations: [],
+          title: "Link to the Wedding flowers page",
+          why: "1 page mentions it without a link.",
+          todo: "Add a link.",
+          pages: ["https://bloom.example/"],
+          target: "https://bloom.example/wedding-flowers",
+          passages: [],
+          morePages: 0,
+          facts: ["“Wedding flowers” (from the client)"],
+          basis: [],
+          confirm: null,
+          priority: "normal",
+          priorityReason: "Reachable.",
+          doneWhen: "The page links to it.",
+          seenAt: new Date("2026-11-10T09:00:00Z"),
+          notRecheckedSince: null,
+          progress: "to-do",
+        },
+      ],
+    },
   ],
-  newPages: [],
+  newPages: [
+    { id: "cccccccccc", title: "Add a page for “Cottages”", progress: "to-do" },
+  ],
   heldBack: [{ label: "Wedding flowers", reason: "Too old." }],
   dismissed: 1,
   ignored: 0,
-  total: 1,
-  pagesToChange: 1,
+  total: 2,
+  pagesToChange: 2,
   seen: {
     from: new Date("2026-11-10T09:00:00Z"),
     to: new Date("2026-11-10T09:00:00Z"),
@@ -259,17 +306,176 @@ describe("team members", () => {
     ).toBe("/o/agency/websites/w1/report?period=7d");
   });
 
-  test("an empty plan says so plainly when included", async () => {
+  test("an empty plan has no section in the report; the team is told why", async () => {
     state.loadContentPlan.mockResolvedValue({
       ...PLAN,
       groups: [],
+      newPages: [],
       total: 0,
       pagesToChange: 0,
+      seen: null,
       heldBack: [],
       dismissed: 0,
     });
     await show("MEMBER", { content: "include" });
-    const section = section11()!.closest("section")!;
-    expect(within(section).getByTestId("content-plan-empty")).toBeTruthy();
+    expect(section11()).toBeNull();
+    expect(screen.queryByTestId("content-plan-picker")).toBeNull();
+    expect(screen.getByText(/no content actions to share/)).toBeTruthy();
+  });
+});
+
+const pickerBoxes = () =>
+  Object.fromEntries(
+    within(screen.getByTestId("content-plan-picker"))
+      .getAllByRole("checkbox")
+      .map((b) => [
+        (b as HTMLInputElement).value,
+        (b as HTMLInputElement).checked,
+      ]),
+  );
+const s11 = () => section11()!.closest("section")!;
+
+describe("choosing actions for the report (team)", () => {
+  test("included by default: every item selected, the picker says so, all of them in section 11", async () => {
+    await show("MEMBER", { content: "include" });
+    expect(screen.getByTestId("selection-count").textContent).toBe(
+      "(3 of 3 selected)",
+    );
+    expect(pickerBoxes()).toEqual({
+      aaaaaaaaaa: true,
+      bbbbbbbbbb: true,
+      cccccccccc: true,
+    });
+    const sec = s11();
+    expect(
+      within(sec).getByText("1. Describe Funeral flowers on its page"),
+    ).toBeTruthy();
+    expect(
+      within(sec).getByText("2. Link to the Wedding flowers page"),
+    ).toBeTruthy();
+    expect(within(sec).getByText("Add a page for “Cottages”")).toBeTruthy();
+    // The picker is never printed and sits outside the report itself.
+    const picker = screen.getByTestId("content-plan-picker");
+    expect(picker.closest(".print\\:hidden")).not.toBeNull();
+    expect(picker.closest("article")).toBeNull();
+  });
+
+  test("one item selected: only it is in section 11, renumbered; links keep the selection", async () => {
+    await show("MEMBER", {
+      content: "include",
+      period: "7d",
+      sel: "1",
+      pick: "bbbbbbbbbb",
+    });
+    expect(screen.getByTestId("selection-count").textContent).toBe(
+      "(1 of 3 selected)",
+    );
+    expect(pickerBoxes()).toEqual({
+      aaaaaaaaaa: false,
+      bbbbbbbbbb: true,
+      cccccccccc: false,
+    });
+    const sec = s11();
+    expect(
+      within(sec).getByText("1. Link to the Wedding flowers page"),
+    ).toBeTruthy();
+    expect(sec.textContent).not.toMatch(
+      /Funeral flowers|Cottages|New pages in the plan/,
+    );
+    expect(within(sec).getByText(/^1 action on 1 page/)).toBeTruthy();
+    expect(
+      screen.getByText(/included in this report with 1 of 3 items/),
+    ).toBeTruthy();
+    const href = (name: string) =>
+      screen.getByRole("link", { name }).getAttribute("href");
+    expect(href("Last 28 days")).toBe(
+      "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=bbbbbbbbbb",
+    );
+    expect(href("Not included")).toBe(
+      "/o/agency/websites/w1/report?period=7d&sel=1&pick=bbbbbbbbbb",
+    );
+    expect(href("Select all")).toBe(
+      "/o/agency/websites/w1/report?period=7d&content=include",
+    );
+    expect(href("Clear all")).toBe(
+      "/o/agency/websites/w1/report?period=7d&content=include&sel=1",
+    );
+  });
+
+  test("a new page alone can be shared", async () => {
+    await show("MEMBER", {
+      content: "include",
+      sel: "1",
+      pick: ["cccccccccc"],
+    });
+    const sec = s11();
+    expect(within(sec).getByText("Add a page for “Cottages”")).toBeTruthy();
+    expect(within(sec).queryAllByTestId("content-action")).toEqual([]);
+  });
+
+  test("clear all: no section 11, content tasks stay in section 10, the team is told", async () => {
+    await show("MEMBER", { content: "include", sel: "1" });
+    expect(section11()).toBeNull();
+    expect(screen.getByTestId("selection-count").textContent).toBe(
+      "(0 of 3 selected)",
+    );
+    expect(screen.getByText(/No items are selected/)).toBeTruthy();
+    expect(screen.queryByText(/listed in the content plan below/)).toBeNull();
+    expect(
+      screen.getByText(/Service page does not describe the service/),
+    ).toBeTruthy();
+  });
+
+  test("ids that are malformed, unknown or from another website are ignored", async () => {
+    await show("MEMBER", {
+      content: "include",
+      sel: "1",
+      pick: ["aaaaaaaaaa", "dddddddddd", "<script>", "AAAAAAAAAA"],
+    });
+    expect(pickerBoxes()).toEqual({
+      aaaaaaaaaa: true,
+      bbbbbbbbbb: false,
+      cccccccccc: false,
+    });
+    expect(screen.getByTestId("selection-stale").textContent).toMatch(
+      /^1 earlier selection/,
+    );
+    expect(s11().textContent).not.toMatch(/Wedding|Cottages|script/);
+  });
+
+  test("not included: the selection is kept for later but nothing is in the report", async () => {
+    await show("MEMBER", { sel: "1", pick: "bbbbbbbbbb" });
+    expect(section11()).toBeNull();
+    expect(screen.queryByTestId("content-plan-picker")).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Included" }).getAttribute("href"),
+    ).toBe(
+      "/o/agency/websites/w1/report?period=28d&content=include&sel=1&pick=bbbbbbbbbb",
+    );
+  });
+});
+
+describe("client members with selection parameters", () => {
+  test("nothing changes: no plan, no picker, no counts, and the plan is never loaded", async () => {
+    for (const search of [
+      { sel: "1", pick: "aaaaaaaaaa" },
+      { content: "include", sel: "1", pick: ["aaaaaaaaaa", "bbbbbbbbbb"] },
+      { content: "include", sel: "1" },
+    ]) {
+      const { container } = await show("CLIENT", search);
+      expect(section11()).toBeNull();
+      expect(screen.queryByTestId("content-plan-picker")).toBeNull();
+      expect(screen.queryByTestId("content-plan-team-notes")).toBeNull();
+      expect(container.textContent).not.toMatch(
+        /selected|Funeral|Wedding flowers|Cottages/,
+      );
+      // Section 10 is the client's usual one (the report loader's filter).
+      expect(screen.getByText("Fix missing titles")).toBeTruthy();
+      expect(
+        screen.getByRole("link", { name: "Last 7 days" }).getAttribute("href"),
+      ).toBe("/o/agency/websites/w1/report?period=7d");
+      cleanup();
+    }
+    expect(state.loadContentPlan).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,10 @@ import {
   ContentPlanBody,
   ContentPlanTeamNotes,
 } from "@/components/content-plan";
+import {
+  ContentPlanPicker,
+  type PickerGroup,
+} from "@/components/content-plan-picker";
 import { CHANGE_META } from "@/components/crawl-changes";
 import { PrintButton } from "@/components/print-button";
 import {
@@ -29,6 +33,8 @@ import { ACTIVITY, CURRENT_WORK, FINDINGS } from "@/lib/workflow/labels";
 import {
   loadContentPlan,
   reportContentPlan,
+  reportQuery,
+  type ContentPlan,
 } from "@/lib/workflow/content-plan";
 import { executiveSummary, loadReport } from "@/lib/workflow/report";
 
@@ -39,6 +45,44 @@ const KINDS: Array<{ kind: PeriodKind; label: string }> = [
   { kind: "7d", label: "Last 7 days" },
 ];
 const day = (d: Date) => d.toISOString().slice(0, 10);
+const pathOf = (url: string) => {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+};
+
+/** The picker's rows: the whole plan, in the report's group order. */
+function pickerGroups(plan: ContentPlan): PickerGroup[] {
+  if (plan.state !== "ready") return [];
+  return [
+    ...plan.groups.map((g) => ({
+      title: g.title,
+      items: g.actions.map((a) => ({
+        id: a.id,
+        label: a.title,
+        detail: `${a.priority === "high" ? "Do first" : "Then"} · ${pathOf(a.pages[0])}${
+          a.pages.length + a.morePages > 1
+            ? ` and ${a.pages.length + a.morePages - 1} more`
+            : ""
+        }`,
+      })),
+    })),
+    ...(plan.newPages.length
+      ? [
+          {
+            title: "New pages in the plan",
+            items: plan.newPages.map((p) => ({
+              id: p.id,
+              label: p.title,
+              detail: "New page, already in the SEO plan",
+            })),
+          },
+        ]
+      : []),
+  ];
+}
 
 function Section({
   n,
@@ -90,7 +134,7 @@ export default async function SeoReportPage({
   searchParams,
 }: PageProps<"/o/[orgSlug]/websites/[websiteId]/report">) {
   const { orgSlug, websiteId } = await params;
-  const { period: raw, content } = await searchParams;
+  const { period: raw, content, sel, pick } = await searchParams;
   const kind = KINDS.find((k) => k.kind === raw)?.kind ?? "28d";
   const ctx = await requireOrgContext(orgSlug);
   const report = await loadReport(
@@ -103,15 +147,23 @@ export default async function SeoReportPage({
     recommendationVisibility(ctx.role),
   );
   if (!report) notFound();
-  // Team only, decided here on the server: for other roles the plan is never
-  // read, whatever the URL says.
-  const contentPlan = await reportContentPlan(ctx.role, content, () =>
-    loadContentPlan(ctx.db, websiteId),
+  // Team only, decided here on the server: for other roles neither the plan
+  // nor the selection parameters are read, whatever the URL says.
+  const contentPlan = await reportContentPlan(
+    ctx.role,
+    { content, sel, pick },
+    () => loadContentPlan(ctx.db, websiteId),
   );
+  const requested = contentPlan?.requested ?? false;
   const included = contentPlan?.included ?? false;
+  const selection = contentPlan?.selection ?? { explicit: false, ids: [] };
   const base = `/o/${orgSlug}/websites/${websiteId}`;
-  const reportHref = (k: PeriodKind, withPlan: boolean) =>
-    `${base}/report?period=${k}${withPlan ? "&content=include" : ""}`;
+  // Every link keeps the team's choices, so a copied URL reproduces the report.
+  const reportHref = (
+    k: PeriodKind,
+    withPlan: boolean,
+    chosen: { explicit: boolean; ids: string[] } = selection,
+  ) => `${base}/report${reportQuery(k, withPlan, chosen)}`;
   const { period, technical, activity, plan } = report;
   const verified = activity.items.filter((i) => i.state === "verified");
   const cameBack = activity.items.filter((i) => i.reappeared);
@@ -142,7 +194,7 @@ export default async function SeoReportPage({
         <FilterTabs
           label="Report period"
           items={KINDS.map((k) => ({
-            href: reportHref(k.kind, included),
+            href: reportHref(k.kind, requested),
             label: k.label,
             active: k.kind === kind,
           }))}
@@ -159,17 +211,35 @@ export default async function SeoReportPage({
                   {
                     href: reportHref(kind, false),
                     label: "Not included",
-                    active: !included,
+                    active: !requested,
                   },
                   {
                     href: reportHref(kind, true),
                     label: "Included",
-                    active: included,
+                    active: requested,
                   },
                 ]}
               />
             </div>
-            <ContentPlanTeamNotes plan={contentPlan.plan} included={included} />
+            <ContentPlanTeamNotes
+              plan={contentPlan.plan}
+              requested={requested}
+              included={included}
+              selection={contentPlan.selection}
+            />
+            {requested && contentPlan.selection.available > 0 && (
+              <ContentPlanPicker
+                action={`${base}/report`}
+                period={kind}
+                groups={pickerGroups(contentPlan.plan)}
+                selected={contentPlan.selection.ids}
+                available={contentPlan.selection.available}
+                explicit={contentPlan.selection.explicit}
+                stale={contentPlan.selection.stale}
+                allHref={reportHref(kind, true, { explicit: false, ids: [] })}
+                noneHref={reportHref(kind, true, { explicit: true, ids: [] })}
+              />
+            )}
           </div>
         )}
       </div>
@@ -463,10 +533,10 @@ export default async function SeoReportPage({
 
         {contentPlan && included && (
           <Section n={11} title="Content plan" long>
-            <ContentPlanBody plan={contentPlan.plan} />
+            <ContentPlanBody plan={contentPlan.shown} />
           </Section>
         )}
-        {contentPlan && !included && (
+        {contentPlan && !requested && (
           <details className="rounded-lg border border-dashed border-line-strong bg-surface p-5 print:hidden">
             <summary className="cursor-pointer text-sm font-semibold text-ink">
               Review the content plan (team only, not in this report)

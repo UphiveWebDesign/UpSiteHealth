@@ -9,6 +9,7 @@ afterEach(cleanup);
 const SEEN = new Date("2026-11-10T09:00:00Z");
 const link: ContentAction = {
   key: "k-link",
+  id: "aaaaaaaaaa",
   kind: "link",
   service: "Wedding flowers",
   locations: [],
@@ -47,7 +48,13 @@ const plan = (over: Partial<Extract<ContentPlan, { state: "ready" }>> = {}) =>
         actions: [link],
       },
     ],
-    newPages: [{ title: "Add a page for “Cottages”", progress: "to-do" }],
+    newPages: [
+      {
+        id: "bbbbbbbbbb",
+        title: "Add a page for “Cottages”",
+        progress: "to-do",
+      },
+    ],
     heldBack: [],
     dismissed: 0,
     ignored: 0,
@@ -169,6 +176,42 @@ describe("team notes", () => {
     ).toBeTruthy();
     expect(
       within(notes).getByText(/1 content finding marked ignored/),
+    ).toBeTruthy();
+  });
+
+  test("requested with nothing selected, or nothing to share: says the report has no plan section", () => {
+    render(
+      <ContentPlanTeamNotes
+        included={false}
+        requested
+        plan={plan()}
+        selection={{ selected: 0, available: 2 }}
+      />,
+    );
+    expect(screen.getByText(/No items are selected/)).toBeTruthy();
+    cleanup();
+    render(
+      <ContentPlanTeamNotes
+        included={false}
+        requested
+        plan={plan({ groups: [], newPages: [], total: 0 })}
+        selection={{ selected: 0, available: 0 }}
+      />,
+    );
+    expect(screen.getByText(/no content actions to share/)).toBeTruthy();
+  });
+
+  test("included with a selection: says how many items the client receives", () => {
+    render(
+      <ContentPlanTeamNotes
+        included
+        requested
+        plan={plan()}
+        selection={{ selected: 1, available: 2 }}
+      />,
+    );
+    expect(
+      screen.getByText(/included in this report with 1 of 2 items/),
     ).toBeTruthy();
   });
 

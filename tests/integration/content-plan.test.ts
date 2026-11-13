@@ -8,7 +8,11 @@ import { LINK_RULE, NOT_DESCRIBED_RULE } from "@/lib/seo/content";
 import { syncSeoFindings } from "@/lib/seo/sync";
 import { tenantDb } from "@/lib/tenancy/scope";
 import { createWebsite } from "@/lib/websites/service";
-import { loadContentPlan, type ContentPlan } from "@/lib/workflow/content-plan";
+import {
+  applySelection,
+  loadContentPlan,
+  type ContentPlan,
+} from "@/lib/workflow/content-plan";
 import { TEST_DATABASE_URL, testDb, uid } from "./helpers";
 
 /**
@@ -237,6 +241,36 @@ describe.skipIf(!TEST_DATABASE_URL)("content plan (local database)", () => {
     expect(p.groups.flatMap((g) => g.actions)).toEqual([
       expect.objectContaining({ kind: "link", progress: "awaiting-check" }),
     ]);
+  });
+
+  test("selections are per website: the same findings on two websites in two organizations have different ids", async () => {
+    const a = await florist("pick-a");
+    const b = await florist("pick-b");
+    for (const s of [a, b]) {
+      await crawl(s, [HOME(), WEDDING, funeral(VAGUE)]);
+      await syncRecommendations(db, {
+        id: s.id,
+        organizationId: s.organizationId,
+      });
+    }
+    const pa = await plan(a);
+    const pb = await plan(b);
+    const ids = (p: ContentPlan) =>
+      ready(p).groups.flatMap((g) => g.actions.map((x) => x.id));
+    expect(ids(pa)).toHaveLength(2);
+    expect(ids(pb)).toHaveLength(2);
+    expect(ids(pb).some((id) => ids(pa).includes(id))).toBe(false);
+    // Website A's selection, pasted into website B's report, selects nothing.
+    const pasted = applySelection(pb, { explicit: true, ids: ids(pa) });
+    expect(pasted.applied).toMatchObject({ selected: 0, stale: 2 });
+    // The same website after a new crawl keeps its ids, so a link still works.
+    await crawl(a, [HOME(), WEDDING, funeral(VAGUE)]);
+    expect(ids(await plan(a))).toEqual(ids(pa));
+    const one = applySelection(await plan(a), {
+      explicit: true,
+      ids: [ids(pa)[1]],
+    });
+    expect(ready(one.shown).groups.map((g) => g.kind)).toEqual(["link"]);
   });
 
   test("another organization's scope reads nothing of this website", async () => {

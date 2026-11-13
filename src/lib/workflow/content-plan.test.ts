@@ -10,8 +10,12 @@ import {
 } from "@/lib/seo/content";
 import {
   buildContentPlan,
+  applySelection,
   includeParam,
+  parseSelection,
   reportContentPlan,
+  reportQuery,
+  selectionId,
   type ContentPlan,
   type ContentPlanInput,
   type PlanFinding,
@@ -439,7 +443,7 @@ describe("the team's decisions in the SEO plan", () => {
         }),
       ),
     );
-    expect(p.newPages).toEqual([
+    expect(p.newPages).toMatchObject([
       { title: "Add a page for “Cottages”", progress: "to-do" },
       { title: "Add a page for “Leeds”", progress: "in-progress" },
     ]);
@@ -453,26 +457,65 @@ describe("the team's decisions in the SEO plan", () => {
 describe("team-only access, decided on the server", () => {
   const TEAM: Role[] = ["OWNER", "ADMIN", "MANAGER", "MEMBER"];
 
-  test("client members get nothing, and the plan is never read for them, whatever the URL says", async () => {
-    for (const raw of [undefined, "include", ["include"]]) {
-      const load = vi.fn(async () => buildContentPlan(input()));
-      expect(await reportContentPlan("CLIENT", raw, load)).toBeNull();
+  const SITE = "site-a";
+  const withActions = () =>
+    buildContentPlan(
+      input({ findings: [describeFinding(), linkFinding()], websiteId: SITE }),
+    );
+
+  test("client members get nothing, and neither the plan nor the selection is read for them, whatever the URL says", async () => {
+    const id = selectionId(SITE, describeFinding().fingerprint);
+    for (const params of [
+      {},
+      { content: "include" },
+      { content: ["include"] },
+      { content: "include", sel: "1", pick: id },
+      { content: "include", sel: "1", pick: [id, "zzz"] },
+    ]) {
+      const load = vi.fn(async () => withActions());
+      expect(await reportContentPlan("CLIENT", params, load)).toBeNull();
       expect(load).not.toHaveBeenCalled();
     }
   });
 
-  test("the team always gets the plan for review; it is included only when asked", async () => {
+  test("the team always gets the plan for review; it is in the report only when asked", async () => {
     for (const role of TEAM) {
-      const load = vi.fn(async () => buildContentPlan(input()));
-      expect(await reportContentPlan(role, undefined, load)).toMatchObject({
+      const load = vi.fn(async () => withActions());
+      expect(await reportContentPlan(role, {}, load)).toMatchObject({
+        requested: false,
         included: false,
+        selection: { explicit: false, available: 2, selected: 2 },
       });
-      expect(await reportContentPlan(role, "include", load)).toMatchObject({
+      expect(
+        await reportContentPlan(role, { content: "include" }, load),
+      ).toMatchObject({
+        requested: true,
         included: true,
-        plan: { state: "ready" },
+        plan: { state: "ready", total: 2 },
+        shown: { total: 2 },
       });
       expect(load).toHaveBeenCalledTimes(2);
     }
+  });
+
+  test("nothing to share or nothing selected: requested, but not in the report", async () => {
+    const empty = await reportContentPlan(
+      "MEMBER",
+      { content: "include" },
+      async () => buildContentPlan(input()),
+    );
+    expect(empty).toMatchObject({ requested: true, included: false });
+    const none = await reportContentPlan(
+      "MEMBER",
+      { content: "include", sel: "1" },
+      async () => withActions(),
+    );
+    expect(none).toMatchObject({
+      requested: true,
+      included: false,
+      selection: { explicit: true, selected: 0, available: 2 },
+      shown: { total: 0, groups: [] },
+    });
   });
 
   test("only the exact value includes it", () => {
@@ -489,5 +532,189 @@ describe("team-only access, decided on the server", () => {
     expect(CONTENT_RULE_IDS).toEqual(
       expect.arrayContaining([NOT_DESCRIBED_RULE, LINK_RULE, CONTENT_GAP_RULE]),
     );
+  });
+});
+
+describe("choosing actions for a report", () => {
+  const SITE = "site-a";
+  const NEW_PAGE = {
+    title: "Add a page for “Cottages” (BIZ_SERVICE_PAGE)",
+    status: "PROPOSED" as const,
+  };
+  const full = (over: Partial<ContentPlanInput> = {}) =>
+    ready(
+      buildContentPlan(
+        input({
+          findings: [
+            describeFinding(),
+            linkFinding(),
+            mentionFinding(LEEDS, "https://bloom.example/leeds"),
+            mentionFinding(YORK, "https://bloom.example/york"),
+          ],
+          tasks: [NEW_PAGE],
+          websiteId: SITE,
+          ...over,
+        }),
+      ),
+    );
+  const ids = (p: ContentPlan) => [
+    ...ready(p).groups.flatMap((g) => g.actions.map((a) => a.id)),
+    ...ready(p).newPages.map((n) => n.id),
+  ];
+
+  test("every action and new page has a short id, stable across rebuilds", () => {
+    const a = ids(full());
+    expect(a).toHaveLength(4);
+    for (const id of a) expect(id).toMatch(/^[0-9a-f]{10}$/);
+    expect(new Set(a).size).toBe(4);
+    expect(ids(full())).toEqual(a);
+  });
+
+  test("ids differ per website, so a selection copied to another website selects nothing", () => {
+    const here = ids(full());
+    const there = ids(full({ websiteId: "site-b" }));
+    expect(there.some((id) => here.includes(id))).toBe(false);
+    const { applied } = applySelection(full({ websiteId: "site-b" }), {
+      explicit: true,
+      ids: here,
+    });
+    expect(applied).toMatchObject({ selected: 0, stale: 4, available: 4 });
+  });
+
+  test("a location mention keeps its id when another location joins it", () => {
+    const one = full({
+      findings: [mentionFinding(LEEDS, "https://bloom.example/leeds")],
+      tasks: [],
+    });
+    const two = full({ tasks: [] });
+    const mention = (p: ContentPlan) =>
+      ready(p).groups.find((g) => g.kind === "mention")!.actions[0].id;
+    expect(mention(two)).toBe(mention(one));
+  });
+
+  test("default: no selection parameters select everything", () => {
+    expect(parseSelection(undefined, undefined)).toEqual({ explicit: false });
+    expect(parseSelection("0", "abc")).toEqual({ explicit: false });
+    const p = full();
+    const { shown, applied } = applySelection(p, { explicit: false });
+    expect(applied).toMatchObject({
+      explicit: false,
+      selected: 4,
+      available: 4,
+      stale: 0,
+    });
+    expect(shown).toEqual(p);
+  });
+
+  test("selecting some: groups keep their order, empty groups disappear, counts and notes follow the selection", () => {
+    const p = full();
+    const [describe, link] = ready(p).groups.flatMap((g) => g.actions);
+    const { shown, applied } = applySelection(p, {
+      explicit: true,
+      ids: [link.id],
+    });
+    const s = ready(shown);
+    expect(s.groups.map((g) => g.kind)).toEqual(["link"]);
+    expect(s.newPages).toEqual([]);
+    expect(s).toMatchObject({ total: 1, pagesToChange: 1 });
+    // Funeral flowers (team-entered) is no longer in the shown plan.
+    expect(s.unconfirmed).toBeNull();
+    expect(applied).toMatchObject({
+      selected: 1,
+      available: 4,
+      ids: [link.id],
+    });
+    expect(applied.ids).not.toContain(describe.id);
+  });
+
+  test("clear all: nothing shown", () => {
+    const { shown, applied } = applySelection(full(), {
+      explicit: true,
+      ids: [],
+    });
+    expect(ready(shown)).toMatchObject({
+      groups: [],
+      newPages: [],
+      total: 0,
+      seen: null,
+    });
+    expect(applied.selected).toBe(0);
+  });
+
+  test("new pages can be selected on their own", () => {
+    const p = full();
+    const page = ready(p).newPages[0];
+    const { shown } = applySelection(p, { explicit: true, ids: [page.id] });
+    expect(ready(shown)).toMatchObject({ total: 0, newPages: [page] });
+  });
+
+  test("an action found after the selection is not added; a resolved one is ignored and counted", () => {
+    const before = full({ findings: [describeFinding()], tasks: [] });
+    const chosen = ids(before);
+    // Later: the describe finding was resolved and a link finding appeared.
+    const after = full({ findings: [linkFinding()], tasks: [] });
+    const { shown, applied } = applySelection(after, {
+      explicit: true,
+      ids: chosen,
+    });
+    expect(ready(shown).total).toBe(0);
+    expect(applied).toMatchObject({ selected: 0, available: 1, stale: 1 });
+  });
+
+  test("URL values are validated: only well-formed ids, no duplicates, bounded", () => {
+    const good = "0123456789";
+    expect(
+      parseSelection("1", [
+        good,
+        good,
+        "XYZ",
+        "0123",
+        "../etc",
+        7,
+        "abcdefabcdef",
+        "a".repeat(10),
+      ]),
+    ).toEqual({ explicit: true, ids: [good, "aaaaaaaaaa"] });
+    expect(parseSelection("1", good)).toEqual({ explicit: true, ids: [good] });
+    expect(parseSelection("1", undefined)).toEqual({ explicit: true, ids: [] });
+    const many = Array.from({ length: 500 }, (_, i) =>
+      i.toString(16).padStart(10, "0"),
+    );
+    expect((parseSelection("1", many) as { ids: string[] }).ids).toHaveLength(
+      200,
+    );
+  });
+
+  test("the report URL carries period, inclusion and selection", () => {
+    expect(reportQuery("28d", false, { explicit: false, ids: [] })).toBe(
+      "?period=28d",
+    );
+    expect(reportQuery("7d", true, { explicit: false, ids: [] })).toBe(
+      "?period=7d&content=include",
+    );
+    expect(reportQuery("7d", true, { explicit: true, ids: [] })).toBe(
+      "?period=7d&content=include&sel=1",
+    );
+    expect(
+      reportQuery("28d", true, {
+        explicit: true,
+        ids: ["aaaaaaaaaa", "bbbbbbbbbb"],
+      }),
+    ).toBe("?period=28d&content=include&sel=1&pick=aaaaaaaaaa&pick=bbbbbbbbbb");
+  });
+
+  test("the URL round trip reproduces the same report", async () => {
+    const p = full();
+    const chosen = ids(p).slice(1, 3);
+    const q = new URLSearchParams(
+      reportQuery("28d", true, { explicit: true, ids: chosen }).slice(1),
+    );
+    const r = await reportContentPlan(
+      "MEMBER",
+      { content: q.get("content"), sel: q.get("sel"), pick: q.getAll("pick") },
+      async () => p,
+    );
+    expect(r?.selection.ids).toEqual(chosen);
+    expect(r?.included).toBe(true);
   });
 });

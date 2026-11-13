@@ -2,6 +2,53 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-13 — Content Plan: choose which items a report shares
+
+Uncommitted, on `consolidate/2026-11-13` after `d0b20b4`. No migration,
+no crawler or scoring change, findings and tasks untouched.
+
+- **Selection in the URL** (`content-plan.ts`): every action and new page
+  has a 10-hex `id` (sha256 of website id + finding fingerprint; location
+  mentions keyed by service, new pages by task title), stable across crawls
+  and different on every website. No `sel` parameter: everything selected
+  (the default). `sel=1` + repeated `pick=<id>`: only those, so a copied
+  link reproduces the report and items found later are not added on their
+  own. `parseSelection` keeps only well-formed ids (max 200);
+  `applySelection` keeps only ids available now (others counted as
+  "stale" for the team) and recomputes counts, dates and the unconfirmed
+  facts note for the shown part. Period tabs, Included/Not included and
+  Select all/Clear all keep or set the selection (`reportQuery`).
+- **Report:** with "Included", a team-only, never-printed picker ("Choose
+  what the client receives", N of M selected, grouped like the plan, new
+  pages too). Ticking a box reloads the report through a GET form
+  (`next/form`, no scroll jump; an Apply button without JavaScript).
+  Section 11 shows only the selected items, renumbered. Nothing selected
+  (or nothing to share): no section 11, section 10 lists content tasks as
+  when not included, and the team note says why.
+- **Permissions:** `reportContentPlan` returns nothing for CLIENT members
+  before reading the plan or any selection parameter; their links carry
+  no selection.
+- **Tests:** unit +12 (ids, per-website ids, defaults, some/none/new pages,
+  new and resolved items, validation, URL round trip, CLIENT with
+  parameters), component +7 (picker, notes), report page +7 (default,
+  one item, new page alone, clear all, stale/malformed ids, not included,
+  CLIENT with parameters); 6 mutations each caught. Integration +1 (two
+  websites in two organizations: different ids, pasted selection selects
+  nothing, ids survive a new crawl). Local `upsitehealth-itest` (backed
+  up first): content-plan, content-depth, business, workflow 25/25.
+  `npm run check` exit 0 (2514 passed, 1 expected fail, 266 skipped, 9
+  todo).
+- **Browser (headless Chrome, local only, temporary fixture deleted):**
+  real clicks untick items (URL and section 11 update), period switch and
+  a copied URL reproduce 2 of 4, Clear all removes section 11, Select all
+  restores it, website 1's ids on website 2 select nothing (2 ignored,
+  shown), tampered values dropped, CLIENT with the parameters sees nothing;
+  390 px without horizontal scroll; A4 print of a partial selection shows
+  only the two chosen actions (5 pages, no orphaned headings), cleared
+  selection prints like "Not included" (3 pages). No console errors.
+- **Limits:** a selection lives only in the URL (not saved per report or
+  client); copying a URL between websites selects nothing by design.
+
 ## 2026-11-13 — Content Plan in the Report (team-only, off by default)
 
 Uncommitted, on `consolidate/2026-11-13` (working tree). No migration, no
