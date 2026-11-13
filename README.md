@@ -18,19 +18,24 @@ All tenant data access goes through `requireOrgContext()` in
 
 ## Scripts
 
-| Command                    | Purpose                                                   |
-| -------------------------- | --------------------------------------------------------- |
-| `npm run dev`              | Start the development server                              |
-| `npm run dev:crawls`       | Local crawl-only worker (see below; needs `--target`)     |
-| `npm run dev:with-crawls`  | The app and the crawl worker on the app's database        |
-| `npm run build`            | Production build (needs no secrets)                       |
-| `npm run typecheck`        | Generate route types and run `tsc`                        |
-| `npm run lint`             | ESLint                                                    |
-| `npm run format:check`     | Prettier check (`npm run format` to fix)                  |
-| `npm test`                 | Vitest, single run (`test:watch` to watch)                |
-| `npm run check`            | Typecheck, lint, format check and tests                   |
-| `npm run db:drift`         | Read-only schema drift check vs `.env` DB                 |
-| `npm run test:integration` | Integration tests (needs `TEST_DATABASE_URL`, local only) |
+| Command                          | Purpose                                                               |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `npm run dev`                    | Start the development server                                          |
+| `npm run dev:crawls`             | Local crawl-only worker (see below; needs `--target`)                 |
+| `npm run dev:with-crawls`        | The app and the crawl worker on the app's database                    |
+| `npm run build`                  | Production build (needs no secrets)                                   |
+| `npm run typecheck`              | Generate route types and run `tsc`                                    |
+| `npm run lint`                   | ESLint                                                                |
+| `npm run format:check`           | Prettier check (`npm run format` to fix)                              |
+| `npm test`                       | Vitest, single run (`test:watch` to watch)                            |
+| `npm run check`                  | Typecheck, lint, format check and tests                               |
+| `npm run db:drift`               | Read-only schema drift check vs `.env` DB                             |
+| `npm run db:drift:scoped`        | Drift check scoped like `db:readiness` (`--target`)                   |
+| `npm run db:definitions`         | Read-only definitions fingerprint to a new file (`--target`, `--out`) |
+| `npm run db:definitions:compare` | Compare two definitions fingerprints (offline, files only)            |
+| `npm run db:readiness`           | Read-only migration and capability report (`--target`)                |
+| `npm run db:rehearsal`           | Rehearsal branch: preflight, status, approved writes only             |
+| `npm run test:integration`       | Integration tests (needs `TEST_DATABASE_URL`, local only)             |
 
 Requires Node.js 22.22.2 or later (developed on Node 24).
 

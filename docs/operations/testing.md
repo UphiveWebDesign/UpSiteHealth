@@ -344,6 +344,17 @@ until 2026-10-25; it now names only the shared manual-testing database (and
 commented examples), so `itest-ci` passes URL validation when approved. Keep
 it out of `.env`, comments included.
 
+### The rehearsal branch is never a test target
+
+`manual-backup` (`ep-empty-dream-b4t4xm17`) has its own target,
+`--target=rehearsal`, documented in [rehearsal-target.md](rehearsal-target.md).
+
+- The test guard refuses any endpoint on `NEON_REHEARSAL_TARGETS`, even if
+  it is also listed and approved as a test host.
+- The integration tests, the worker and the app never take that target.
+- `upsitehealth_test.marker` is unchanged; the rehearsal branch uses
+  `upsitehealth_rehearsal.marker`.
+
 ### Recorded Neon facts
 
 | Item                  | Value                                                                                                   |

@@ -1,4 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
 
@@ -18,6 +20,12 @@ import { isIPv4, isIPv6 } from "node:net";
  * (NEON_SHARED_ENDPOINTS, never accepted, no override), and it is on the
  * committed integration-test allowlist (NEON_TEST_ENDPOINTS). Production is
  * always refused. Anything malformed or ambiguous is refused.
+ *
+ * A third kind of hosted target, the rehearsal branch (NEON_REHEARSAL_TARGETS,
+ * docs/operations/rehearsal-target.md), is never a test, app or production
+ * target: it has its own settings file, identity record and marker, is
+ * read-only through the diagnostic tools, and takes schema writes only
+ * through `npm run db:rehearsal` after a live identity check.
  *
  * Limitation: a DNS name is classified by its spelling only. A name that
  * resolves to this machine (other than localhost and *.localhost) is not
@@ -442,6 +450,7 @@ export function hostedTestTargetProblem(
   approvedValue: string | undefined,
   neonProduction: readonly string[] = NEON_PRODUCTION_ENDPOINTS,
   neonTest: readonly string[] = NEON_TEST_ENDPOINTS,
+  neonRehearsal: readonly string[] = rehearsalEndpointIds(),
 ): string | null {
   const approved = approvedTestHost(approvedValue, neonProduction);
   if (!approved)
@@ -474,11 +483,384 @@ export function hostedTestTargetProblem(
       return "it is a Neon production endpoint";
     if (NEON_SHARED_ENDPOINTS.includes(endpoint))
       return "it is the shared manual-testing database (NEON_SHARED_ENDPOINTS), which is never a test target";
+    if (neonRehearsal.includes(endpoint))
+      return "it is a rehearsal endpoint (NEON_REHEARSAL_TARGETS), which is never a test target";
     const listProblem = neonTestListProblem(neonTest, neonProduction);
     if (listProblem) return listProblem;
+    if (neonTest.some((id) => neonRehearsal.includes(id)))
+      return "NEON_TEST_ENDPOINTS lists a rehearsal endpoint (NEON_REHEARSAL_TARGETS)";
     if (!neonTest.includes(endpoint))
       return "its Neon endpoint is not on the integration-test allowlist (NEON_TEST_ENDPOINTS)";
   }
+  return null;
+}
+
+// ─── Rehearsal target ────────────────────────────────────────────────────────
+
+/**
+ * One owner-verified rehearsal branch: every value is checked before
+ * connecting (endpoint, database and the URL's role) and again against what
+ * the server reports (neon.endpoint_id, neon.branch_id, current_database(),
+ * current_user). Reads and writes use separate settings and may use
+ * separate roles (docs/operations/rehearsal-target.md).
+ */
+export type RehearsalTarget = {
+  endpoint: string;
+  branch: string;
+  database: string;
+  /** The role of REHEARSAL_DATABASE_URL (diagnostics, read-only). */
+  readRole: string;
+  /** The role of REHEARSAL_WRITE_DATABASE_URL (`npm run db:rehearsal` writes). */
+  writeRole: string;
+};
+
+/**
+ * The committed rehearsal allowlist. Fails closed: while it is empty, or if
+ * any entry is malformed or overlaps another target's list, every rehearsal
+ * use is refused.
+ *
+ * One entry: the second Phase B branch. The first, rehearsal-integration-2Nov
+ * (br-odd-leaf-b4wky9nc, ep-lively-leaf-b4710ov4), is spent and stays off
+ * this list: its `resolve-applied 0_baseline` put _prisma_migrations in
+ * schema upsitehealth_test (the role's own schema shadowed public through
+ * "$user"), docs/operations/rehearsal-target.md. The server proof
+ * (rehearsalServerProblem) confirms endpoint, branch, database and role
+ * before any use, and searchPathProblem guards Prisma history writes.
+ */
+export const NEON_REHEARSAL_TARGETS: readonly RehearsalTarget[] = [
+  // Project small-morning-39288389, branch rehearsal-integration-3Nov
+  // (br-shiny-hill-b4ze34vh), a disposable child of integration-tests
+  // (br-noisy-dust-b4i1uvhg), verified by the owner with read-only SQL.
+  {
+    endpoint: "ep-falling-water-b4hf9p31",
+    branch: "br-shiny-hill-b4ze34vh",
+    database: "upsitehealth_test",
+    readRole: "upsitehealth_test",
+    writeRole: "upsitehealth_test",
+  },
+];
+
+/**
+ * Never a rehearsal target, whatever NEON_REHEARSAL_TARGETS says: checked
+ * against every allowlist entry (rehearsalListProblem) and against what the
+ * server reports (rehearsalServerProblem in scripts/crawl-worker/database.ts).
+ * Exact Neon IDs only, all in project small-morning-39288389.
+ */
+export const NEON_NEVER_REHEARSE = {
+  branches: [
+    "br-raspy-firefly-b4iz0xio", // production
+    "br-noisy-dust-b4i1uvhg", // integration-tests (shared manual testing)
+    "br-noisy-glade-b4rjvu65", // itest-ci
+    "br-aged-boat-b437p0gm", // manual-backup (original)
+    "br-lively-cake-b4d5d25g", // manual-backup-2Nov (verified recovery point)
+    "br-damp-bar-b4a44zzc", // recovery-integration-11Nov (deleted by the owner 2026-11-11; stays protected)
+    "br-hidden-truth-b4ahb787", // final-recovery-integration-11Nov (superseded 2026-11-12; stays protected)
+    "br-proud-dream-b45misjr", // final-recovery-integration-12Nov (SNAPSHOT of the integration-tests reconciliation)
+  ],
+  endpoints: [
+    "ep-square-mud-b4ito98o", // production
+    "ep-dark-rain-b4ve04n3", // integration-tests
+    "ep-long-surf-b4hm6pyi", // itest-ci
+    "ep-empty-dream-b4t4xm17", // manual-backup (original)
+    "ep-square-smoke-b408h5rl", // manual-backup-2Nov
+    "ep-autumn-frog-b4335mkw", // recovery-integration-11Nov (deleted)
+    "ep-sparkling-wave-b4dwvjdd", // final-recovery-integration-11Nov (superseded)
+    "ep-delicate-brook-b43bh8jv", // final-recovery-integration-12Nov
+  ],
+} as const satisfies {
+  branches: readonly string[];
+  endpoints: readonly string[];
+};
+
+/** Whether a branch or endpoint ID is in NEON_NEVER_REHEARSE. */
+export function isNeverRehearse(id: string | null | undefined): boolean {
+  const v = String(id ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    (NEON_NEVER_REHEARSE.branches as readonly string[]).includes(v) ||
+    (NEON_NEVER_REHEARSE.endpoints as readonly string[]).includes(v)
+  );
+}
+
+export const REHEARSAL_URL_VAR = "REHEARSAL_DATABASE_URL";
+export const REHEARSAL_WRITE_URL_VAR = "REHEARSAL_WRITE_DATABASE_URL";
+/** Set only by `npm run db:rehearsal` for the Prisma child it starts. */
+export const REHEARSAL_ATTESTATION_VAR = "UPSITEHEALTH_REHEARSAL_ATTESTATION";
+
+/**
+ * The rehearsal marker: a row bound to one endpoint, branch and database, in
+ * its own schema (never `upsitehealth_test`, the integration-test marker's).
+ * A secondary signal: the allowlist and the server-reported identity are
+ * the boundary.
+ */
+export const REHEARSAL_MARKER = {
+  schema: "upsitehealth_rehearsal",
+  table: "marker",
+  purpose: "rehearsal",
+} as const;
+
+/** The Prisma write commands a rehearsal attestation can cover. */
+export const REHEARSAL_WRITE_COMMANDS = [
+  "migrate deploy",
+  "migrate resolve",
+  "db execute",
+] as const;
+/** The longest an attestation may be valid for. */
+export const REHEARSAL_ATTESTATION_TTL_MS = 5 * 60_000;
+
+const NEON_BRANCH_ID = /^br-[a-z0-9]+(-[a-z0-9]+)*$/;
+const SQL_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/** The endpoint IDs on the rehearsal allowlist, valid or not. */
+export function rehearsalEndpointIds(
+  list: readonly RehearsalTarget[] = NEON_REHEARSAL_TARGETS,
+): string[] {
+  return list.map((e) => String(e?.endpoint ?? "").toLowerCase());
+}
+
+/** Why the rehearsal allowlist cannot be relied on, or null. */
+export function rehearsalListProblem(
+  list: readonly RehearsalTarget[] = NEON_REHEARSAL_TARGETS,
+  others: {
+    production?: readonly string[];
+    shared?: readonly string[];
+    test?: readonly string[];
+  } = {},
+): string | null {
+  const production = others.production ?? NEON_PRODUCTION_ENDPOINTS;
+  const shared = others.shared ?? NEON_SHARED_ENDPOINTS;
+  const test = others.test ?? NEON_TEST_ENDPOINTS;
+  if (list.length === 0)
+    return "no rehearsal branch is recorded (NEON_REHEARSAL_TARGETS in prisma/safety.ts is empty until the owner verifies one)";
+  const productionProblem = neonProductionProblem(production);
+  if (productionProblem) return productionProblem;
+  for (const e of list) {
+    if (
+      !e ||
+      !isNeonEndpointId(e.endpoint) ||
+      typeof e.branch !== "string" ||
+      !NEON_BRANCH_ID.test(e.branch) ||
+      ![e.database, e.readRole, e.writeRole].every(
+        (v) => typeof v === "string" && SQL_NAME.test(v),
+      )
+    )
+      return "NEON_REHEARSAL_TARGETS has a malformed entry (endpoint ep-…, branch br-…, database and roles as plain lower-case names)";
+    if (
+      production.includes(e.endpoint) ||
+      shared.includes(e.endpoint) ||
+      test.includes(e.endpoint)
+    )
+      return "NEON_REHEARSAL_TARGETS lists a production, shared or test endpoint";
+    if (isNeverRehearse(e.branch) || isNeverRehearse(e.endpoint))
+      return "NEON_REHEARSAL_TARGETS lists a protected branch or endpoint (NEON_NEVER_REHEARSE)";
+    // A schema named like the role captures unqualified objects through the
+    // default search_path ("$user", public), as happened on 2026-10-27.
+    if ([e.readRole, e.writeRole].includes(REHEARSAL_MARKER.schema))
+      return `a rehearsal role must not be named ${REHEARSAL_MARKER.schema}, the marker schema`;
+  }
+  const endpoints = list.map((e) => e.endpoint);
+  const branches = list.map((e) => e.branch);
+  if (
+    new Set(endpoints).size !== endpoints.length ||
+    new Set(branches).size !== branches.length
+  )
+    return "NEON_REHEARSAL_TARGETS lists an endpoint or branch twice";
+  return null;
+}
+
+/** A URL that names a listed rehearsal endpoint anywhere (as isSharedUrl). */
+export function isRehearsalUrl(
+  raw: string,
+  list: readonly RehearsalTarget[] = NEON_REHEARSAL_TARGETS,
+): boolean {
+  const lower = raw.toLowerCase();
+  return rehearsalEndpointIds(list).some((id) => id && lower.includes(id));
+}
+
+export type RehearsalAccess = "read" | "write";
+
+export type RehearsalUrlOptions = {
+  list?: readonly RehearsalTarget[];
+  /** Database URLs of the app (.env files, shell): never on the same server. */
+  appUrls?: string[];
+  production?: readonly string[];
+};
+
+/**
+ * The rehearsal entry a URL may reach with the given access, or why not:
+ * the allowlist is sound; the URL is a direct Neon endpoint on it, with
+ * sslmode=require and nothing that routes the connection or overrides the
+ * target; its database and role are exactly the recorded ones; and it is
+ * not on the server of any app database URL. Never names the URL.
+ */
+export function rehearsalUrlProblem(
+  raw: string | undefined,
+  access: RehearsalAccess,
+  {
+    list = NEON_REHEARSAL_TARGETS,
+    appUrls = [],
+    production = NEON_PRODUCTION_ENDPOINTS,
+  }: RehearsalUrlOptions = {},
+): { entry: RehearsalTarget } | { error: string } {
+  const listProblem = rehearsalListProblem(list, { production });
+  if (listProblem) return { error: listProblem };
+  if (!raw?.trim()) return { error: "no rehearsal database URL is set" };
+  const target = parseDbTarget(raw);
+  if ("error" in target)
+    return {
+      error: `the rehearsal database URL is unusable (${target.error})`,
+    };
+  if (target.local)
+    return { error: "a rehearsal database is a Neon branch, not this machine" };
+  if (isProductionUrl(raw, production))
+    return { error: "the rehearsal database URL names production" };
+  if (isSharedUrl(raw))
+    return {
+      error:
+        "the rehearsal database URL names the shared manual-testing database",
+    };
+  if (NEON_TEST_ENDPOINTS.some((id) => raw.toLowerCase().includes(id)))
+    return {
+      error: "the rehearsal database URL names the integration-test database",
+    };
+  const endpoint = isNeonHost(target.host) ? neonEndpointId(target.host) : null;
+  if (!endpoint)
+    return {
+      error: "the rehearsal database URL is not a Neon endpoint host (ep-…)",
+    };
+  if (isPooledHost(target.host) || target.params.has("pgbouncer"))
+    return {
+      error:
+        "the rehearsal database URL uses a pooled endpoint; use the direct host",
+    };
+  if (target.params.get("sslmode") !== "require")
+    return { error: "the rehearsal database URL must set sslmode=require" };
+  if (target.params.has("uselibpqcompat"))
+    return { error: "uselibpqcompat weakens sslmode=require; remove it" };
+  if (target.params.has("options"))
+    return {
+      error:
+        "the options parameter can route the connection or change its settings; remove it",
+    };
+  if (target.routingInCredentials)
+    return {
+      error:
+        "the user name or password carries routing options (endpoint= or project=); remove them",
+    };
+  const entry = list.find((e) => e.endpoint === endpoint);
+  if (!entry)
+    return {
+      error:
+        "its Neon endpoint is not on the rehearsal allowlist (NEON_REHEARSAL_TARGETS)",
+    };
+  if (target.database !== entry.database)
+    return {
+      error: `a rehearsal database must be named "${entry.database}", not "${target.database || "(none)"}"`,
+    };
+  let user = "";
+  try {
+    user = decodeURIComponent(new URL(raw.trim()).username);
+  } catch {
+    return { error: "the rehearsal database URL's user name is malformed" };
+  }
+  const role = access === "read" ? entry.readRole : entry.writeRole;
+  if (user !== role)
+    return {
+      error: `the ${access === "read" ? REHEARSAL_URL_VAR : REHEARSAL_WRITE_URL_VAR} role is not the recorded ${access} role (${role})`,
+    };
+  const clash = appServerClash(target, appUrls);
+  if (clash)
+    return { error: `the rehearsal database URL is refused: ${clash}` };
+  return { entry };
+}
+
+/** What `npm run db:rehearsal` records after proving a target, for one write. */
+export type RehearsalAttestation = {
+  nonce: string;
+  endpoint: string;
+  branch: string;
+  database: string;
+  role: string;
+  /** SHA-256 of the exact write URL the proof used. */
+  urlSha256: string;
+  /** The Prisma write command it covers (REHEARSAL_WRITE_COMMANDS). */
+  command: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
+export const REHEARSAL_ATTESTATION_DIR = join(
+  homedir(),
+  ".config/upsitehealth/rehearsal-attestations",
+);
+
+export function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/**
+ * Reads one attestation file by nonce: a regular file (not a link) that
+ * only its owner can read. Null when there is none or it is unsafe.
+ */
+export function readRehearsalAttestation(
+  nonce: string,
+  dir: string = REHEARSAL_ATTESTATION_DIR,
+): RehearsalAttestation | null {
+  if (!/^[0-9a-f]{32}$/.test(nonce)) return null;
+  const file = join(dir, `${nonce}.json`);
+  try {
+    const st = lstatSync(file);
+    if (!st.isFile() || (st.mode & 0o077) !== 0) return null;
+    return JSON.parse(readFileSync(file, "utf8")) as RehearsalAttestation;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why a Prisma write to a rehearsal URL may not run, or null. A variable
+ * alone never authorises it: the wrapper must have written an attestation
+ * for this exact URL, branch and command within the last few minutes.
+ */
+export function rehearsalWriteProblem(
+  url: string,
+  command: string,
+  env: Record<string, string | undefined>,
+  options: RehearsalUrlOptions & {
+    readAttestation?: (nonce: string) => RehearsalAttestation | null;
+    now?: number;
+  } = {},
+): string | null {
+  if (!(REHEARSAL_WRITE_COMMANDS as readonly string[]).includes(command))
+    return `the target is a rehearsal database, where only ${REHEARSAL_WRITE_COMMANDS.join(", ")} may run (through npm run db:rehearsal)`;
+  if (env[TEST_DB_FLAG] === "yes" || env[TEST_DB_HOST_VAR])
+    return `the target is a rehearsal database; ${TEST_DB_FLAG} and ${TEST_DB_HOST_VAR} approve test databases only, so unset them`;
+  const checked = rehearsalUrlProblem(url, "write", options);
+  if ("error" in checked) return checked.error;
+  const nonce = env[REHEARSAL_ATTESTATION_VAR];
+  if (!nonce)
+    return "rehearsal writes run only through npm run db:rehearsal, which proves the live branch first (no attestation)";
+  const att = (options.readAttestation ?? readRehearsalAttestation)(nonce);
+  if (!att) return "the rehearsal attestation is missing or unreadable";
+  const now = options.now ?? Date.now();
+  const { entry } = checked;
+  if (
+    att.nonce !== nonce ||
+    att.endpoint !== entry.endpoint ||
+    att.branch !== entry.branch ||
+    att.database !== entry.database ||
+    att.role !== entry.writeRole ||
+    att.urlSha256 !== sha256(url) ||
+    att.command !== command
+  )
+    return "the rehearsal attestation does not cover this target and command";
+  if (
+    !(att.expiresAt > now) ||
+    att.expiresAt - att.createdAt > REHEARSAL_ATTESTATION_TTL_MS ||
+    att.createdAt > now
+  )
+    return "the rehearsal attestation has expired";
   return null;
 }
 
@@ -584,7 +966,8 @@ export type SchemaWriteDecision =
 function writeTargetProblem(
   url: string | undefined,
   env: Record<string, string | undefined>,
-  options: Required<SchemaWriteOptions>,
+  command: string,
+  options: Required<Omit<SchemaWriteOptions, "now">> & { now?: number },
 ): string | null {
   if (!url?.trim()) return "no database URL is configured";
   const target = parseDbTarget(url);
@@ -597,6 +980,14 @@ function writeTargetProblem(
   // Shared manual-testing data: never a test schema target, no override.
   if (isSharedUrl(url))
     return "the target is the shared manual-testing database (NEON_SHARED_ENDPOINTS); test schema setup never runs there";
+  if (isRehearsalUrl(url, options.rehearsalTargets))
+    return rehearsalWriteProblem(url, command, env, {
+      list: options.rehearsalTargets,
+      appUrls: options.appUrls,
+      production: options.neonProductionEndpoints,
+      readAttestation: options.readRehearsalAttestation,
+      now: options.now,
+    });
   if (isProductionUrl(url, options.neonProductionEndpoints))
     return env.ALLOW_PRODUCTION_SCHEMA_CHANGES === "yes"
       ? null
@@ -626,6 +1017,12 @@ export type SchemaWriteOptions = {
   neonProductionEndpoints?: readonly string[];
   /** Defaults to NEON_TEST_ENDPOINTS; tests pass their own. */
   neonTestEndpoints?: readonly string[];
+  /** Defaults to NEON_REHEARSAL_TARGETS; tests pass their own. */
+  rehearsalTargets?: readonly RehearsalTarget[];
+  /** Defaults to readRehearsalAttestation; tests pass their own. */
+  readRehearsalAttestation?: (nonce: string) => RehearsalAttestation | null;
+  /** Defaults to Date.now(); tests pass their own. */
+  now?: number;
 };
 
 /**
@@ -654,6 +1051,9 @@ export function schemaWriteDecision(
     appUrls = [],
     neonProductionEndpoints = NEON_PRODUCTION_ENDPOINTS,
     neonTestEndpoints = NEON_TEST_ENDPOINTS,
+    rehearsalTargets = NEON_REHEARSAL_TARGETS,
+    readRehearsalAttestation: readAttestation = readRehearsalAttestation,
+    now,
   }: SchemaWriteOptions = {},
 ): SchemaWriteDecision {
   const command = schemaWriteCommand(args);
@@ -673,10 +1073,13 @@ export function schemaWriteDecision(
     for (const name of ["DATABASE_URL", "DIRECT_URL"])
       if (env[name] !== undefined) targets.push([name, env[name]]);
   for (const [label, target] of targets) {
-    const problem = writeTargetProblem(target, env, {
+    const problem = writeTargetProblem(target, env, command, {
       appUrls,
       neonProductionEndpoints,
       neonTestEndpoints,
+      rehearsalTargets,
+      readRehearsalAttestation: readAttestation,
+      now,
     });
     if (problem)
       return refuse(targets.length > 1 ? `${label}: ${problem}` : problem);
@@ -757,6 +1160,11 @@ export function prismaCliDecision(
         return {
           allow: false,
           reason: `Refusing "prisma studio": the target is the shared manual-testing database (${safeTargetLabel(target)}), whose rows Studio could change. Use the app, or a read-only role, to inspect it.`,
+        };
+      if (isRehearsalUrl(target, options.rehearsalTargets))
+        return {
+          allow: false,
+          reason: `Refusing "prisma studio": the target is a rehearsal database (${safeTargetLabel(target)}); Studio is not supported there (docs/operations/rehearsal-target.md).`,
         };
     }
   }
