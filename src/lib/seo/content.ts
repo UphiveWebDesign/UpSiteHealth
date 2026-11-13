@@ -5,6 +5,11 @@ import {
   isLocationPage,
   type CoverageResult,
 } from "@/lib/business/coverage";
+import {
+  LINK_VERSION,
+  linkOpportunities,
+  type LinkOpportunity,
+} from "@/lib/business/links";
 import { readFacts } from "@/lib/business/load";
 import {
   buildTopicMap,
@@ -35,6 +40,21 @@ import type { SeoFindingDraft } from "./rules";
  * facts (the topic is gone) or unreadable facts leave it as it is.
  */
 export const CONTENT_GAP_RULE = "CONTENT_SERVICE_LOCATION_GAP";
+/**
+ * CONTENT_SERVICE_NOT_DESCRIBED, one per service topic, only when the topic
+ * is "partial" because its page (a strong match) has enough main content
+ * that never names the service (`weakPage.kind` "not-described"). Thin,
+ * noindex or canonicalised pages are left to their technical rules.
+ * Resolved only when a later complete, recent crawl finds the topic covered.
+ */
+export const NOT_DESCRIBED_RULE = "CONTENT_SERVICE_NOT_DESCRIBED";
+/**
+ * CONTENT_INTERNAL_LINK_OPPORTUNITY, one per covered service topic with at
+ * least one page that names the service in its main content but does not
+ * link to its page (business/links.ts). Resolved when a later complete,
+ * recent crawl has the topic covered and no such page.
+ */
+export const LINK_RULE = "CONTENT_INTERNAL_LINK_OPPORTUNITY";
 
 export type ContentAnalysis = {
   drafts: SeoFindingDraft[];
@@ -51,8 +71,11 @@ const topicOf = (evidence: unknown) => {
 export function analyzeContent(input: {
   coverage: CoverageResult;
   map: TopicMap;
+  /** Link opportunities of the same crawl; absent: none created or resolved. */
+  links?: LinkOpportunity[];
 }): ContentAnalysis {
   const { coverage, map } = input;
+  const links = input.links ?? null;
   // Only a complete, recent crawl concludes anything, either way.
   const conclusive =
     !!map.crawl && !map.crawl.gap && map.crawl.freshness.state === "fresh";
@@ -110,14 +133,102 @@ export function analyzeContent(input: {
     });
   }
 
+  // A service page that names the service only in its heading.
+  const described = CONTENT_CATALOGUE[NOT_DESCRIBED_RULE];
+  for (const t of conclusive ? map.topics : []) {
+    if (t.location !== null || t.state !== "partial") continue;
+    if (t.weakPage?.kind !== "not-described") continue;
+    const page = coverage.pages.find((p) => p.url === t.weakPage!.url);
+    const cited = t.evidence.find((e) => e.url === t.weakPage!.url);
+    if (!page?.content || !cited) continue;
+    drafts.push({
+      ruleId: NOT_DESCRIBED_RULE,
+      scope: described.scope,
+      severity: described.severity,
+      title: described.title,
+      description: described.description,
+      recommendation: described.recommendation,
+      evidence: {
+        topic: t.key,
+        label: t.label,
+        service: t.service,
+        facts: t.facts,
+        crawlRunId: map.crawl!.id,
+        crawlAnalyzedAt: map.crawl!.analyzedAt.toISOString(),
+        topicVersion: TOPIC_VERSION,
+        url: page.url,
+        where: cited.where,
+        mainWords: page.content.words,
+        wordings: t.wordings,
+        observed: `${page.url} names ${t.service} in its ${cited.where.join(" and ")}, but its main content (${page.content.words} words, without header, navigation, footer or repeated text) does not contain ${t.wordings.map((w) => `“${w}”`).join(" or ")}.`,
+        inferred: `Visitors reading the page may not find what the service is or how to get it. Whether people search for it is not measured.`,
+      },
+      fingerprint: `${NOT_DESCRIBED_RULE}::site:${t.key}`,
+      crawlPageId: null,
+    });
+  }
+
+  // Pages that name a covered service without linking to its page.
+  const linking = CONTENT_CATALOGUE[LINK_RULE];
+  for (const o of conclusive && links ? links : []) {
+    if (!o.sources.length) continue;
+    const t = map.topics.find((x) => x.key === o.topicKey)!;
+    drafts.push({
+      ruleId: LINK_RULE,
+      scope: linking.scope,
+      severity: linking.severity,
+      title: linking.title,
+      description: linking.description,
+      recommendation: linking.recommendation,
+      evidence: {
+        topic: o.topicKey,
+        label: o.label,
+        service: t.service,
+        facts: t.facts,
+        crawlRunId: map.crawl!.id,
+        crawlAnalyzedAt: map.crawl!.analyzedAt.toISOString(),
+        topicVersion: TOPIC_VERSION,
+        linkVersion: LINK_VERSION,
+        target: o.target,
+        sources: o.sources,
+        sourcesTotal: o.sourcesTotal,
+        inboundPages: o.inboundPages,
+        poorlyConnected: o.poorlyConnected,
+        // The pages to edit are the affected pages.
+        url: o.sources[0].url,
+        urls: o.sources.map((s) => s.url),
+        count: o.sourcesTotal,
+        observed: `${o.sourcesTotal} analysed page${o.sourcesTotal === 1 ? "" : "s"} name ${t.service} in their main content but do not link to ${o.target}, which is linked from ${o.inboundPages} other page${o.inboundPages === 1 ? "" : "s"}.`,
+        inferred:
+          "A link where the text names the service helps visitors reach its page. Link value and rankings are not measured.",
+      },
+      fingerprint: `${LINK_RULE}::site:${o.topicKey}`,
+      crawlPageId: null,
+    });
+  }
+
   const byKey = new Map(map.topics.map((t) => [t.key, t]));
+  const linksByKey = new Map((links ?? []).map((o) => [o.topicKey, o]));
   return {
     drafts,
     resolves: (f) => {
       if (!isContentRule(f.ruleId) || !conclusive) return false;
       const key = topicOf(f.evidence);
       const t = key ? byKey.get(key) : undefined;
-      return t?.state === "covered" || t?.state === "partial";
+      switch (f.ruleId) {
+        case NOT_DESCRIBED_RULE:
+          // Only a page about it whose main content names it fixes it.
+          return t?.state === "covered";
+        case LINK_RULE:
+          // Covered, links analysed, and no page left that names it unlinked.
+          return (
+            !!links &&
+            t?.state === "covered" &&
+            !(linksByKey.get(t.key)?.sources.length ?? 0)
+          );
+        default:
+          return t?.state === "covered" || t?.state === "partial";
+      }
     },
   };
 }
@@ -200,5 +311,9 @@ export async function loadContentAnalysis(
     ),
     now,
   });
-  return analyzeContent({ coverage, map });
+  return analyzeContent({
+    coverage,
+    map,
+    links: linkOpportunities({ map, pages: coverage.pages, raw: pages }),
+  });
 }

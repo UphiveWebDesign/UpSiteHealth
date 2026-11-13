@@ -231,14 +231,14 @@ const SEVERITY_FILL: Record<IssueSeverity, string> = {
   HIGH: "fill-danger-500",
   MEDIUM: "fill-warning-500",
   LOW: "fill-info-500",
-  INFO: "fill-slate-300",
+  INFO: "fill-line-strong",
 };
 const SEVERITY_DOT: Record<IssueSeverity, string> = {
   CRITICAL: "bg-danger-700",
   HIGH: "bg-danger-500",
   MEDIUM: "bg-warning-500",
   LOW: "bg-info-500",
-  INFO: "bg-slate-300",
+  INFO: "bg-line-strong",
 };
 
 /** Stacked bar of findings by severity, with a counted legend. */
@@ -272,7 +272,7 @@ export function SeverityBar({
           .map((s) => `${totals[s]} ${s.toLowerCase()}`)
           .join(", ")}`}
       >
-        <rect width="100" height="8" className="fill-slate-100" />
+        <rect width="100" height="8" className="fill-tint" />
         {segments.map((g) => (
           <rect
             key={g.s}

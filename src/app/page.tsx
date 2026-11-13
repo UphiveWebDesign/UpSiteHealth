@@ -53,7 +53,7 @@ export default function Home() {
           {FEATURES.map(([title, text]) => (
             <div
               key={title}
-              className="rounded-xl border border-line bg-surface p-5 shadow-card"
+              className="rounded-lg border border-line bg-surface p-5 shadow-card"
             >
               <dt className="text-sm font-semibold text-ink">{title}</dt>
               <dd className="mt-1 text-sm text-muted">{text}</dd>

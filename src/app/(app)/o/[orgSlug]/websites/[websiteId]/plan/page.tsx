@@ -123,6 +123,16 @@ export default async function SeoPlanPage({
             .length
         }
         crawlsHref={`/o/${orgSlug}/websites/${websiteId}/crawls`}
+        startCrawl={
+          editor && (
+            <StartCrawlButton
+              action={startCrawlAction.bind(null, orgSlug, websiteId)}
+              label="Start a recheck crawl"
+              variant="secondary"
+              size="sm"
+            />
+          )
+        }
       />
 
       <dl className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -149,7 +159,7 @@ export default async function SeoPlanPage({
           hint={CURRENT_WORK.awaitingVerificationHint}
         />
       </dl>
-      <div className="mb-8 flex flex-col gap-3 rounded-xl border border-line bg-surface px-5 py-4 text-sm shadow-card lg:flex-row lg:items-center lg:gap-8">
+      <div className="mb-8 flex flex-col gap-3 rounded-lg border border-line bg-surface px-5 py-4 text-sm shadow-card lg:flex-row lg:items-center lg:gap-8">
         <p>
           <span className="text-muted">Client:</span>{" "}
           <span className="font-medium text-ink">
@@ -203,7 +213,7 @@ export default async function SeoPlanPage({
         </Link>
       </div>
       {(audiences.length > 0 || constraints.length > 0) && (
-        <div className="-mt-5 mb-8 flex flex-col gap-1 rounded-xl border border-line bg-surface px-5 py-3 text-sm shadow-card">
+        <div className="-mt-5 mb-8 flex flex-col gap-1 rounded-lg border border-line bg-surface px-5 py-3 text-sm shadow-card">
           {audiences.length > 0 && (
             <p>
               <span className="text-muted">Audiences:</span>{" "}

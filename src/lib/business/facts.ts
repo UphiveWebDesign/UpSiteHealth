@@ -92,6 +92,9 @@ export const BUSINESS_TYPE_LABEL: Record<BusinessType, string> = {
   ecommerce: "Online shop",
   hospitality: "Hotel, hospitality or tourism",
   b2b: "Business-to-business",
+  saas: "Software as a service (SaaS)",
+  "national-service": "National service (no local premises)",
+  other: "Other",
 };
 
 export const GOALS = ["calls", "leads", "bookings", "sales", "visits"] as const;

@@ -156,7 +156,7 @@ describe("plan preview", () => {
       input({
         title: "Dismissed",
         status: "DISMISSED",
-        state: { kind: "dismissed" },
+        state: { kind: "dismissed", detected: false },
       }),
       down,
     ]);

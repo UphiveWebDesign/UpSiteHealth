@@ -24,13 +24,13 @@ export function NavLink({
     variant === "tab"
       ? `relative inline-flex h-11 items-center px-1 text-sm font-medium transition-colors after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full ${
           active
-            ? "text-brand-800 after:bg-brand-600"
+            ? "text-brand-700 after:bg-gold-500"
             : "text-ink-2 hover:text-ink after:bg-transparent"
         }`
       : `inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
           active
-            ? "bg-brand-50 text-brand-800"
-            : "text-ink-2 hover:bg-slate-100 hover:text-ink"
+            ? "bg-brand-50 text-brand-700"
+            : "text-ink-2 hover:bg-tint hover:text-ink"
         }`;
   return (
     <Link

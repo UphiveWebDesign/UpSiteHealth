@@ -667,6 +667,15 @@ function robots(e: IntegrationEvidence): IntegrationStatus {
   });
 }
 
+/** Whether the latest crawl recorded what each sitemap fetch answered. */
+function crawlRecordsSitemaps(e: IntegrationEvidence): boolean {
+  return (e.crawl?.pages ?? []).some((p) => {
+    const d = (p.result as { discovery?: { fetches?: unknown } } | null)
+      ?.discovery;
+    return Array.isArray(d?.fetches);
+  });
+}
+
 function sitemap(e: IntegrationEvidence): IntegrationStatus {
   const base = {
     key: "SITEMAP" as const,
@@ -681,6 +690,10 @@ function sitemap(e: IntegrationEvidence): IntegrationStatus {
   };
   const s = e.probe?.result.sitemaps;
   if (!s) return notChecked(base, "Not checked: run an integration check.");
+  // Crawls that record sitemap responses raise TECH_SITEMAP_MISSING and
+  // TECH_SITEMAP_UNREACHABLE: the task is theirs, one per problem, and the
+  // probe's result is still shown here.
+  const task = !crawlRecordsSitemaps(e);
   const checkedAt = e.probe!.checkedAt;
   const ok = s.files.filter((f) => f.httpStatus === 200);
   const failed = s.files.filter((f) => f.httpStatus !== 200);
@@ -705,7 +718,7 @@ function sitemap(e: IntegrationEvidence): IntegrationStatus {
             action:
               "Generate an XML sitemap of the pages you want indexed, publish it, and list it in robots.txt.",
             urls: [],
-            task: true,
+            task,
           }
         : {
             code: "BROKEN",
@@ -715,7 +728,7 @@ function sitemap(e: IntegrationEvidence): IntegrationStatus {
             confidence: "high",
             action: "Make every listed sitemap return HTTP 200 with valid XML.",
             urls: failed.map((f) => f.url),
-            task: true,
+            task,
           },
     );
   } else {
@@ -728,7 +741,7 @@ function sitemap(e: IntegrationEvidence): IntegrationStatus {
         confidence: "high",
         action: "Fix or remove the failing sitemap files.",
         urls: failed.map((f) => f.url),
-        task: true,
+        task,
       });
     }
     if (s.totalUrls === 0) {

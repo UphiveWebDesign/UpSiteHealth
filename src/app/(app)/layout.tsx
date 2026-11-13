@@ -15,7 +15,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-1 text-sm">
             <Link
               href="/account"
-              className="hidden max-w-56 truncate rounded-md px-2 py-1 text-ink-2 hover:bg-slate-100 hover:text-ink sm:block"
+              className="hidden max-w-56 truncate rounded-md px-2 py-1 text-ink-2 hover:bg-tint hover:text-ink sm:block"
               title="Account settings"
             >
               {user.email}

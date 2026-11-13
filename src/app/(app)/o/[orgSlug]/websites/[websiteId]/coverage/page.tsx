@@ -15,6 +15,7 @@ import {
 } from "@/lib/business/coverage";
 import {
   factLabel,
+  factWithSource,
   SOURCE_LABEL,
   unconfirmedFactsNote,
 } from "@/lib/business/facts";
@@ -25,7 +26,12 @@ import {
   type MappingState,
 } from "@/lib/business/keywords";
 import type { OpportunityState } from "@/lib/business/opportunities";
-import { buildTopicMap, type TopicState } from "@/lib/business/topics";
+import { LINK_VERSION, linkOpportunities } from "@/lib/business/links";
+import {
+  buildTopicMap,
+  staleCrawlCaveat,
+  type TopicState,
+} from "@/lib/business/topics";
 import type { FreshnessState } from "@/lib/scoring/freshness";
 import { readWebsiteFacts } from "@/lib/business/load";
 import { canSeeBusiness } from "@/lib/business/visibility";
@@ -146,7 +152,7 @@ function KeywordRow({
       </div>
       {m.page ? (
         <p className="text-sm text-ink-2">
-          <span className="break-all font-mono text-xs">{m.page}</span>
+          <span className="break-anywhere font-mono text-xs">{m.page}</span>
           <span className="text-xs text-muted">
             {" "}
             · {m.where.join(", ")} ·{" "}
@@ -158,15 +164,9 @@ function KeywordRow({
       ) : (
         <p className="text-sm text-ink-2">{m.reason}</p>
       )}
-      {m.state === "mapped" && crawl && crawl !== "fresh" && (
+      {staleCrawlCaveat(crawl, m.state === "mapped" || m.state === "weak") && (
         <p className="text-xs font-medium text-warning-700">
-          From a crawl that is{" "}
-          {crawl === "stale"
-            ? "out of date"
-            : crawl === "incomplete"
-              ? "incomplete"
-              : "of unknown age"}
-          : the page may have changed since.
+          {staleCrawlCaveat(crawl, m.state === "mapped" || m.state === "weak")}
         </p>
       )}
       <p className="text-xs text-muted">
@@ -245,6 +245,13 @@ export default async function CoveragePage({
   });
   // Read-only, provider-neutral: nothing measured, nothing planned.
   const keywords = buildKeywordMap({ facts, map: topics, pages: c.pages });
+  // Pages that name a covered service without linking to its page (the
+  // same crawl; nothing on a partial or stale one).
+  const links = linkOpportunities({
+    map: topics,
+    pages: c.pages,
+    raw: evidence?.crawl?.pages ?? [],
+  });
   const types = Object.entries(
     c.pages.reduce<Record<string, number>>((acc, p) => {
       acc[p.type] = (acc[p.type] ?? 0) + 1;
@@ -428,19 +435,24 @@ export default async function CoveragePage({
                     />
                   </div>
                   <p className="text-sm text-ink-2">{t.reason}</p>
-                  {(t.state === "covered" || t.state === "partial") &&
-                    topics.crawl &&
-                    topics.crawl.freshness.state !== "fresh" && (
-                      <p className="text-xs font-medium text-warning-700">
-                        From a crawl that is{" "}
-                        {topics.crawl.freshness.state === "stale"
-                          ? "out of date"
-                          : topics.crawl.freshness.state === "incomplete"
-                            ? "incomplete"
-                            : "of unknown age"}
-                        : the page may have changed since.
-                      </p>
-                    )}
+                  {staleCrawlCaveat(
+                    topics.crawl?.freshness.state ?? null,
+                    t.state === "covered" || t.state === "partial",
+                  ) && (
+                    <p className="text-xs font-medium text-warning-700">
+                      {staleCrawlCaveat(
+                        topics.crawl?.freshness.state ?? null,
+                        t.state === "covered" || t.state === "partial",
+                      )}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted">
+                    From approved facts:{" "}
+                    {t.facts
+                      .filter((f) => f.kind === "SERVICE" || f.kind === "LOCATION")
+                      .map(factWithSource)
+                      .join("; ")}
+                  </p>
                   {t.audiences.length > 0 && (
                     <p className="text-xs text-muted">
                       For: {t.audiences.map((a) => factLabel(a)).join("; ")}
@@ -463,7 +475,7 @@ export default async function CoveragePage({
                       <ul className="mt-1 flex flex-col gap-1.5">
                         {t.evidence.map((e) => (
                           <li key={e.url}>
-                            <span className="break-all font-mono">{e.url}</span>
+                            <span className="break-anywhere font-mono">{e.url}</span>
                             <p>{e.verdict}</p>
                             {e.matched.length > 0 && (
                               <p className="text-muted">
@@ -513,6 +525,92 @@ export default async function CoveragePage({
           <p className="text-xs text-muted">
             Topic rules {topics.version}. Audiences are shown as context; they
             are not topics of their own.
+          </p>
+        </section>
+      )}
+
+      {links.length > 0 && (
+        <section
+          aria-labelledby="internal-links"
+          className="mt-6 flex flex-col gap-3"
+        >
+          <div>
+            <h2 id="internal-links" className="text-base font-semibold text-ink">
+              Internal links to service pages
+            </h2>
+            <p className="text-sm text-muted">
+              Pages whose main content names a service but that have no link
+              to its page, from crawl {topics.crawl?.id ?? "(id not recorded)"}{" "}
+              analysed{" "}
+              {topics.crawl ? formatDateTime(topics.crawl.analyzedAt) : "—"}.
+              Menu and footer links count as links, so a page in the menu is
+              never listed here.
+            </p>
+          </div>
+          <Card padded={false}>
+            <ul className="divide-y divide-line">
+              {links.map((o) => (
+                <li key={o.topicKey} className="flex flex-col gap-1 px-5 py-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-ink">{o.label}</span>
+                    {o.poorlyConnected && (
+                      <Badge
+                        value="poorly-connected"
+                        tone="warning"
+                        label="Poorly connected"
+                        dot
+                      />
+                    )}
+                  </div>
+                  <p className="text-sm text-ink-2">
+                    Page:{" "}
+                    <span className="break-anywhere font-mono text-xs">
+                      {o.target}
+                    </span>{" "}
+                    <span className="text-xs text-muted">
+                      · linked from {o.inboundPages} other page
+                      {o.inboundPages === 1 ? "" : "s"}
+                      {o.linkedSiteWide ? " (site-wide, e.g. a menu)" : ""}
+                    </span>
+                  </p>
+                  {o.sources.length > 0 ? (
+                    <details className="mt-1 text-xs text-ink-2">
+                      <summary className="cursor-pointer font-medium text-brand-700">
+                        {o.sourcesTotal} page{o.sourcesTotal === 1 ? "" : "s"}{" "}
+                        could link to it
+                        {o.sourcesTotal > o.sources.length
+                          ? ` (${o.sources.length} shown)`
+                          : ""}
+                      </summary>
+                      <ul className="mt-1 flex flex-col gap-1.5">
+                        {o.sources.map((s) => (
+                          <li key={s.url}>
+                            <span className="break-anywhere font-mono">
+                              {s.url}
+                            </span>
+                            <p className="break-anywhere text-muted">
+                              Names it here: &ldquo;{s.passage}&rdquo;
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : (
+                    <p className="text-xs text-muted">
+                      No analysed page names it in its main content without
+                      already linking to it, so no link is suggested. Linking
+                      from a related page the client chooses would help
+                      visitors find it.
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <p className="text-xs text-muted">
+            Link rules {LINK_VERSION}. &ldquo;Poorly connected&rdquo;: linked from at most
+            one other analysed page and not from menus or footers. Pages whose
+            link list the crawler cut short are never suggested as sources.
           </p>
         </section>
       )}
@@ -594,7 +692,7 @@ export default async function CoveragePage({
                       <ul className="flex flex-col gap-0.5">
                         {o.pages.map((p) => (
                           <li key={p.url} className="text-xs text-ink-2">
-                            <span className="break-all font-mono">
+                            <span className="break-anywhere font-mono">
                               {p.url}
                             </span>
                             <span className="text-muted">
@@ -696,7 +794,7 @@ export default async function CoveragePage({
                     {r.urls.map((u) => (
                       <li
                         key={u}
-                        className="break-all font-mono text-xs text-ink-2"
+                        className="break-anywhere font-mono text-xs text-ink-2"
                       >
                         {u}
                       </li>
@@ -726,7 +824,7 @@ export default async function CoveragePage({
                         tone={p.type === "unknown" ? "neutral" : "brand"}
                         label={PAGE_TYPE[p.type]}
                       />
-                      <span className="min-w-0 flex-1 break-all font-mono text-xs text-ink-2">
+                      <span className="min-w-0 flex-1 break-anywhere font-mono text-xs text-ink-2">
                         {p.path || "/"}
                       </span>
                       <span className="text-xs text-muted">

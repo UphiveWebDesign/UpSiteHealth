@@ -123,6 +123,7 @@ describe("TaskActivitySummary", () => {
       verifiedNow: 2,
       awaitingRecheck: 1,
       stillDetected: 0,
+      reappeared: 0,
       openNow: 4,
       dateSource: "last-updated",
       items: [],
@@ -132,6 +133,24 @@ describe("TaskActivitySummary", () => {
     expect(text).toContain("Completed in this period");
     expect(text).toContain("automatic completion after a confirmed recheck");
     expect(text).not.toMatch(/reported by your team/i);
+    expect(text).not.toContain("came back after a confirmed fix");
+  });
+
+  test("fixes that came back are counted apart from fixes not yet confirmed", () => {
+    const activity = {
+      reportedDone: 3,
+      verifiedNow: 1,
+      awaitingRecheck: 0,
+      stillDetected: 2,
+      reappeared: 1,
+      openNow: 4,
+      dateSource: "last-updated",
+      items: [],
+    } as TaskActivity;
+    const { container } = render(<TaskActivitySummary activity={activity} />);
+    expect(container.textContent).toContain(
+      "… of which came back after a confirmed fix1",
+    );
   });
 });
 

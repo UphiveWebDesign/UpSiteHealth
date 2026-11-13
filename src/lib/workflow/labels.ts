@@ -18,6 +18,7 @@ export const ACTIVITY = {
   confirmed: "… of those, confirmed fixed by the latest evidence",
   awaitingRecheck: "… of those, awaiting a recheck",
   stillDetected: "… of those, still detected",
+  reappeared: "… of which came back after a confirmed fix",
   openNow: "Open now (current, not period-bound)",
   note: "Dates are approximate (when each item was last updated). Who completed an item, a person or an automatic recheck, is not recorded yet; exact completion and verification dates arrive with task history. “Confirmed fixed” is always checked by UpSiteHealth.",
 } as const;

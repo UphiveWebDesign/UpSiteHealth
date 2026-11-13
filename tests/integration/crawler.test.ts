@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { requestCrawlCancel, startCrawl } from "@/lib/crawler/engine";
 import { processCrawls } from "@/lib/crawler/scheduler";
+import { loadPlatformEvidence } from "@/lib/recommendations/platform-evidence";
 import type { NetPolicy } from "@/lib/net/ssrf";
 import {
   loadPortfolioAttention,
@@ -64,12 +65,27 @@ const hotel = () => {
   };
   return `<script type="application/ld+json">${JSON.stringify(data)}</script>`;
 };
+/**
+ * WordPress markup in every page's head (off by default, so other tests see
+ * the site unchanged): a generator tag, the REST API link, a theme
+ * stylesheet and a core script, plus an uploaded image, which is not
+ * evidence.
+ */
+let wordpressMarkup = false;
+const wordpressHead = () =>
+  wordpressMarkup
+    ? `<meta name="generator" content="WordPress 6.6.2">
+    <link rel="https://api.w.org/" href="/wp-json/">
+    <link rel="stylesheet" href="/wp-content/themes/test/style.css">
+    <script src="/wp-includes/js/jquery/jquery.min.js"></script>
+    <link rel="preload" href="/wp-content/uploads/hero.webp">`
+    : "";
 let aboutStatus = 200;
 let levelOneStatus = 200;
 
 function pageHtml(title: string, body: string, desc = DESC) {
   return `<!doctype html><html lang="en"><head><title>${title}</title>
-    <meta name="description" content="${desc}"></head><body><h1>${title}</h1>${body}</body></html>`;
+    <meta name="description" content="${desc}">${wordpressHead()}</head><body><h1>${title}</h1>${body}</body></html>`;
 }
 
 let server: Server;
@@ -685,6 +701,80 @@ describe.skipIf(!TEST_DATABASE_URL)(
         dupUnique = new Set();
         dupFailing = null;
       }
+    });
+
+    test("platform signals: stored per page, read from the latest analysed crawl only, scoped to the organization", async () => {
+      const { org, tdb, site } = await setup("platform");
+      // Crawl 1, no WordPress markup: signals recorded, none pointing to WordPress.
+      const first = await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+      await crawl();
+      const home1 = await db.crawlPage.findFirstOrThrow({
+        where: { crawlRunId: first.id, depth: 0 },
+      });
+      expect((home1.result as { platform: unknown }).platform).toEqual({
+        v: 1,
+        generators: [],
+        wpAssets: 0,
+        wpRestLink: false,
+        wooAssets: 0,
+        wooBodyClasses: [],
+      });
+      expect(await loadPlatformEvidence(tdb, org.id, site.id)).toMatchObject({
+        detection: { platform: "unknown", reason: "no-signals" },
+      });
+
+      // Crawl 2, with WordPress markup: the latest analysed crawl decides.
+      wordpressMarkup = true;
+      let second: { id: string };
+      try {
+        second = await startCrawl(tdb, org.id, site.id, { maxDepth: 1 });
+        await crawl();
+      } finally {
+        wordpressMarkup = false;
+      }
+      const run2 = await db.crawlRun.findUniqueOrThrow({
+        where: { id: second.id },
+      });
+      expect(run2.seoAnalyzedAt).not.toBeNull();
+      const home2 = await db.crawlPage.findFirstOrThrow({
+        where: { crawlRunId: second.id, depth: 0 },
+      });
+      expect((home2.result as { platform: unknown }).platform).toEqual({
+        v: 1,
+        generators: ["WordPress 6.6.2"],
+        // The theme stylesheet and the core script; the upload is not evidence.
+        wpAssets: 2,
+        wpRestLink: true,
+        wooAssets: 0,
+        wooBodyClasses: [],
+      });
+      const evidence = await loadPlatformEvidence(tdb, org.id, site.id);
+      expect(evidence.analysedAt).toEqual(run2.seoAnalyzedAt);
+      expect(evidence.detection).toMatchObject({
+        platform: "wordpress",
+        confidence: "high",
+        reason: "detected",
+        malformed: 0,
+      });
+      expect(evidence.detection!.pagesWithSignals).toBeGreaterThanOrEqual(2);
+      expect(evidence.detection!.pagesChecked).toBe(
+        evidence.detection!.pagesWithSignals,
+      );
+
+      // Pages stored before detection (key removed, this test's rows only):
+      // "not recorded", never "not WordPress".
+      await db.$executeRaw`
+        UPDATE crawl_pages SET result = result - 'platform'
+        WHERE "crawlRunId" = ${second.id} AND "organizationId" = ${org.id}`;
+      expect(await loadPlatformEvidence(tdb, org.id, site.id)).toMatchObject({
+        detection: { platform: "unknown", reason: "not-recorded" },
+      });
+
+      // Another organization's client finds nothing for this website.
+      const other = await setup("platform-other");
+      expect(
+        await loadPlatformEvidence(other.tdb, other.org.id, site.id),
+      ).toEqual({ analysedAt: null, detection: null });
     });
 
     test("a page budget makes the run PARTIAL with BUDGET_EXCEEDED skips", async () => {

@@ -148,7 +148,7 @@ export function ChangeList({
                       key={i.fingerprint}
                       className="rounded-lg border border-line px-3 py-2"
                     >
-                      <p className="break-all text-sm text-ink">
+                      <p className="break-anywhere text-sm text-ink">
                         {i.url ?? "Whole site"}
                       </p>
                       {evidence && (

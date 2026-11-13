@@ -12,7 +12,7 @@ export default function AppError({
   reset: () => void;
 }) {
   return (
-    <div className="mx-auto mt-10 max-w-md rounded-xl border border-line bg-surface p-8 text-center shadow-card">
+    <div className="mx-auto mt-10 max-w-md rounded-lg border border-line bg-surface p-8 text-center shadow-card">
       <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger-50 text-danger-700">
         <XCircleIcon className="h-5 w-5" />
       </div>

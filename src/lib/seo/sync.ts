@@ -1,8 +1,17 @@
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import type { CrawlRunStatus } from "@/generated/prisma/enums";
 import { isContentRule } from "@/lib/knowledge/catalogue";
+import {
+  findingOutcome,
+  type LifecyclePage,
+} from "@/lib/recommendations/lifecycle";
 import { analyzeCrawl, CRAWL_PAGE_SELECT, sitePagesOfRuns } from "./analyze";
 import { loadContentAnalysis } from "./content";
+import {
+  findingHistoryAvailable,
+  planFindingEvents,
+  type ResolvedChange,
+} from "./finding-history";
 import {
   evidenceTruncated,
   findingPages,
@@ -33,6 +42,10 @@ type RunRef = {
  *   that topic map shows the gap covered on a complete, recent crawl.
  * - All writes, and `seoAnalyzedAt` last, commit in one transaction of a
  *   fixed number of statements, so the run is analysed fully or not at all.
+ * - Where `seo_finding_events` exists (P1), the same transaction records a
+ *   REOPENED event for each finding it reopens and a RESOLVED event (why,
+ *   this crawl, its status, rule versions) for each finding it closes; only
+ *   rows whose state the guarded statements changed get one.
  *   With `onlyIfUnanalysed` (the crawl engine), a run already analysed is
  *   left alone, so concurrent or repeated analyses write once.
  */
@@ -55,6 +68,11 @@ export async function syncSeoFindings(
   });
   const technical = analyzeCrawl(rows, run, siteHost);
   const { byUrl } = technical;
+  const siteRun = {
+    ...run,
+    sitemap: technical.sitemap,
+    sitemapFailures: technical.sitemapFailures,
+  };
   const content = await loadContentAnalysis(db, run, now);
   const drafts = [...technical.drafts, ...(content?.drafts ?? [])];
 
@@ -102,6 +120,10 @@ export async function syncSeoFindings(
   let updated = 0;
   let resolved = 0;
   let analysed = true;
+  // Outside the transaction: a failed statement would abort it.
+  const history = await findingHistoryAvailable(db);
+  const pageOf = (url: string) =>
+    byUrl.get(url) as unknown as LifecyclePage | undefined;
 
   // A fixed number of statements however many findings there are: one
   // round trip per statement, and a remote database (~300 ms each) made
@@ -140,6 +162,18 @@ export async function syncSeoFindings(
           })
         ).count;
       }
+      // The known findings this analysis reopens, locked so no concurrent
+      // change can make the events disagree with the rows (P1 only).
+      const reopening =
+        history && known.length
+          ? await tx.$queryRaw<Array<{ id: string; ruleId: string }>>`
+              SELECT id, "ruleId" FROM seo_findings
+              WHERE id = ANY(${known.map((k) => k.id)}::text[])
+                AND "websiteId" = ${run.websiteId}
+                AND "organizationId" = ${run.organizationId}
+                AND status = 'RESOLVED'
+              FOR UPDATE`
+          : [];
       if (known.length) {
         // Refreshes known findings from this crawl; a RESOLVED one that
         // reappears is reopened, any other status (IGNORED) is kept.
@@ -183,7 +217,7 @@ export async function syncSeoFindings(
         .filter((f) => {
           if (isContentRule(f.ruleId)) return content?.resolves(f) ?? false;
           if (f.scope === "SITE")
-            return !siteRecheckGap(f.ruleId, run, {
+            return !siteRecheckGap(f.ruleId, siteRun, {
               ...findingPages(
                 f.evidence,
                 foundIn.get(f.crawlRunId)?.get(f.fingerprint),
@@ -194,17 +228,65 @@ export async function syncSeoFindings(
           return url !== undefined && !pageRecheckGap(f.ruleId, byUrl.get(url));
         })
         .map((f) => f.id);
-      if (toResolve.length) {
-        await tx.seoFinding.updateMany({
-          where: { id: { in: toResolve } },
-          data: { status: "RESOLVED", resolvedAt: now },
+      if (!history) {
+        if (toResolve.length) {
+          await tx.seoFinding.updateMany({
+            where: { id: { in: toResolve } },
+            data: { status: "RESOLVED", resolvedAt: now },
+          });
+        }
+        resolved = toResolve.length;
+      } else {
+        // Only findings still OPEN close, and exactly those get an event:
+        // locked first, then closed through Prisma, so `resolvedAt` and the
+        // event's `occurredAt` are written from the same value the same way.
+        const closed = toResolve.length
+          ? await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT id FROM seo_findings
+              WHERE id = ANY(${toResolve}::text[])
+                AND "websiteId" = ${run.websiteId}
+                AND "organizationId" = ${run.organizationId}
+                AND status = 'OPEN'
+              FOR UPDATE`
+          : [];
+        if (closed.length)
+          await tx.seoFinding.updateMany({
+            where: { id: { in: closed.map((c) => c.id) } },
+            data: { status: "RESOLVED", resolvedAt: now },
+          });
+        const byId = new Map(existing.map((f) => [f.id, f]));
+        const changes: ResolvedChange[] = closed.map(({ id }) => {
+          const f = byId.get(id)!;
+          // Content gaps close only when the topic map shows them covered.
+          const { outcome, reason } = isContentRule(f.ruleId)
+            ? {
+                outcome: "fix-confirmed" as const,
+                reason: "The topic map of this crawl shows the gap covered.",
+              }
+            : findingOutcome(
+                {
+                  ruleId: f.ruleId,
+                  scope: f.scope,
+                  evidence: f.evidence,
+                },
+                pageOf,
+              );
+          return { id, ruleId: f.ruleId, outcome, reason };
         });
+        const events = planFindingEvents({
+          run,
+          now,
+          reopened: reopening,
+          resolved: changes,
+        });
+        if (events.length)
+          await tx.seoFindingEvent.createMany({ data: events });
+        resolved = closed.length;
       }
       await tx.crawlRun.update({
         where: { id: run.id },
         data: { seoAnalyzedAt: now },
       });
-      resolved = toResolve.length;
     },
     { timeout: 60_000 },
   );

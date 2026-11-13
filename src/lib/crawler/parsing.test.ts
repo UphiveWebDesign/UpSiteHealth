@@ -126,8 +126,9 @@ describe("parsePage", () => {
   });
 
   test("result JSON matches the production shape (plus additive keys)", () => {
-    // Production keys are unchanged; `tags`, `content` and `contact` are new
-    // and absent on older rows, which readers handle as "not measured".
+    // Production keys are unchanged; `tags`, `content`, `contact` and
+    // `platform` are new and absent on older rows, which readers handle as
+    // "not measured" (`platform`: crawler/platform.ts, "not recorded").
     expect(Object.keys(page.result).sort()).toEqual([
       "charset",
       "contact",
@@ -136,6 +137,7 @@ describe("parsePage", () => {
       "images",
       "links",
       "linksOmitted",
+      "platform",
       "structuredData",
       "tags",
     ]);

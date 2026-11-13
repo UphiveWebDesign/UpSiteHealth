@@ -92,3 +92,32 @@ export const FIXTURE_FACTS: SiteFacts = {
   robotsTxtStatus: "missing",
   sitemapUrlsDiscovered: 0,
 };
+
+/** A crawl that read robots.txt, whose listed sitemaps failed (k4). */
+export const FIXTURE_UNREACHABLE_FACTS: SiteFacts = {
+  robotsTxtStatus: "found",
+  sitemapUrlsDiscovered: 0,
+  discovery: {
+    v: 2,
+    sitemapFilesOmitted: 2,
+    sitemapUrlsCapped: false,
+    sitemaps: {
+      discovered: 2,
+      indexes: 0,
+      processed: 0,
+      skipped: { count: 0, urls: [] },
+      failed: {
+        count: 2,
+        urls: [
+          "https://site.example/sitemap_index.xml",
+          "https://site.example/old-sitemap.xml",
+        ],
+      },
+      unprocessed: { count: 0, urls: [] },
+    },
+    fetches: [
+      { url: "https://site.example/sitemap_index.xml", httpStatus: 503 },
+      { url: "https://site.example/old-sitemap.xml", httpStatus: 404 },
+    ],
+  },
+};

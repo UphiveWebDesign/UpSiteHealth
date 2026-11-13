@@ -6,7 +6,8 @@ import { ChangeSummary } from "@/components/crawl-changes";
 import { Badge } from "@/components/ui/badge";
 import { Callout, EmptyState } from "@/components/ui/feedback";
 import { CheckIcon } from "@/components/ui/icons";
-import { Card, FilterTabs, PageHeader } from "@/components/ui/layout";
+import { Chevron } from "@/components/ui/disclosure";
+import { Card, FilterTabs, PageHeader, UrlText } from "@/components/ui/layout";
 import { WebsiteNav } from "@/components/website-nav";
 import { formatRelative } from "@/lib/format";
 import { isContentRule } from "@/lib/knowledge/catalogue";
@@ -294,11 +295,12 @@ export default async function SeoFindingsPage({
                 <details
                   key={g.ruleId}
                   open={i === 0}
-                  className="group rounded-xl border border-line bg-surface shadow-card"
+                  className="group rounded-lg border border-line bg-surface shadow-card"
                 >
-                  <summary className="flex flex-wrap items-center gap-3 px-5 py-4 [&::-webkit-details-marker]:hidden">
-                    <Badge value={g.severity} />
-                    <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
+                  <summary className="flex list-none flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 hover:bg-subtle sm:px-5 [&::-webkit-details-marker]:hidden">
+                    <Chevron className="text-muted" />
+                    <Badge value={g.severity} dot />
+                    <span className="min-w-0 flex-1 basis-48 text-sm font-semibold text-ink">
                       {g.title}
                     </span>
                     <Badge
@@ -316,14 +318,8 @@ export default async function SeoFindingsPage({
                           ? "page"
                           : "pages"}
                     </span>
-                    <span
-                      aria-hidden
-                      className="text-muted transition-transform group-open:rotate-90"
-                    >
-                      ›
-                    </span>
                   </summary>
-                  <div className="border-t border-line px-5 py-4">
+                  <div className="border-t border-line px-4 py-4 sm:px-5">
                     <div className="mb-4 grid gap-4 md:grid-cols-2">
                       <div>
                         <p className="text-xs font-semibold uppercase tracking-wide text-muted">
@@ -333,8 +329,8 @@ export default async function SeoFindingsPage({
                           {g.description}
                         </p>
                       </div>
-                      <div className="rounded-lg bg-brand-50 px-3 py-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-brand-800">
+                      <div className="border-l-2 border-brand-600 pl-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-brand-600">
                           How to fix
                         </p>
                         <p className="mt-1 text-sm text-ink">
@@ -342,7 +338,7 @@ export default async function SeoFindingsPage({
                         </p>
                       </div>
                     </div>
-                    <ul className="divide-y divide-line rounded-lg border border-line">
+                    <ul className="divide-y divide-line rounded-md border border-line">
                       {g.findings.slice(0, PAGES_SHOWN).map((f) => {
                         const evidence = describeEvidence(f.ruleId, f.evidence);
                         const target = findingTarget(f);
@@ -357,16 +353,16 @@ export default async function SeoFindingsPage({
                                   href={target}
                                   target="_blank"
                                   rel="noreferrer noopener"
-                                  className="break-all text-sm text-ink hover:text-brand-700"
+                                  className="hover:text-brand-700 hover:underline"
                                 >
-                                  {target}
+                                  <UrlText url={target} pathFirst />
                                 </a>
                               ) : (
                                 <span className="text-sm text-ink">
                                   {target}
                                 </span>
                               )}
-                              <p className="text-xs text-muted">
+                              <p className="break-anywhere mt-0.5 text-xs text-muted">
                                 {evidence && `${evidence} · `}
                                 {f.status === "OPEN"
                                   ? "last confirmed"

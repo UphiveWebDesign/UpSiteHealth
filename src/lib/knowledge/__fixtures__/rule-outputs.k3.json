@@ -8,7 +8,8 @@
     "recommendation": "Fix the page or redirect it, and update internal links that point to it.",
     "evidence": {
       "url": "https://site.example/gone",
-      "httpStatus": 404
+      "httpStatus": 404,
+      "errorClass": "not-found"
     },
     "fingerprint": "TECH_HTTP_ERROR::https://site.example/gone",
     "crawlPageId": "err"

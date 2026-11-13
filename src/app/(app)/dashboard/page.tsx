@@ -30,7 +30,7 @@ export default async function DashboardPage() {
             <li key={m.memberId}>
               <Link
                 href={`/o/${m.organization.slug}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-slate-100"
+                className="flex items-center justify-between px-4 py-3 hover:bg-tint"
               >
                 <span className="font-medium">{m.organization.name}</span>
                 <span className="text-xs uppercase text-muted">{m.role}</span>

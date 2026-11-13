@@ -208,7 +208,8 @@ describe.skipIf(!TEST_DATABASE_URL)(
         websites: 1,
       });
       expect(attention.sites[0].items[0].entries[0].href).toBe(
-        `${BASE}/websites/${s.site.id}/recommendations?status=closed#task-${t.id}`,
+        // Listed under To do on the Recommendations page, not under Done.
+        `${BASE}/websites/${s.site.id}/recommendations#task-${t.id}`,
       );
     });
 

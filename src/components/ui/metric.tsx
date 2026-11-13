@@ -73,7 +73,7 @@ export function Stat({
       </dd>
     </>
   );
-  const cls = "block rounded-xl border border-line bg-surface p-4 shadow-card";
+  const cls = "block rounded-lg border border-line bg-surface p-4 shadow-card";
   return href ? (
     <Link
       href={href}
@@ -119,7 +119,7 @@ export function Meter({
       aria-valuemax={max}
       aria-valuenow={value}
     >
-      <rect width="100" height="6" rx="3" className="fill-slate-200" />
+      <rect width="100" height="6" rx="3" className="fill-line" />
       <rect width={pct} height="6" rx="3" className={fill} />
     </svg>
   );

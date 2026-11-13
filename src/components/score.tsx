@@ -136,19 +136,29 @@ type DimensionView = {
 export function DimensionList({
   dimensions,
   actions = {},
+  layout = "list",
 }: {
   dimensions: DimensionView[];
   actions?: Partial<Record<"crawl" | "pagespeed" | "check", ReactNode>>;
+  /** "grid": side by side on wide screens (the website overview). */
+  layout?: "list" | "grid";
 }) {
+  const grid = layout === "grid";
   return (
-    <ul className="divide-y divide-line">
+    <ul
+      className={
+        grid
+          ? "grid gap-x-8 gap-y-5 md:grid-cols-2 xl:grid-cols-3"
+          : "divide-y divide-line"
+      }
+    >
       {dimensions.map((d) => {
         const hint = MEASURE_HINT[d.dimension as Dimension];
         const measured = d.measured && d.score !== null;
         return (
           <li
             key={d.dimension}
-            className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0"
+            className={`flex flex-col gap-1.5 ${grid ? "" : "py-3 first:pt-0 last:pb-0"}`}
           >
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-sm font-medium text-ink">

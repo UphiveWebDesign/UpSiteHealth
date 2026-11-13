@@ -72,6 +72,32 @@ export type ContactSignals = {
   forms: number;
 };
 
+/**
+ * Evidence of the platform the page is built on, as flags and counts (no
+ * page text). Only same-site assets count, so linking to another site's
+ * WordPress media is not evidence. `v` identifies the extraction; crawls
+ * stored before it have none, which means "not recorded", never "not
+ * WordPress". Read by crawler/platform.ts.
+ */
+export type PlatformSignals = {
+  v: 1;
+  /** <meta name="generator"> values, clipped (for example "WordPress 6.6.2"). */
+  generators: string[];
+  /**
+   * Same-site script, stylesheet and image URLs under WordPress's code
+   * folders (/wp-includes/, /wp-content/themes|plugins|mu-plugins/). Media
+   * under /wp-content/uploads/ does not count: it often outlives a move away
+   * from WordPress.
+   */
+  wpAssets: number;
+  /** The page links the WordPress REST API (<link rel="https://api.w.org/">). */
+  wpRestLink: boolean;
+  /** Same-site asset URLs under /wp-content/plugins/woocommerce/. */
+  wooAssets: number;
+  /** WooCommerce body classes (woocommerce, woocommerce-page, …). */
+  wooBodyClasses: string[];
+};
+
 export type ParsedPage = {
   title: string | null;
   metaDescription: string | null;
@@ -88,6 +114,7 @@ export type ParsedPage = {
     tags: PageTags;
     content: PageContent;
     contact: ContactSignals;
+    platform: PlatformSignals;
     /**
      * Distinct internal links beyond the MAX_ITEMS limit, which were not
      * recorded or followed (0: the limit was not reached or dropped nothing).
@@ -270,6 +297,79 @@ export function extractTags(root: HTMLElement, pageUrl: string): PageTags {
   return tags;
 }
 
+const MAX_GENERATORS = 5;
+const MAX_GENERATOR_TEXT = 80;
+const MAX_BODY_CLASSES = 10;
+/** Link relations that load an asset (not canonical, alternate or pagination links). */
+const ASSET_RELS = new Set([
+  "stylesheet",
+  "preload",
+  "modulepreload",
+  "prefetch",
+  "icon",
+  "apple-touch-icon",
+]);
+const WP_ASSET_PATH =
+  /\/wp-(?:includes|content\/(?:themes|plugins|mu-plugins))\//i;
+const WOO_ASSET_PATH = /\/wp-content\/plugins\/woocommerce\//i;
+const WOO_BODY_CLASS = /^woocommerce(?:-[a-z0-9-]+)?$/;
+
+/** Finds WordPress and WooCommerce evidence in the page source (before scripts are removed). */
+export function extractPlatform(
+  root: HTMLElement,
+  pageUrl: string,
+  baseUrl = pageUrl,
+): PlatformSignals {
+  const host = new URL(pageUrl).hostname;
+  const out: PlatformSignals = {
+    v: 1,
+    generators: [],
+    wpAssets: 0,
+    wpRestLink: false,
+    wooAssets: 0,
+    wooBodyClasses: [],
+  };
+  for (const m of root.querySelectorAll('meta[name="generator" i]')) {
+    const v = clean(attr(m, "content")).slice(0, MAX_GENERATOR_TEXT);
+    if (
+      v &&
+      !out.generators.includes(v) &&
+      out.generators.length < MAX_GENERATORS
+    )
+      out.generators.push(v);
+  }
+  const assetUrls: string[] = [];
+  for (const el of root.querySelectorAll("script[src], img[src]"))
+    assetUrls.push(el.getAttribute("src") ?? "");
+  for (const link of root.querySelectorAll("link[rel]")) {
+    const rels = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
+    if (rels.includes("https://api.w.org/")) out.wpRestLink = true;
+    if (rels.some((r) => ASSET_RELS.has(r)))
+      assetUrls.push(link.getAttribute("href") ?? "");
+  }
+  for (const src of assetUrls) {
+    let u: URL;
+    try {
+      u = new URL(src, baseUrl);
+    } catch {
+      continue;
+    }
+    if (!isInternalUrl(u.href, host)) continue;
+    if (WP_ASSET_PATH.test(u.pathname)) out.wpAssets++;
+    if (WOO_ASSET_PATH.test(u.pathname)) out.wooAssets++;
+  }
+  const bodyClass = root.querySelector("body")?.getAttribute("class") ?? "";
+  for (const c of bodyClass.toLowerCase().split(/\s+/)) {
+    if (
+      WOO_BODY_CLASS.test(c) &&
+      !out.wooBodyClasses.includes(c) &&
+      out.wooBodyClasses.length < MAX_BODY_CLASSES
+    )
+      out.wooBodyClasses.push(c);
+  }
+  return out;
+}
+
 function attr(el: HTMLElement | null, name: string): string | null {
   const v = el?.getAttribute(name);
   return v === undefined || v === null ? null : v.trim();
@@ -360,6 +460,8 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
     });
 
   const tags = extractTags(root, pageUrl);
+  // Before the body's scripts are removed below.
+  const platform = extractPlatform(root, pageUrl, baseUrl);
 
   const charsetEl = root.querySelector("meta[charset]");
   const httpEquiv = attr(
@@ -399,6 +501,7 @@ export function parsePage(html: string, pageUrl: string): ParsedPage {
       tags,
       content,
       contact,
+      platform,
       linksOmitted: omitted.size,
     },
   };

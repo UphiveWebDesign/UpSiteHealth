@@ -60,3 +60,21 @@ describe("TaskStatusActions", () => {
     expect(screen.getByRole("form", { name: /Fix titles/ })).toBeTruthy();
   });
 });
+
+describe("action weight", () => {
+  const cls = (name: string) => screen.getByRole("button", { name }).className;
+  test("the main step is solid, Mark done outlined, Dismiss a quiet separate text button", () => {
+    renderWith(undefined, "PROPOSED");
+    expect(cls("Start")).toContain("bg-brand-700");
+    expect(cls("Mark done")).toContain("border-line-strong");
+    expect(cls("Mark done")).not.toContain("bg-brand-700");
+    expect(cls("Dismiss")).toContain("text-muted");
+    expect(cls("Dismiss")).not.toContain("border-line-strong");
+    expect(cls("Dismiss")).toContain("sm:border-l");
+  });
+  test("in progress: Mark done becomes the main step", () => {
+    renderWith(undefined, "IN_PROGRESS");
+    expect(cls("Mark done")).toContain("bg-brand-700");
+    expect(cls("Stop")).toContain("border-line-strong");
+  });
+});

@@ -8,7 +8,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
         <div className="mb-6 flex justify-center">
           <BrandMark href="/" />
         </div>
-        <div className="rounded-xl border border-line bg-surface p-6 shadow-card sm:p-8">
+        <div className="rounded-lg border border-line bg-surface p-6 shadow-card sm:p-8">
           {children}
         </div>
       </div>

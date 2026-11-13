@@ -2,59 +2,73 @@
 
 /*
  * UpSiteHealth design tokens (light only).
- * - Neutrals: navy ink on white surfaces over a cool light-grey canvas.
- * - Brand: teal — calm, "healthy", distinct from status colours.
- * - Status colours are used only to convey meaning (never decoration).
- * - Indigo is a quiet secondary accent for neutral information and charts.
+ * - Neutrals: green-grey ink on white surfaces over a cool light canvas.
+ * - Brand: deep green (#123B36) for primary actions, active navigation and
+ *   focus; gold (#D5A34A) is a sparing brand accent, never a status.
+ * - Status colours carry meaning only (never decoration), always with a
+ *   label or icon: success green, warning amber, danger red, info blue.
+ * - "accent" is a quiet slate-blue for neutral categories ("New page",
+ *   "Ready to verify", chart series), kept apart from amber warnings.
  */
 @theme {
-  --color-canvas: #f5f7fa;
+  --color-canvas: #f7f9fc;
   --color-surface: #ffffff;
-  --color-subtle: #f8fafc;
-  --color-ink: #0f1b2d;
-  --color-ink-2: #334155;
-  --color-muted: #64748b;
-  --color-line: #e2e8f0;
-  --color-line-strong: #cbd5e1;
+  --color-subtle: #f6f8f7;
+  --color-tint: #eef2f1;
+  --color-ink: #182522;
+  --color-ink-2: #3b4a46;
+  --color-muted: #66736f;
+  --color-line: #e5eae8;
+  --color-line-strong: #cfd8d5;
 
-  --color-brand-50: #f0fdfa;
-  --color-brand-100: #ccfbf1;
-  --color-brand-200: #99f6e4;
-  --color-brand-500: #14b8a6;
-  --color-brand-600: #0d9488;
-  --color-brand-700: #0f766e;
-  --color-brand-800: #115e59;
+  --color-brand-50: #eff6f4;
+  --color-brand-100: #dcebe6;
+  --color-brand-200: #b7d4cb;
+  --color-brand-500: #3d8676;
+  --color-brand-600: #22594f;
+  --color-brand-700: #123b36;
+  --color-brand-800: #0b2824;
 
-  --color-accent-50: #eef2ff;
-  --color-accent-500: #6366f1;
-  --color-accent-700: #4338ca;
+  --color-gold-50: #fbf5e8;
+  --color-gold-200: #f0dcb0;
+  --color-gold-500: #d5a34a;
+  --color-gold-700: #7d5a17;
 
-  --color-success-50: #ecfdf5;
-  --color-success-200: #a7f3d0;
-  --color-success-500: #10b981;
-  --color-success-700: #047857;
+  --color-accent-50: #f1f4f9;
+  --color-accent-500: #5b7193;
+  --color-accent-700: #3e526f;
 
-  --color-warning-50: #fffbeb;
-  --color-warning-200: #fde68a;
-  --color-warning-500: #f59e0b;
-  --color-warning-700: #b45309;
+  --color-success-50: #edf8f2;
+  --color-success-200: #b5e2c8;
+  --color-success-500: #1f9d5c;
+  --color-success-700: #16794a;
 
-  --color-danger-50: #fff1f2;
-  --color-danger-200: #fecdd3;
-  --color-danger-500: #f43f5e;
-  --color-danger-700: #be123c;
+  --color-warning-50: #fef7e8;
+  --color-warning-200: #f7d999;
+  --color-warning-500: #e3a008;
+  --color-warning-700: #a15c07;
 
-  --color-info-50: #f0f9ff;
-  --color-info-200: #bae6fd;
-  --color-info-500: #0ea5e9;
-  --color-info-700: #0369a1;
+  --color-danger-50: #fdf1f1;
+  --color-danger-200: #f5c6c6;
+  --color-danger-500: #d93f3f;
+  --color-danger-700: #b42323;
 
+  --color-info-50: #eff6fc;
+  --color-info-200: #c2dbf2;
+  --color-info-500: #2f80c9;
+  --color-info-700: #1d5f9b;
+
+  --shadow-card: 0 1px 2px rgb(24 37 34 / 0.04);
+}
+
+/* Geist and Geist Mono are self-hosted by next/font (app/layout.tsx). */
+@theme inline {
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-  --shadow-card: 0 1px 2px rgb(15 27 45 / 0.04), 0 1px 3px rgb(15 27 45 / 0.06);
+    var(--font-geist), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
 }
 
 html {
@@ -65,11 +79,17 @@ body {
   background: var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Long URLs, ids and evidence never widen the page. */
+.break-anywhere {
+  overflow-wrap: anywhere;
 }
 
 /* Visible, consistent keyboard focus everywhere. */
 :where(a, button, input, select, textarea, summary):focus-visible {
-  outline: 2px solid var(--color-brand-600);
+  outline: 2px solid var(--color-brand-500);
   outline-offset: 2px;
   border-radius: 0.375rem;
 }

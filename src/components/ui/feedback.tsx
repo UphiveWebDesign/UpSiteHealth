@@ -27,10 +27,12 @@ export function Callout({
   return (
     <div
       role={tone === "danger" || tone === "warning" ? "alert" : "status"}
-      className={`flex flex-wrap items-start gap-3 rounded-xl px-4 py-3 text-sm ring-1 ring-inset ${TONE_CLASSES[tone]}`}
+      className={`flex flex-wrap items-start gap-3 rounded-lg px-4 py-3 text-sm ring-1 ring-inset ${TONE_CLASSES[tone]}`}
     >
       <Icon className="mt-0.5 h-4 w-4" />
-      <div className="min-w-0 flex-1">
+      {/* basis: on narrow screens the action wraps below the text instead
+          of squeezing it into a one-word column. */}
+      <div className="min-w-0 flex-1 basis-56">
         {title && <p className="font-semibold">{title}</p>}
         {children && <div className={title ? "mt-0.5" : ""}>{children}</div>}
       </div>

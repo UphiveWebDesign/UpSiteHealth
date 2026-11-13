@@ -1,7 +1,13 @@
+import type { ReactNode } from "react";
 import { BENEFIT } from "@/lib/recommendations/benefits";
 import type { RecommendationMeta } from "@/lib/recommendations/metadata";
 import { provenanceLabel } from "@/lib/recommendations/provenance";
+import {
+  platformStatus,
+  type Remediation,
+} from "@/lib/recommendations/remediation";
 import { Badge } from "./ui/badge";
+import { UrlText } from "./ui/layout";
 
 const CONFIDENCE_TONE = {
   high: "success",
@@ -18,6 +24,137 @@ export function BasedOn({ label }: { label: string }) {
       <span className="font-semibold uppercase tracking-wide">Based on:</span>{" "}
       <span className="text-ink-2">{label}</span>
     </p>
+  );
+}
+
+function Label({ children }: { children: ReactNode }) {
+  return (
+    <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+      {children}
+    </p>
+  );
+}
+
+function Bullets({ items }: { items: string[] }) {
+  return (
+    <ul className="mt-1 list-disc pl-5 text-sm text-ink-2">
+      {items.map((i) => (
+        <li key={i}>{i}</li>
+      ))}
+    </ul>
+  );
+}
+
+/** Step-by-step fix for a technical SEO rule, with platform steps only when the crawl supports them. */
+export function HowToFix({ remediation }: { remediation: Remediation }) {
+  const status = platformStatus(remediation.platform);
+  return (
+    // A group, not a landmark: the page shows one per task.
+    <div
+      role="group"
+      aria-label="How to fix"
+      className="flex flex-col gap-3 break-words rounded-lg border border-line px-3 py-3"
+    >
+      <div>
+        <Label>How to fix</Label>
+        <ol className="mt-1 list-decimal pl-5 text-sm text-ink-2">
+          {remediation.steps.map((s) => (
+            <li key={s} className="mt-0.5">
+              {s}
+            </li>
+          ))}
+        </ol>
+      </div>
+      {remediation.prerequisites.length > 0 && (
+        <div>
+          <Label>Before you start</Label>
+          <Bullets items={remediation.prerequisites} />
+        </div>
+      )}
+      {remediation.risks.length > 0 && (
+        <div>
+          <Label>Risks</Label>
+          <Bullets items={remediation.risks} />
+        </div>
+      )}
+      {remediation.overlays.map((o) => (
+        <div key={o.platform}>
+          <Label>On {o.label}</Label>
+          {o.steps.length > 0 && (
+            <ol className="mt-1 list-decimal pl-5 text-sm text-ink-2">
+              {o.steps.map((s) => (
+                <li key={s} className="mt-0.5">
+                  {s}
+                </li>
+              ))}
+            </ol>
+          )}
+          {o.notes.length > 0 && <Bullets items={o.notes} />}
+        </div>
+      ))}
+      <div className="text-xs text-muted">
+        <p>
+          {status.text}
+          {status.supported && remediation.overlays.length === 0
+            ? " There are no platform-specific steps for this check; the steps above apply."
+            : !status.supported
+              ? " The steps above apply to any platform."
+              : ""}
+        </p>
+        {status.signals.length > 0 && (
+          <details className="mt-1">
+            <summary className="cursor-pointer">Platform signals</summary>
+            <ul className="mt-1 list-disc pl-5">
+              {status.signals.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The essentials on one line, each with its label in words: how many pages,
+ * how sure, how big, and what kind of benefit. Reasons stay in the details.
+ */
+export function RecommendationFacts({
+  meta,
+}: {
+  meta: RecommendationMeta | null;
+}) {
+  if (!meta) return null;
+  const affected = meta.coverage?.affected ?? meta.urls.length;
+  const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
+  const facts: Array<[string, string]> = [
+    ...(affected > 0 && !meta.proposal
+      ? ([
+          [
+            "Affected pages",
+            `${affected}${meta.coverage ? ` of ${meta.coverage.analysed}` : ""}`,
+          ],
+        ] as Array<[string, string]>)
+      : []),
+    ["Confidence", cap(meta.confidence)],
+    ["Effort", meta.effort ? EFFORT_LABEL[meta.effort] : "Not estimated"],
+    ["Benefit", BENEFIT[meta.benefit].label],
+  ];
+  return (
+    <dl
+      aria-label="Key facts"
+      className="grid grid-cols-2 gap-x-6 gap-y-2 sm:flex sm:flex-wrap"
+    >
+      {facts.map(([label, value]) => (
+        <div key={label} className="min-w-0">
+          <dt className="text-[11px] font-medium uppercase tracking-wider text-muted">
+            {label}
+          </dt>
+          <dd className="text-sm tabular-nums text-ink">{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -47,6 +184,7 @@ export function RecommendationDetails({
   return (
     <div className="mt-3 flex flex-col gap-3">
       {meta.provenance && <BasedOn label={provenanceLabel(meta.provenance)} />}
+      {meta.remediation && <HowToFix remediation={meta.remediation} />}
       <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
@@ -143,8 +281,8 @@ export function RecommendationDetails({
           </summary>
           <ul className="mt-2 flex flex-col gap-1">
             {meta.urls.slice(0, URLS_SHOWN).map((u) => (
-              <li key={u} className="break-all text-xs text-ink-2">
-                {u}
+              <li key={u} className="text-ink-2">
+                <UrlText url={u} />
               </li>
             ))}
           </ul>

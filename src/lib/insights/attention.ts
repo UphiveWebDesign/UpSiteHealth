@@ -10,13 +10,27 @@ import type {
 import { recommendationVisibility } from "@/lib/business/visibility";
 import { crawlSchedule, CRAWL_INTERVAL_DAYS } from "@/lib/crawler/schedule";
 import { formatDateTime } from "@/lib/format";
+import { log } from "@/lib/log";
+import { historyAvailable } from "@/lib/recommendations/events";
 import {
   buildRecommendations,
   loadRecommendationContext,
+  recommendationBasis,
+  recommendationMeta,
   recommendationState,
   verifiedByCrawl,
   type RecommendationState,
 } from "@/lib/recommendations/generate";
+import {
+  reappearance,
+  type Reappearance,
+} from "@/lib/recommendations/reappearance";
+import type { HistoryEvent } from "@/lib/recommendations/recurrence";
+import {
+  describeWhatChanged,
+  whatChangedFor,
+  type WhatChanged,
+} from "@/lib/recommendations/what-changed";
 import { loadCrawlComparison } from "@/lib/seo/compare";
 import type { TenantDb } from "@/lib/tenancy/scope";
 import { splitTitle } from "@/lib/workflow/plan";
@@ -30,8 +44,11 @@ import type { WebsiteSummary } from "./signals";
  *
  * - site-health:       monitoring problems from `nextSteps` (down, SSL, DNS,
  *                      critical or high issues).
+ * - reappeared:        tasks a recheck verified fixed that later evidence
+ *                      finds again (`reappearance`, from task history).
  * - still-detected:    tasks marked done that a later check still finds
- *                      (`recommendationState` "still-detected").
+ *                      (`recommendationState` "still-detected"), never
+ *                      verified fixed (those are "reappeared").
  * - returned:          findings the latest crawl comparison classifies as
  *                      "came-back" (`classifyChanges`).
  * - high-priority:     open critical or high tasks whose problem the latest
@@ -47,6 +64,7 @@ import type { WebsiteSummary } from "./signals";
 
 export type AttentionCategory =
   | "site-health"
+  | "reappeared"
   | "still-detected"
   | "returned"
   | "high-priority"
@@ -63,6 +81,11 @@ export const ATTENTION_CATEGORIES: Array<{
 }> = [
   { key: "site-health", label: "Site health problems", unit: "problem" },
   {
+    key: "reappeared",
+    label: "Verified fixes that came back",
+    unit: "task",
+  },
+  {
     key: "still-detected",
     label: "Reported done, still detected",
     unit: "task",
@@ -78,8 +101,27 @@ export const isAttentionCategory = (v: unknown): v is AttentionCategory =>
 
 export type AttentionTone = "danger" | "warning" | "info";
 
-/** One record behind an item (a task or a group of findings), with its link. */
-export type AttentionEntry = { id: string; label: string; href: string };
+/**
+ * One record behind an item (a task or a group of findings), with its link
+ * and, where it helps, one line of detail (priority, dates, affected page).
+ */
+export type AttentionEntry = {
+  id: string;
+  label: string;
+  href: string;
+  detail?: string;
+  /**
+   * For a verified fix that came back: the page value its rule is about in
+   * the crawl that verified it and in the one that found it again
+   * (`describeWhatChanged`). A clue, not a cause; absent when not reliable.
+   */
+  whatChanged?: string;
+  /**
+   * A verified fix that came back: the entry may offer Reopen (the existing
+   * status action; COMPLETED to PROPOSED). Set nowhere else.
+   */
+  reopen?: true;
+};
 
 export type AttentionItem = {
   category: AttentionCategory;
@@ -104,6 +146,13 @@ export type AttentionTask = {
   status: RecommendationStatus;
   priority: RecommendationPriority;
   state: RecommendationState;
+  /** A verified fix found again (task history); absent or null: not one. */
+  reappeared?: Reappearance | null;
+  /** Affected pages from the task's evidence, most relevant first. */
+  urls?: string[];
+  /** The evidence crawl that found it (again), for "what changed". */
+  evidenceCrawlRunId?: string | null;
+  whatChanged?: WhatChanged | null;
 };
 
 export type ReturnedFinding = {
@@ -158,6 +207,25 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = {
   INFO: 4,
 };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const PRIORITY_WORD: Record<RecommendationPriority, string> = {
+  CRITICAL: "Critical",
+  HIGH: "High",
+  MEDIUM: "Medium",
+  LOW: "Low",
+};
+/** "High priority · fixed … · found again … · /page (+2 more)". */
+function reappearedDetail(t: AttentionTask): string {
+  const r = t.reappeared!;
+  const urls = t.urls ?? [];
+  return [
+    `${PRIORITY_WORD[t.priority]} priority`,
+    `verified fixed ${formatDateTime(r.fixedObservedAt)}`,
+    `found again ${formatDateTime(r.detectedAt)}`,
+    ...(urls.length
+      ? [`${urls[0]}${urls.length > 1 ? ` (+${urls.length - 1} more)` : ""}`]
+      : []),
+  ].join(" · ");
+}
 const byTask = (a: AttentionTask, b: AttentionTask) =>
   PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
   a.title.localeCompare(b.title) ||
@@ -176,7 +244,9 @@ export function siteAttention(
   const taskEntry = (t: AttentionTask): AttentionEntry => ({
     id: t.id,
     label: splitTitle(t.title).displayTitle,
-    href: `${site}/recommendations${t.status === "COMPLETED" ? "?status=closed" : ""}#task-${t.id}`,
+    // Completed tasks are under "Done or dismissed", except those a later
+    // check still finds: the Recommendations page lists them under To do.
+    href: `${site}/recommendations${t.status === "COMPLETED" && t.state.kind !== "still-detected" ? "?status=closed" : ""}#task-${t.id}`,
   });
 
   for (const step of s.steps) {
@@ -193,9 +263,46 @@ export function siteAttention(
     });
   }
 
+  const back = s.tasks
+    .filter(
+      (t) =>
+        t.status === "COMPLETED" &&
+        t.state.kind === "still-detected" &&
+        !!t.reappeared,
+    )
+    .sort(byTask);
+  if (back.length) {
+    const severe = back.some(
+      (t) => t.priority === "CRITICAL" || t.priority === "HIGH",
+    );
+    add({
+      category: "reappeared",
+      urgency: severe ? 0 : 1,
+      tone: "danger",
+      title: `${plural(back.length, "verified fix")} came back`,
+      reason: `${back.length === 1 ? "A recheck confirmed it was fixed, and a later check found it again." : "A recheck confirmed these were fixed, and a later check found them again."} Something changed after the fix: check recent updates, content edits or restored backups.`,
+      count: back.length,
+      entries: back.slice(0, ENTRY_LIMIT).map((t) => ({
+        ...taskEntry(t),
+        detail: reappearedDetail(t),
+        ...(t.whatChanged
+          ? { whatChanged: describeWhatChanged(t.whatChanged) }
+          : {}),
+        reopen: true as const,
+      })),
+      action: {
+        label: "Review tasks",
+        href: `${site}/recommendations`,
+      },
+    });
+  }
+
   const still = s.tasks
     .filter(
-      (t) => t.status === "COMPLETED" && t.state.kind === "still-detected",
+      (t) =>
+        t.status === "COMPLETED" &&
+        t.state.kind === "still-detected" &&
+        !t.reappeared,
     )
     .sort(byTask);
   if (still.length) {
@@ -210,7 +317,7 @@ export function siteAttention(
       entries: still.slice(0, ENTRY_LIMIT).map(taskEntry),
       action: {
         label: "Review tasks",
-        href: `${site}/recommendations?status=closed`,
+        href: `${site}/recommendations`,
       },
     });
   }
@@ -343,6 +450,8 @@ export function siteAttention(
 export type AttentionSite = {
   websiteId: string;
   websiteName: string;
+  /** The website's client, for the list (null: no client). */
+  clientId: string | null;
   items: AttentionItem[];
 };
 
@@ -381,6 +490,7 @@ export function portfolioAttention(
     ranked.push({
       websiteId: s.websiteId,
       websiteName: s.websiteName,
+      clientId: s.clientId,
       all,
       items: options.only
         ? all.filter((i) => i.category === options.only)
@@ -406,6 +516,7 @@ export function portfolioAttention(
     .map(({ s }) => ({
       websiteId: s.websiteId,
       websiteName: s.websiteName,
+      clientId: s.clientId,
       items: s.items,
     }));
   return {
@@ -491,14 +602,27 @@ export async function loadPortfolioAttention(
         organizationId: scope.organizationId,
       });
       const drafts = buildRecommendations(ctx.inputs);
-      tasks = mine.map((r) => ({
-        id: r.id,
-        title: r.title,
-        issueId: r.issueId,
-        status: r.status,
-        priority: r.priority,
-        state: recommendationState(r, drafts, ctx, now),
-      }));
+      tasks = mine.map((r) => {
+        const state = recommendationState(r, drafts, ctx, now);
+        // Only a completed task still detected can be a fix that came back;
+        // its affected pages are shown with it.
+        const candidate =
+          r.status === "COMPLETED" && state.kind === "still-detected";
+        return {
+          id: r.id,
+          title: r.title,
+          issueId: r.issueId,
+          status: r.status,
+          priority: r.priority,
+          state,
+          ...(candidate
+            ? {
+                urls: recommendationMeta(r, ctx, now)?.urls ?? [],
+                evidenceCrawlRunId: ctx.crawlRunId ?? null,
+              }
+            : {}),
+        };
+      });
     }
     // A finding can only have come back if the website has two analysed
     // crawls and an open finding now.
@@ -539,5 +663,82 @@ export async function loadPortfolioAttention(
       returned,
     });
   }
+  await markReappeared(tenant, root, out, recs);
+  await markWhatChanged(tenant, out);
   return out;
+}
+
+/**
+ * "What changed?" for the returned fixes of SEO rules about one page value,
+ * on their first affected page (`loadWhatChanged`; tenant-scoped, two
+ * queries, left out wherever the evidence does not line up exactly).
+ */
+async function markWhatChanged(
+  tenant: TenantDb,
+  sites: SiteAttentionInput[],
+): Promise<void> {
+  const found = await whatChangedFor(
+    tenant,
+    sites.flatMap((s) =>
+      s.tasks.map((t) => ({ ...t, websiteId: s.websiteId })),
+    ),
+  );
+  for (const s of sites)
+    for (const t of s.tasks)
+      if (found.has(t.id)) t.whatChanged = found.get(t.id)!;
+}
+
+/**
+ * Marks verified fixes found again (`reappearance`), from the history of the
+ * completed, still-detected tasks: one tenant-scoped query for the whole
+ * portfolio. Without the history table, or if reading it fails, nothing is
+ * marked and those tasks stay "still detected": never a false Reappeared.
+ */
+async function markReappeared(
+  tenant: TenantDb,
+  root: PrismaClient,
+  sites: SiteAttentionInput[],
+  rows: Array<{ id: string; updatedAt: Date }>,
+): Promise<void> {
+  const candidates = sites.flatMap((s) =>
+    s.tasks.filter(
+      (t) => t.status === "COMPLETED" && t.state.kind === "still-detected",
+    ),
+  );
+  if (!candidates.length) return;
+  let events: Map<string, HistoryEvent[]>;
+  try {
+    if (!(await historyAvailable(root))) return;
+    const found = await tenant.recommendationEvent.findMany({
+      where: {
+        recommendationId: { in: candidates.map((t) => t.id) },
+        type: { in: ["STATUS_CHANGED", "VERIFICATION_RECORDED"] },
+      },
+      select: {
+        recommendationId: true,
+        type: true,
+        createdAt: true,
+        toStatus: true,
+        actorUserId: true,
+        evidence: true,
+      },
+    });
+    events = new Map();
+    for (const { recommendationId, ...e } of found)
+      events.set(recommendationId, [
+        ...(events.get(recommendationId) ?? []),
+        e,
+      ]);
+  } catch (error) {
+    log.error("attention.reappeared_unavailable", { error });
+    return;
+  }
+  const updatedAt = new Map(rows.map((r) => [r.id, r.updatedAt]));
+  for (const t of candidates)
+    t.reappeared = reappearance(
+      { status: t.status, updatedAt: updatedAt.get(t.id)! },
+      t.state,
+      recommendationBasis(t),
+      events.get(t.id) ?? [],
+    );
 }

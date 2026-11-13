@@ -1,14 +1,22 @@
 import { humanize } from "@/lib/format";
 
 export type Tone =
-  "success" | "warning" | "danger" | "info" | "neutral" | "brand" | "accent";
+  | "success"
+  | "warning"
+  | "danger"
+  | "info"
+  | "neutral"
+  | "brand"
+  | "accent"
+  | "gold";
 
 export const TONE_CLASSES: Record<Tone, string> = {
   success: "bg-success-50 text-success-700 ring-success-200",
   warning: "bg-warning-50 text-warning-700 ring-warning-200",
   danger: "bg-danger-50 text-danger-700 ring-danger-200",
   info: "bg-info-50 text-info-700 ring-info-200",
-  neutral: "bg-slate-100 text-ink-2 ring-line-strong/70",
+  neutral: "bg-tint text-ink-2 ring-line-strong/70",
+  gold: "bg-gold-50 text-gold-700 ring-gold-200",
   brand: "bg-brand-50 text-brand-800 ring-brand-200",
   accent: "bg-accent-50 text-accent-700 ring-accent-500/20",
 };
@@ -19,6 +27,7 @@ const DOT_CLASSES: Record<Tone, string> = {
   danger: "bg-danger-500",
   info: "bg-info-500",
   neutral: "bg-muted",
+  gold: "bg-gold-500",
   brand: "bg-brand-600",
   accent: "bg-accent-500",
 };
@@ -97,7 +106,7 @@ export function Badge({
   const t = tone ?? toneFor(value);
   return (
     <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${TONE_CLASSES[t]}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${TONE_CLASSES[t]}`}
     >
       {dot && (
         <span

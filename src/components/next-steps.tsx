@@ -45,32 +45,37 @@ export function NextStepList({
         return (
           <li
             key={`${s.websiteId}-${s.id}`}
-            className="flex items-start gap-3 px-5 py-4"
+            className="flex items-start gap-3 px-4 py-3.5 sm:px-5"
           >
             <span
-              className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${t.wrap}`}
+              className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${t.wrap}`}
+              aria-hidden
             >
-              <Icon className="h-4 w-4" />
-              <span className="sr-only">{t.label}</span>
+              <Icon className="h-3.5 w-3.5" />
             </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-ink">
-                {s.title}
-                {showWebsite && (
-                  <span className="font-normal text-muted">
-                    {" "}
-                    · {s.websiteName}
-                  </span>
-                )}
-              </p>
-              <p className="mt-0.5 text-sm text-muted">{s.reason}</p>
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                  {t.label}
+                </p>
+                <p className="mt-0.5 text-sm font-medium text-ink">
+                  {s.title}
+                  {showWebsite && (
+                    <span className="font-normal text-muted">
+                      {" "}
+                      · {s.websiteName}
+                    </span>
+                  )}
+                </p>
+                <p className="mt-0.5 text-sm text-muted">{s.reason}</p>
+              </div>
+              <Link
+                href={s.action.href}
+                className={buttonClass("secondary", "sm", "self-start")}
+              >
+                {s.action.label}
+              </Link>
             </div>
-            <Link
-              href={s.action.href}
-              className={buttonClass("secondary", "sm", "shrink-0")}
-            >
-              {s.action.label}
-            </Link>
           </li>
         );
       })}

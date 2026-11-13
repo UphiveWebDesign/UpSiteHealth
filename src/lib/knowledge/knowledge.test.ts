@@ -13,8 +13,12 @@ import {
 } from "@/lib/recommendations/metadata";
 import { analyzePage, analyzeSite, SEO_RULE_IDS } from "@/lib/seo/rules";
 import { buildPlan, type PlanInput } from "@/lib/workflow/plan";
-import { FIXTURE_FACTS, FIXTURE_PAGES } from "./__fixtures__/rule-fixtures";
-import golden from "./__fixtures__/rule-outputs.k3.json";
+import {
+  FIXTURE_FACTS,
+  FIXTURE_PAGES,
+  FIXTURE_UNREACHABLE_FACTS,
+} from "./__fixtures__/rule-fixtures";
+import golden from "./__fixtures__/rule-outputs.k4.json";
 import {
   KNOWLEDGE_VERSION,
   SEO_CATALOGUE,
@@ -35,6 +39,7 @@ const entries = Object.entries(SEO_CATALOGUE) as Array<[string, SeoRuleEntry]>;
 const drafts = () => [
   ...FIXTURE_PAGES.flatMap((p) => analyzePage(p, "site.example")),
   ...analyzeSite(FIXTURE_PAGES, FIXTURE_FACTS),
+  ...analyzeSite([], FIXTURE_UNREACHABLE_FACTS),
 ];
 
 describe("catalogue coverage and compatibility", () => {
@@ -42,10 +47,10 @@ describe("catalogue coverage and compatibility", () => {
     const emitted = new Set(drafts().map((d) => d.ruleId));
     expect([...emitted].sort()).toEqual(Object.keys(SEO_CATALOGUE).sort());
     expect(SEO_RULE_IDS).toEqual(Object.keys(SEO_CATALOGUE));
-    expect(KNOWLEDGE_VERSION).toBe("k3");
+    expect(KNOWLEDGE_VERSION).toBe("k4");
   });
 
-  test("rule outputs match the golden file (k1 from commit ebe2332; k2 adds placeholder content and checks thin content on indexable pages only; k3 adds incomplete local business markup)", () => {
+  test("rule outputs match the golden file (k1 from commit ebe2332; k2 adds placeholder content and checks thin content on indexable pages only; k3 adds incomplete local business markup; k4 adds listed sitemaps that cannot be read)", () => {
     // Severity, title, description and recommendation are stored on every
     // finding, and the title identifies its recommendation. Changing them
     // needs a data plan, not just a new golden file.

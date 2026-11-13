@@ -35,7 +35,7 @@ export function ProposalBlock({
       </p>
       <dl className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
         <dt className="text-muted">Suggested URL</dt>
-        <dd className="break-all font-mono text-xs text-ink">
+        <dd className="break-anywhere font-mono text-xs text-ink">
           {proposal.slug}{" "}
           <span className="font-sans text-muted">(a proposal)</span>
         </dd>

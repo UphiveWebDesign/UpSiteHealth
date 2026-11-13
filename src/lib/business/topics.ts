@@ -1,7 +1,8 @@
-import type { BusinessType } from "@/lib/knowledge/catalogue";
+import { SEO_LIMITS, type BusinessType } from "@/lib/knowledge/catalogue";
 import {
   dimensionFreshness,
   type DimensionFreshness,
+  type FreshnessState,
 } from "@/lib/scoring/freshness";
 import { factMatches, type CoverageCrawl } from "./coverage";
 import {
@@ -93,7 +94,28 @@ export type Topic = {
   evidence: TopicEvidence[];
   /** Pages that matched in all (evidence lists at most 5). */
   pagesMatched: number;
+  /**
+   * For a "partial" topic: the best page about it (a strong match) and why
+   * it does not cover it yet, in `sufficiency`'s order; null otherwise.
+   */
+  weakPage: { url: string; kind: WeakPageKind } | null;
 };
+
+/**
+ * Why a page about a topic does not cover it yet (`sufficiency`'s checks,
+ * in its order): noindex, canonical elsewhere, no main-content data (an
+ * older crawl), thin main content, or main content that does not mention it.
+ */
+export type WeakPageKind =
+  "noindex" | "canonical" | "no-content-data" | "thin" | "not-described";
+
+function weakPageKind(p: UnderstoodPage): WeakPageKind {
+  if (p.noindex) return "noindex";
+  if (p.canonicalElsewhere) return "canonical";
+  if (!p.content) return "no-content-data";
+  if (p.content.words < SEO_LIMITS.thinContentWords) return "thin";
+  return "not-described";
+}
 
 export type TopicCrawl = Pick<
   CoverageCrawl,
@@ -326,7 +348,13 @@ export function buildTopicMap(input: {
     }
 
     const evidence = matches.map(
-      (m): TopicEvidence & { fulfils: boolean; lacking: string | null } => {
+      (
+        m,
+      ): TopicEvidence & {
+        fulfils: boolean;
+        lacking: string | null;
+        lackingKind: WeakPageKind | null;
+      } => {
         const p = byUrl.get(m.url)!;
         const lacking =
           m.strength === "strong"
@@ -357,6 +385,7 @@ export function buildTopicMap(input: {
           ],
           fulfils: m.strength === "strong" && !lacking,
           lacking,
+          lackingKind: lacking ? weakPageKind(p) : null,
           verdict:
             m.strength !== "strong"
               ? `Mentions it (${where}) but is not about it.${m.note ? ` ${m.note}` : ""}`
@@ -371,7 +400,7 @@ export function buildTopicMap(input: {
       ...evidence.filter((e) => !e.fulfils),
     ]
       .slice(0, MAX_EVIDENCE)
-      .map(({ fulfils: _, lacking: __, ...e }) => e);
+      .map(({ fulfils: _, lacking: __, lackingKind: ___, ...e }) => e);
     const covering = evidence.filter((e) => e.fulfils);
 
     let state: TopicState;
@@ -440,6 +469,11 @@ export function buildTopicMap(input: {
       reason,
       evidence: cited,
       pagesMatched: evidence.length,
+      weakPage: (() => {
+        if (state !== "partial") return null;
+        const about = evidence.find((e) => e.lacking && e.lackingKind);
+        return about ? { url: about.url, kind: about.lackingKind! } : null;
+      })(),
     };
   });
 
@@ -467,4 +501,23 @@ export function buildTopicMap(input: {
         ? `Each service is also mapped per location: the business has ${locations.length > 1 ? plural(locations.length, "approved location") : "the multi-location type"}.`
         : "One approved location: it is context for every topic, not a topic of its own.",
   };
+}
+
+/**
+ * The warning for a conclusion that rests on pages of a crawl that is not
+ * fresh (a topic covered or partial, a keyword mapped or only mentioned), or
+ * null. One wording for the topic and keyword lists.
+ */
+export function staleCrawlCaveat(
+  crawl: FreshnessState | null,
+  restsOnPages: boolean,
+): string | null {
+  if (!restsOnPages || !crawl || crawl === "fresh") return null;
+  return `From a crawl that is ${
+    crawl === "stale"
+      ? "out of date"
+      : crawl === "incomplete"
+        ? "incomplete"
+        : "of unknown age"
+  }: the page may have changed since.`;
 }

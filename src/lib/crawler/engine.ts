@@ -208,6 +208,16 @@ export type DiscoveryEvidence = {
   sitemapUrlsCapped: boolean;
   /** v2: what happened to every distinct sitemap file listed. */
   sitemaps?: SitemapLedger;
+  /**
+   * The HTTP status of each sitemap file that could not be read (null: no
+   * response), at most 20. Crawls since 2026-11-01.
+   */
+  fetches?: Array<{ url: string; httpStatus: number | null }>;
+  /**
+   * When robots.txt listed no sitemap: the response from /sitemap.xml, so
+   * "no sitemap" is claimed only on a 404 or 410. Crawls since 2026-11-01.
+   */
+  conventional?: { url: string; httpStatus: number | null };
 };
 
 type UrlList = { count: number; urls: string[] };
@@ -400,6 +410,13 @@ export async function discoverSitemaps({
       if (!item.guessed) failed.push(item.url);
       continue;
     }
+    // A 200 that is not a sitemap (often an HTML "page not found" served
+    // with status 200) is no sitemap: a listed one counts as failed, a
+    // guessed /sitemap.xml is left to its recorded probe.
+    if (!isSitemapDocument(xml)) {
+      if (!item.guessed) failed.push(item.url);
+      continue;
+    }
     const { urls, isIndex, truncated } = parseSitemap(xml, maxUrls);
     if (isIndex) {
       if (indexes >= MAX_SITEMAP_INDEXES) {
@@ -473,11 +490,13 @@ async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
   }
   robotsCache.set(run.id, robots);
 
-  const { urls: sitemapUrls, discovery } = await discoverSitemaps({
+  const statuses = new Map<string, number | null>();
+  const found = await discoverSitemaps({
     robotsSitemaps: robots.sitemaps,
     origin,
     maxUrls: run.maxDiscoveredUrls,
     fetchXml: async (url) => {
+      statuses.set(url, null);
       const res = await safeFetch(url, {
         policy,
         userAgent: run.userAgent,
@@ -485,9 +504,16 @@ async function initRun(db: PrismaClient, run: Run, policy: NetPolicy) {
         onBodyTooLarge: "truncate",
         timeoutMs: 15_000,
       });
+      statuses.set(url, res.status);
       return res.status === 200 ? res.body.toString("utf8") : null;
     },
   });
+  const sitemapUrls = found.urls;
+  const discovery = withFetchStatuses(
+    found.discovery,
+    statuses,
+    robots.sitemaps.length ? null : `${origin}/sitemap.xml`,
+  );
   discoveryCache.set(run.id, discovery);
   await db.crawlRun.update({
     where: { id: run.id },
@@ -579,6 +605,37 @@ export async function recoverStalePages(db: PrismaClient, now = new Date()) {
       "updatedAt" = ${now}
     FROM crawl_runs r
     WHERE p."crawlRunId" = r.id AND p.status = 'CRAWLING' AND p."claimExpiresAt" < ${now}`;
+}
+
+/** Whether a response body is an XML sitemap or sitemap index. */
+export const isSitemapDocument = (body: string) =>
+  /<(?:[\w-]+:)?(?:urlset|sitemapindex)[\s>]/i.test(body);
+
+/**
+ * Adds what each unread sitemap file answered, and the /sitemap.xml probe
+ * when robots.txt listed none (`conventional`: that URL, else null), so a
+ * missing sitemap can be told from one that failed (seo/sitemap.ts).
+ */
+export function withFetchStatuses(
+  discovery: DiscoveryEvidence,
+  statuses: Map<string, number | null>,
+  conventional: string | null,
+): DiscoveryEvidence {
+  const failed = discovery.sitemaps?.failed.urls ?? [];
+  return {
+    ...discovery,
+    fetches: failed
+      .slice(0, 20)
+      .map((url) => ({ url, httpStatus: statuses.get(url) ?? null })),
+    ...(conventional
+      ? {
+          conventional: {
+            url: conventional,
+            httpStatus: statuses.get(conventional) ?? null,
+          },
+        }
+      : {}),
+  };
 }
 
 /**

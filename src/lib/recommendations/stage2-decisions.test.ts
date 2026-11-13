@@ -651,6 +651,9 @@ describe("D1 verification evidence (section 29)", () => {
       observedAt: T1.toISOString(),
       ruleId: RULE,
       crawlRunId: "crawl-latest",
+      // Since 2026-11-02: an SEO rule task is completed or verified only
+      // as a confirmed fix (never when its rule stopped applying).
+      outcome: "fix-confirmed",
     });
   });
 

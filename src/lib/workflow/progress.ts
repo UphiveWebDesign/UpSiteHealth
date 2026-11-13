@@ -2,10 +2,14 @@ import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { RecommendationPriority } from "@/generated/prisma/enums";
 import {
   loadRecommendationContext,
+  recommendationBasis,
   recommendationState,
   buildRecommendations,
   type RecommendationState,
 } from "@/lib/recommendations/generate";
+import { historyAvailable } from "@/lib/recommendations/events";
+import { reappearance } from "@/lib/recommendations/reappearance";
+import type { HistoryEvent } from "@/lib/recommendations/recurrence";
 import {
   loadCrawlComparisonBetween,
   type ChangeKind,
@@ -132,6 +136,11 @@ export type TaskActivity = {
   /** Of those, how many the latest evidence now confirms. */
   verifiedNow: number;
   stillDetected: number;
+  /**
+   * Of the still detected, how many a recheck had confirmed fixed before a
+   * later one found them again (task history; 0 without it).
+   */
+  reappeared: number;
   awaitingRecheck: number;
   /** Open work right now (not period-bound). */
   openNow: number;
@@ -141,6 +150,8 @@ export type TaskActivity = {
     title: string;
     priority: RecommendationPriority;
     state: RecommendationState["kind"];
+    /** A confirmed fix that a later check found again. */
+    reappeared: boolean;
   }>;
 };
 
@@ -183,11 +194,28 @@ export async function taskActivity(
     loadRecommendationContext(db, scope),
   ]);
   const drafts = buildRecommendations(ctx.inputs);
-  const states = done.map((r) => recommendationState(r, drafts, ctx).kind);
+  const full = done.map((r) => recommendationState(r, drafts, ctx));
+  const states = full.map((s) => s.kind);
+  const events = await completionEvents(
+    db,
+    scope,
+    done.filter((_, i) => states[i] === "still-detected").map((r) => r.id),
+  );
+  const reappeared = done.map(
+    (r, i) =>
+      !!events &&
+      !!reappearance(
+        r,
+        full[i],
+        recommendationBasis(r),
+        events.get(r.id) ?? [],
+      ),
+  );
   return {
     reportedDone: done.length,
     verifiedNow: states.filter((k) => k === "verified").length,
     stillDetected: states.filter((k) => k === "still-detected").length,
+    reappeared: reappeared.filter(Boolean).length,
     awaitingRecheck: states.filter((k) => k === "awaiting-recheck").length,
     openNow,
     dateSource: "last-updated",
@@ -196,8 +224,40 @@ export async function taskActivity(
       title: r.title,
       priority: r.priority,
       state: states[i],
+      reappeared: reappeared[i],
     })),
   };
+}
+
+/**
+ * The status and verification events of the given tasks, by task; null when
+ * the history table does not exist (nothing can then count as reappeared).
+ */
+async function completionEvents(
+  db: PrismaClient,
+  scope: { websiteId: string; organizationId: string },
+  ids: string[],
+): Promise<Map<string, HistoryEvent[]> | null> {
+  if (!ids.length || !(await historyAvailable(db))) return null;
+  const rows = await db.recommendationEvent.findMany({
+    where: {
+      ...scope,
+      recommendationId: { in: ids },
+      type: { in: ["STATUS_CHANGED", "VERIFICATION_RECORDED"] },
+    },
+    select: {
+      recommendationId: true,
+      type: true,
+      createdAt: true,
+      toStatus: true,
+      actorUserId: true,
+      evidence: true,
+    },
+  });
+  const out = new Map<string, HistoryEvent[]>();
+  for (const { recommendationId, ...e } of rows)
+    out.set(recommendationId, [...(out.get(recommendationId) ?? []), e]);
+  return out;
 }
 
 /**

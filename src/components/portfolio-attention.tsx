@@ -6,6 +6,8 @@ import {
   type AttentionUnit,
   type PortfolioAttention,
 } from "@/lib/insights/attention";
+import type { FormState } from "@/app/(app)/o/[orgSlug]/actions";
+import { AttentionNotices, ReopenFromOverview } from "./attention-reopen";
 import { buttonClass } from "./ui/button";
 import { Callout } from "./ui/feedback";
 import { AlertIcon, InfoIcon, XCircleIcon } from "./ui/icons";
@@ -53,6 +55,7 @@ export function PortfolioAttentionCard({
   clientId,
   clients,
   showAll,
+  reopenAction,
 }: {
   attention: PortfolioAttention;
   base: string;
@@ -60,6 +63,13 @@ export function PortfolioAttentionCard({
   clientId: string | null;
   clients: Array<{ id: string; name: string }>;
   showAll: boolean;
+  /**
+   * The existing status action bound to one task, for people who may change
+   * task status; absent: no Reopen buttons.
+   */
+  reopenAction?: (
+    taskId: string,
+  ) => (prev: FormState, formData: FormData) => Promise<FormState>;
 }) {
   const href = (p: { attention?: AttentionCategory | null; all?: boolean }) => {
     const q = new URLSearchParams();
@@ -70,6 +80,8 @@ export function PortfolioAttentionCard({
     return `${base}${s ? `?${s}` : ""}`;
   };
   const client = clients.find((c) => c.id === clientId);
+  const clientName = (id: string | null) =>
+    id ? (clients.find((c) => c.id === id)?.name ?? null) : null;
   const shown = showAll
     ? attention.sites
     : attention.sites.slice(0, SITE_LIMIT);
@@ -136,87 +148,122 @@ export function PortfolioAttentionCard({
         )}
       </div>
 
-      {attention.needAttention === 0 ? (
-        <div className="p-5">
-          <Callout tone="success" title="Nothing needs your attention">
-            No monitoring problems, unverified fixes, returned issues,
-            high-priority tasks, due crawls or tasks waiting for evidence.
-          </Callout>
-        </div>
-      ) : shown.length === 0 ? (
-        <p className="px-5 py-6 text-center text-sm text-muted">
-          No website is in this category.
-        </p>
-      ) : (
-        <ol className="divide-y divide-line">
-          {shown.map((s, rank) => (
-            <li key={s.websiteId} className="px-5 py-4">
-              <h3 className="text-sm font-semibold text-ink">
-                <span className="mr-1.5 text-muted tabular-nums">
-                  {rank + 1}.
-                </span>
-                <Link
-                  href={`${base}/websites/${s.websiteId}`}
-                  className="hover:text-brand-700"
-                >
-                  {s.websiteName}
-                </Link>
-              </h3>
-              <ul className="mt-2 flex flex-col gap-3">
-                {s.items.map((i) => {
-                  const t = TONE[i.tone];
-                  const Icon = t.icon;
-                  return (
-                    <li
-                      key={i.category + i.title}
-                      className="flex items-start gap-3"
-                    >
-                      <span
-                        className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${t.wrap}`}
+      {/* Reopen results stay here when the refreshed list no longer has
+          the task (or anything at all). */}
+      <AttentionNotices>
+        {attention.needAttention === 0 ? (
+          <div className="p-5">
+            <Callout tone="success" title="Nothing needs your attention">
+              No monitoring problems, verified fixes that came back, unverified
+              fixes, returned issues, high-priority tasks, due crawls or tasks
+              waiting for evidence.
+            </Callout>
+          </div>
+        ) : shown.length === 0 ? (
+          <p className="px-5 py-6 text-center text-sm text-muted">
+            No website is in this category.
+          </p>
+        ) : (
+          <ol className="divide-y divide-line">
+            {shown.map((s, rank) => (
+              <li key={s.websiteId} className="px-5 py-4">
+                <h3 className="text-sm font-semibold text-ink">
+                  <span className="mr-1.5 text-muted tabular-nums">
+                    {rank + 1}.
+                  </span>
+                  <Link
+                    href={`${base}/websites/${s.websiteId}`}
+                    className="hover:text-brand-700"
+                  >
+                    {s.websiteName}
+                  </Link>
+                  {clientName(s.clientId) && (
+                    <span className="ml-1.5 font-normal text-muted">
+                      · {clientName(s.clientId)}
+                    </span>
+                  )}
+                </h3>
+                <ul className="mt-2 flex flex-col gap-3">
+                  {s.items.map((i) => {
+                    const t = TONE[i.tone];
+                    const Icon = t.icon;
+                    return (
+                      <li
+                        key={i.category + i.title}
+                        className="flex items-start gap-3"
                       >
-                        <Icon className="h-4 w-4" />
-                        <span className="sr-only">{t.label}</span>
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-ink">
-                          {i.title}
-                        </p>
-                        <p className="mt-0.5 text-sm text-muted">{i.reason}</p>
-                        {i.entries.length > 0 && (
-                          <ul className="mt-1 flex flex-col gap-0.5 text-sm">
-                            {i.entries.map((e) => (
-                              <li key={e.id}>
-                                <Link
-                                  href={e.href}
-                                  className="text-brand-700 hover:underline"
-                                >
-                                  {e.label}
-                                </Link>
-                              </li>
-                            ))}
-                            {i.count > i.entries.length &&
-                              i.category !== "returned" && (
-                                <li className="text-muted">
-                                  and {i.count - i.entries.length} more
+                        <span
+                          className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${t.wrap}`}
+                        >
+                          <Icon className="h-4 w-4" />
+                          <span className="sr-only">{t.label}</span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-ink">
+                            {i.title}
+                          </p>
+                          <p className="mt-0.5 text-sm text-muted">
+                            {i.reason}
+                          </p>
+                          {i.entries.length > 0 && (
+                            <ul className="mt-1 flex flex-col gap-0.5 text-sm">
+                              {i.entries.map((e) => (
+                                <li key={e.id}>
+                                  <Link
+                                    href={e.href}
+                                    className="text-brand-700 hover:underline"
+                                  >
+                                    {e.label}
+                                  </Link>
+                                  {e.detail && (
+                                    <p className="break-anywhere text-xs text-muted">
+                                      {e.detail}
+                                    </p>
+                                  )}
+                                  {e.whatChanged && (
+                                    <p className="break-anywhere mt-0.5 text-xs text-ink-2">
+                                      <span className="font-medium">
+                                        What changed between the two crawls:
+                                      </span>{" "}
+                                      {e.whatChanged}{" "}
+                                      <span className="text-muted">
+                                        (a clue, not proof of the cause)
+                                      </span>
+                                    </p>
+                                  )}
+                                  {e.reopen && reopenAction && (
+                                    <ReopenFromOverview
+                                      action={reopenAction(e.id)}
+                                      title={e.label}
+                                      href={e.href}
+                                    />
+                                  )}
                                 </li>
-                              )}
-                          </ul>
-                        )}
-                      </div>
-                      <Link
-                        href={i.action.href}
-                        className={buttonClass("secondary", "sm", "shrink-0")}
-                      >
-                        {i.action.label}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </li>
-          ))}
-        </ol>
-      )}
+                              ))}
+                              {i.count > i.entries.length &&
+                                i.category !== "returned" && (
+                                  <li className="text-muted">
+                                    and {i.count - i.entries.length} more
+                                  </li>
+                                )}
+                            </ul>
+                          )}
+                        </div>
+                        <Link
+                          href={i.action.href}
+                          className={buttonClass("secondary", "sm", "shrink-0")}
+                        >
+                          {i.action.label}
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </li>
+            ))}
+          </ol>
+        )}
+      </AttentionNotices>
       {!showAll && attention.sites.length > SITE_LIMIT && (
         <div className="border-t border-line px-5 py-3 text-sm">
           <Link
@@ -235,7 +282,7 @@ const chip = (active: boolean) =>
   `inline-flex flex-col rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
     active
       ? "border-brand-200 bg-brand-50 text-brand-800"
-      : "border-line text-ink-2 hover:bg-slate-100 hover:text-ink"
+      : "border-line text-ink-2 hover:bg-tint hover:text-ink"
   }`;
 
 /** Shown while the attention list loads (it evaluates each website). */

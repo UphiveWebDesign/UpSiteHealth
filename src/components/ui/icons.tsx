@@ -72,3 +72,32 @@ export const ClockIcon = (p: IconProps) => (
     <path d="M12 7v5l3 2" />
   </Icon>
 );
+export const CircleIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+  </Icon>
+);
+export const HalfCircleIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" />
+  </Icon>
+);
+export const LockIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="4" y="11" width="16" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+  </Icon>
+);
+export const UserCheckIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="9" cy="8" r="4" />
+    <path d="M2 21a7 7 0 0 1 14 0M16 11l2 2 4-4" />
+  </Icon>
+);
+export const MinusCircleIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M8 12h8" />
+  </Icon>
+);

@@ -62,7 +62,7 @@ export default async function OrgLayout({
         </nav>
         <Link
           href={`${base}/notifications`}
-          className="relative flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 hover:bg-slate-100 hover:text-ink"
+          className="relative flex h-9 w-9 items-center justify-center rounded-lg text-ink-2 hover:bg-tint hover:text-ink"
           aria-label={`Notifications, ${unread} unread`}
           title="Notifications"
         >

@@ -123,7 +123,7 @@ export default async function IntegrationsPage({
       />
       <WebsiteNav orgSlug={orgSlug} websiteId={websiteId} />
 
-      <div className="mb-6 rounded-xl border border-line bg-surface p-5 shadow-card">
+      <div className="mb-6 rounded-lg border border-line bg-surface p-5 shadow-card">
         <ul className="flex flex-wrap gap-2" aria-label="Integrations by state">
           {(Object.keys(STATE) as IntegrationState[]).map((k) => (
             <li key={k}>
@@ -162,7 +162,7 @@ export default async function IntegrationsPage({
           <section
             key={s.key}
             aria-labelledby={`int-${s.key}`}
-            className="flex flex-col rounded-xl border border-line bg-surface p-5 shadow-card"
+            className="flex flex-col rounded-lg border border-line bg-surface p-5 shadow-card"
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
@@ -221,7 +221,7 @@ export default async function IntegrationsPage({
                           {p.urls.map((u) => (
                             <li
                               key={u}
-                              className="break-all text-xs text-ink-2"
+                              className="break-anywhere text-xs text-ink-2"
                             >
                               {u}
                             </li>

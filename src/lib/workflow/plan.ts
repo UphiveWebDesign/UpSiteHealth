@@ -171,6 +171,7 @@ export function taskStatusLabel(
 ): string {
   if (status === "DISMISSED") return "Dismissed";
   if (state === "ignored") return "Related findings ignored";
+  if (state === "no-longer-applies") return "No longer applies";
   if (status === "COMPLETED") {
     if (state === "verified") return "Verified";
     if (state === "still-detected") return "Reported done · still detected";
@@ -297,17 +298,21 @@ export function buildPlan(inputs: PlanInput[], limit = NEXT_LIMIT): Plan {
       );
     } else if (
       (i.status === "PROPOSED" || i.status === "IN_PROGRESS") &&
-      (i.state.kind === "awaiting-recheck" || i.state.kind === "ignored")
+      (i.state.kind === "awaiting-recheck" ||
+        i.state.kind === "ignored" ||
+        i.state.kind === "no-longer-applies")
     ) {
       plan.waiting.push(
         item(
           i,
           "waiting",
-          i.state.kind === "ignored"
-            ? i.basis.kind === "coverage"
-              ? "The business facts behind it are no longer approved; dismiss it if it no longer applies."
-              : "Everything behind it is ignored; dismiss it if it no longer applies."
-            : "Waiting for a recheck to confirm the current state.",
+          i.state.kind === "no-longer-applies"
+            ? "No longer reported because the check no longer applies to these pages; nothing was confirmed fixed. Dismiss it if it no longer matters."
+            : i.state.kind === "ignored"
+              ? i.basis.kind === "coverage"
+                ? "The business facts behind it are no longer approved; dismiss it if it no longer applies."
+                : "Everything behind it is ignored; dismiss it if it no longer applies."
+              : "Waiting for a recheck to confirm the current state.",
         ),
       );
     }

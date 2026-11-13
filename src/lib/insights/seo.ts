@@ -1,6 +1,7 @@
 import type { IssueSeverity } from "@/generated/prisma/enums";
 import { formatDateTime } from "@/lib/format";
 import { isContentRule } from "@/lib/knowledge/catalogue";
+import { FAILURE_LABEL, type SitemapFailure } from "@/lib/seo/sitemap";
 
 /** Relative weight of one finding of each severity, used to rank rule groups. */
 export const SEVERITY_WEIGHT: Record<IssueSeverity, number> = {
@@ -94,17 +95,45 @@ export function describeEvidence(
   }
   if (typeof e.canonicalHost === "string")
     return `Canonical points to ${e.canonicalHost}`;
-  if (num("httpStatus") !== null) return `Returns HTTP ${num("httpStatus")}`;
+  if (Array.isArray(e.sitemaps)) {
+    const files = (e.sitemaps as Array<Record<string, unknown>>).map(
+      (f) =>
+        `${pathOf(f.url)}: ${typeof f.httpStatus === "number" ? `HTTP ${f.httpStatus}, ` : ""}${FAILURE_LABEL[f.failure as SitemapFailure] ?? "not read"}`,
+    );
+    return files.join(" · ");
+  }
+  if (num("httpStatus") !== null) {
+    const cls =
+      typeof e.errorClass === "string" ? ERROR_CLASS[e.errorClass] : undefined;
+    return [
+      `Returns HTTP ${num("httpStatus")}${cls ? ` (${cls})` : ""}`,
+      typeof e.linkedFrom === "string" && `linked from ${pathOf(e.linkedFrom)}`,
+      e.foundVia === "SITEMAP" && "listed in the sitemap",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (Array.isArray(e.checked) && e.checked.length)
+    return `Checked ${e.checked.map(pathOf).join(", ")} (not found) and robots.txt (lists none)`;
   if (num("count") !== null && Array.isArray(e.urls))
     return `Shared by ${num("count")} pages`;
   if (num("count") !== null) return `${num("count")} found`;
   if (num("wordCount") !== null)
     return `${num("wordCount")} words (recommended ${num("minWords") ?? 200}+)`;
-  if (typeof e.robotsMeta === "string") return `robots: ${e.robotsMeta}`;
+  if (typeof e.robotsMeta === "string")
+    return `robots: ${e.robotsMeta}${e.listedInSitemap === true ? " · but listed in the XML sitemap" : ""}`;
   if (num("invalidCount") !== null)
     return `${num("invalidCount")} invalid block(s)`;
   return null;
 }
+
+/** What an error status shows (seo/rules.ts httpErrorClass). */
+const ERROR_CLASS: Record<string, string> = {
+  "not-found": "not found",
+  "access-refused": "access refused, possibly to crawlers only",
+  "rate-limited": "rate limited, may be temporary",
+  "server-error": "server error, may be temporary",
+};
 
 /** A path for display ("/leeds"), or the text as stored if it is no URL. */
 const pathOf = (u: unknown) => {
@@ -121,18 +150,35 @@ const pathOf = (u: unknown) => {
  * rests on and when. Only what the stored evidence holds; nothing invented.
  */
 function describeContentGap(e: Record<string, unknown>): string {
+  const at =
+    typeof e.crawlAnalyzedAt === "string" ? new Date(e.crawlAnalyzedAt) : null;
+  const when =
+    at && !Number.isNaN(at.getTime()) ? `crawl of ${formatDateTime(at)}` : null;
+  // Each content rule's own observation (seo/content.ts).
+  if (typeof e.mainWords === "number" && typeof e.url === "string")
+    return [
+      `${pathOf(e.url)} names it in its ${Array.isArray(e.where) ? e.where.join(" and ") : "heading"}, but its main content (${e.mainWords} words) does not`,
+      when,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  if (Array.isArray(e.sources) && typeof e.target === "string")
+    return [
+      `${typeof e.sourcesTotal === "number" ? e.sourcesTotal : e.sources.length} page(s) name it without linking to ${pathOf(e.target)}`,
+      when,
+    ]
+      .filter(Boolean)
+      .join(" · ");
   const service = pathOf(e.servicePage);
   const places = Array.isArray(e.locationPages)
     ? e.locationPages.map(pathOf).filter((x): x is string => !!x)
     : [];
-  const at =
-    typeof e.crawlAnalyzedAt === "string" ? new Date(e.crawlAnalyzedAt) : null;
   return [
     "No analysed page names both",
     service && `service page ${service}`,
     places.length &&
       `location page${places.length === 1 ? "" : "s"} ${places.join(", ")}`,
-    at && !Number.isNaN(at.getTime()) && `crawl of ${formatDateTime(at)}`,
+    when,
   ]
     .filter(Boolean)
     .join(" · ");

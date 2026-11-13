@@ -44,7 +44,7 @@ function Section({
   return (
     <section
       aria-labelledby={`s-${n}`}
-      className="rounded-xl border border-line bg-surface p-5 shadow-card print:break-inside-avoid print:border-0 print:p-0 print:shadow-none"
+      className="rounded-lg border border-line bg-surface p-5 shadow-card print:break-inside-avoid print:border-0 print:p-0 print:shadow-none"
     >
       <h2 id={`s-${n}`} className="mb-3 text-base font-semibold text-ink">
         {n}. {title}
@@ -62,7 +62,7 @@ function FindingList({ items, empty }: { items: ChangeItem[]; empty: string }) {
         <li key={i.fingerprint} className="flex flex-wrap items-center gap-2">
           <Badge value={i.severity} />
           <span className="text-ink">{i.title}</span>
-          <span className="break-all text-xs text-muted">
+          <span className="break-anywhere text-xs text-muted">
             {i.url ?? "Whole site"}
           </span>
         </li>
@@ -92,7 +92,10 @@ export default async function SeoReportPage({
   const base = `/o/${orgSlug}/websites/${websiteId}`;
   const { period, technical, activity, plan } = report;
   const verified = activity.items.filter((i) => i.state === "verified");
-  const unverified = activity.items.filter((i) => i.state !== "verified");
+  const cameBack = activity.items.filter((i) => i.reappeared);
+  const unverified = activity.items.filter(
+    (i) => i.state !== "verified" && !i.reappeared,
+  );
   const nextUp = [...plan["fix-first"], ...plan.continue, ...plan.next].slice(
     0,
     5,
@@ -125,14 +128,14 @@ export default async function SeoReportPage({
       </div>
 
       <article className="flex flex-col gap-5 print:gap-6">
-        <header className="rounded-xl border border-line bg-surface p-6 shadow-card print:border-0 print:p-0 print:shadow-none">
+        <header className="rounded-lg border border-line bg-surface p-6 shadow-card print:border-0 print:p-0 print:shadow-none">
           <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
             SEO progress report
           </p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">
             {report.website.name}
           </h1>
-          <p className="mt-0.5 break-all text-sm text-muted">
+          <p className="mt-0.5 break-anywhere text-sm text-muted">
             {new URL(report.website.url).host}
             {report.client && ` · prepared for ${report.client.name}`}
           </p>
@@ -225,7 +228,7 @@ export default async function SeoReportPage({
             </div>
             <div>
               <dt className="text-muted">Website</dt>
-              <dd className="break-all font-medium text-ink">
+              <dd className="break-anywhere font-medium text-ink">
                 {report.website.name} · {report.website.url}
               </dd>
             </div>
@@ -293,6 +296,14 @@ export default async function SeoReportPage({
           ) : (
             <p className="mb-3 text-sm text-muted">
               None confirmed in this period.
+            </p>
+          )}
+          {cameBack.length > 0 && (
+            <p className="mb-3 text-sm text-ink-2">
+              Confirmed fixed, then found again by a later check (something
+              changed after the fix):{" "}
+              {cameBack.map((u) => splitTitle(u.title).displayTitle).join("; ")}
+              .
             </p>
           )}
           {unverified.length > 0 && (
@@ -398,7 +409,7 @@ export default async function SeoReportPage({
           )}
         </Section>
 
-        <details className="rounded-xl border border-line bg-surface p-5 shadow-card print:hidden">
+        <details className="rounded-lg border border-line bg-surface p-5 shadow-card print:hidden">
           <summary className="cursor-pointer text-sm font-semibold text-ink">
             Baseline (reference)
           </summary>

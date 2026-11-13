@@ -19,6 +19,7 @@ import {
   type RecheckRun,
 } from "./recheck";
 import type { SeoFindingDraft } from "./rules";
+import type { FailedSitemap, SitemapState } from "./sitemap";
 
 /**
  * Compares two crawls by re-running the current rules over both crawls'
@@ -56,6 +57,9 @@ export type CrawlSide = {
   byUrl: Map<string, StoredCrawlPage>;
   /** Every page each site-wide finding covers (see analyzeCrawl). */
   sitePages?: Map<string, string[]>;
+  /** What the crawl showed about the sitemap (see analyzeCrawl). */
+  sitemap?: SitemapState;
+  sitemapFailures?: FailedSitemap[] | null;
 };
 
 export type StoredFinding = {
@@ -84,10 +88,18 @@ export type ChangeItem = {
 /** Why `side` cannot recheck `d`; `from` is the crawl `d` was found in. */
 function gapOn(side: CrawlSide, d: SeoFindingDraft, from: CrawlSide) {
   if (d.scope === "SITE")
-    return siteRecheckGap(d.ruleId, side.run, {
-      ...findingPages(d.evidence, from.sitePages?.get(d.fingerprint)),
-      pageAt: (u) => side.byUrl.get(u),
-    });
+    return siteRecheckGap(
+      d.ruleId,
+      {
+        ...side.run,
+        sitemap: side.sitemap,
+        sitemapFailures: side.sitemapFailures,
+      },
+      {
+        ...findingPages(d.evidence, from.sitePages?.get(d.fingerprint)),
+        pageAt: (u) => side.byUrl.get(u),
+      },
+    );
   const url = d.evidence.url;
   return pageRecheckGap(
     d.ruleId,

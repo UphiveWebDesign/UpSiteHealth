@@ -184,7 +184,7 @@ export function PeriodTechnical({
   progress: TechnicalProgress;
 }) {
   return (
-    <div className="rounded-xl border border-line bg-surface p-4 shadow-card print:break-inside-avoid print:shadow-none">
+    <div className="rounded-lg border border-line bg-surface p-4 shadow-card print:break-inside-avoid print:shadow-none">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-semibold text-ink">{label}</p>
         <Badge
@@ -254,6 +254,9 @@ export function TaskActivitySummary({ activity }: { activity: TaskActivity }) {
           [ACTIVITY.confirmed, activity.verifiedNow],
           [ACTIVITY.awaitingRecheck, activity.awaitingRecheck],
           [ACTIVITY.stillDetected, activity.stillDetected],
+          ...(activity.reappeared > 0
+            ? [[ACTIVITY.reappeared, activity.reappeared] as [string, number]]
+            : []),
           [ACTIVITY.openNow, activity.openNow],
         ]}
       />
@@ -301,7 +304,7 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
       : "Effort: not estimated",
   ].filter(Boolean);
   return (
-    <li className="rounded-xl border border-line bg-surface shadow-card print:break-inside-avoid print:shadow-none">
+    <li className="rounded-lg border border-line bg-surface shadow-card print:break-inside-avoid print:shadow-none">
       <div className="flex flex-col gap-3 p-5">
         <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
           <Badge value={item.priority} />
@@ -416,7 +419,10 @@ export function PlanItemCard({ item }: { item: PlanItem }) {
           {item.urls.length > 0 && (
             <ul className="flex flex-col gap-0.5 rounded-lg border border-line bg-subtle p-3">
               {item.urls.map((u) => (
-                <li key={u} className="break-all font-mono text-xs text-ink-2">
+                <li
+                  key={u}
+                  className="break-anywhere font-mono text-xs text-ink-2"
+                >
                   {u}
                 </li>
               ))}

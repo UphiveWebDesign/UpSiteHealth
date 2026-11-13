@@ -27,6 +27,7 @@ export const BASELINE_CATEGORIES: BaselineCategory[] = [
       "TECH_NOINDEX",
       "TECH_ROBOTS_TXT_MISSING",
       "TECH_SITEMAP_MISSING",
+      "TECH_SITEMAP_UNREACHABLE",
     ],
   },
   {

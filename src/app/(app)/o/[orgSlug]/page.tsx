@@ -33,6 +33,7 @@ import {
 } from "@/lib/insights/signals";
 import { requireOrgContext, type OrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
+import { setRecommendationStatusAction } from "./insights-actions";
 
 export const metadata: Metadata = { title: "Overview · UpSiteHealth" };
 
@@ -88,6 +89,18 @@ async function AttentionSection({
       clientId={clientId}
       clients={clients}
       showAll={showAll}
+      // The same permission as the Recommendations page's status buttons;
+      // the action checks membership and role again on the server.
+      reopenAction={
+        can.editWebsites(ctx.role)
+          ? (taskId) =>
+              setRecommendationStatusAction.bind(
+                null,
+                ctx.organization.slug,
+                taskId,
+              )
+          : undefined
+      }
     />
   );
 }

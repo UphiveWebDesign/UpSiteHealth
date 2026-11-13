@@ -1,5 +1,10 @@
 import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { isContentRule } from "@/lib/knowledge/catalogue";
+import {
+  sitemapExists,
+  type FailedSitemap,
+  type SitemapState,
+} from "./sitemap";
 import type {
   CrawlPageStatus,
   CrawlResourceType,
@@ -23,6 +28,8 @@ export type RecheckGap =
   | { kind: "missing-data" }
   | { kind: "incomplete-run"; runStatus: CrawlRunStatus }
   | { kind: "robots-unavailable" }
+  /** The crawl could not show whether a sitemap exists. */
+  | { kind: "sitemap-inconclusive"; reason: string }
   /** Content rules: only the topic map of a complete crawl decides. */
   | { kind: "topic-recheck" };
 
@@ -44,6 +51,10 @@ export type RecheckRun = {
   status: CrawlRunStatus;
   robotsTxtStatus: string | null;
   sitemapUrlsDiscovered: number | null;
+  /** From the crawl's pages (seo/analyze.ts); absent: URL count only. */
+  sitemap?: SitemapState;
+  /** Listed sitemaps the crawl could not read; null/absent: not recorded. */
+  sitemapFailures?: FailedSitemap[] | null;
 };
 
 const stored = (result: unknown, key: string) =>
@@ -150,6 +161,36 @@ export function siteRecheckGap(
   if (ruleId === "TECH_SITEMAP_MISSING" && run.sitemapUrlsDiscovered === null) {
     return { kind: "missing-data" };
   }
+  // Fixed only when a sitemap was actually read, never because a failed or
+  // inconclusive fetch stopped the rule from firing.
+  if (
+    ruleId === "TECH_SITEMAP_MISSING" &&
+    run.sitemap &&
+    !sitemapExists(run.sitemap) &&
+    run.sitemap.state !== "missing"
+  ) {
+    return {
+      kind: "sitemap-inconclusive",
+      reason:
+        run.sitemap.state === "inconclusive"
+          ? run.sitemap.reason
+          : run.sitemap.state === "unreachable"
+            ? "A listed sitemap could not be read."
+            : "The crawl did not check the sitemap.",
+    };
+  }
+  // Resolved only by a crawl that read robots.txt and recorded what every
+  // listed sitemap answered; an older or robots-less crawl proves nothing.
+  if (ruleId === "TECH_SITEMAP_UNREACHABLE") {
+    if (run.robotsTxtStatus !== "found" && run.robotsTxtStatus !== "missing")
+      return { kind: "robots-unavailable" };
+    if (!run.sitemapFailures) return { kind: "missing-data" };
+    if (run.sitemapFailures.length)
+      return {
+        kind: "sitemap-inconclusive",
+        reason: "A listed sitemap still could not be read.",
+      };
+  }
   if (evidence?.complete === false) return { kind: "missing-data" };
   for (const url of evidence?.urls ?? []) {
     const gap = pageRecheckGap(ruleId, evidence!.pageAt(url));
@@ -184,6 +225,8 @@ export function describeGap(gap: RecheckGap): string {
       return `Not rechecked: site-wide checks need a completed crawl (the latest one is ${gap.runStatus.toLowerCase()}).`;
     case "robots-unavailable":
       return "Not rechecked: robots.txt could not be fetched reliably.";
+    case "sitemap-inconclusive":
+      return `Not rechecked: ${gap.reason}`;
     case "topic-recheck":
       return "Not rechecked yet: a content gap is confirmed fixed only when a later complete crawl, with the same approved facts, finds a page that covers it.";
   }

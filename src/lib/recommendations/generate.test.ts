@@ -297,7 +297,11 @@ describe("recommendationState", () => {
         [ruleDraft],
         ctx(),
       ),
-    ).toEqual({ kind: "dismissed" });
+      // Dismissing is not a fix: the page says the problem is still found.
+    ).toEqual({ kind: "dismissed", detected: true });
+    expect(
+      recommendationState({ ...ruleRec, status: "DISMISSED" }, [], ctx()),
+    ).toEqual({ kind: "dismissed", detected: false });
   });
 });
 
@@ -390,13 +394,15 @@ describe("integration setup tasks and metadata", () => {
         NOW,
       ),
     ).toBeNull();
-    // Still reported: not held (it is still an active task, not "fixed").
+    // Still reported but no longer drafted (an SEO finding took the task
+    // over): held, never completed as if fixed. heldReason is consulted only
+    // for rows without a matching draft, where null means "complete it".
     expect(
       heldReason(
         rec,
         ctx({ integrations: [status("needs-attention", [missing])] }),
       ),
-    ).toBeNull();
+    ).toBe("unverified");
   });
 
   test("every kind of recommendation gets complete metadata", () => {

@@ -27,6 +27,11 @@ export function recurrenceEligible(
 ): boolean {
   switch (basis.kind) {
     case "seo-rule":
+      // A rule that stopped applying is no proof the problem was fixed.
+      // Verifications before 2026-11-02 record no outcome: confirmed fixes.
+      return (
+        evidence.outcome === undefined || evidence.outcome === "fix-confirmed"
+      );
     case "issue":
     case "performance":
       return true;

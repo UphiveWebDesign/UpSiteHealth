@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { buttonClass, type ButtonSize, type ButtonVariant } from "./button";
 
 export const inputClass =
-  "w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink shadow-sm placeholder:text-muted/70 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-600/15 disabled:bg-subtle disabled:text-muted";
+  "w-full rounded-md border border-line-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-subtle disabled:text-muted";
 
 export function Field({
   label,

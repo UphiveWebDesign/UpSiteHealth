@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import type { IssueSeverity, SeoFindingScope } from "@/generated/prisma/enums";
+import type { DiscoveryEvidence } from "@/lib/crawler/engine";
 import type { PageImage, StructuredDataBlock } from "@/lib/crawler/html";
-import { isInternalUrl } from "@/lib/crawler/urls";
+import { isInternalUrl, normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { isLegalPage } from "./legal";
+import { failedSitemaps, sitemapState } from "./sitemap";
 import {
   SEO_CATALOGUE,
   SEO_LIMITS,
@@ -52,7 +54,42 @@ export type SeoPage = {
   mainText?: string[];
   /** Phone links (tel:) on the page, when the crawl stored contact signals. */
   telLinks?: number;
+  /** How the crawl first found the page (SEED, LINK, SITEMAP, REDIRECT). */
+  discoverySource?: string | null;
+  /** The page whose link (or redirect) led the crawl here. */
+  discoveredFromUrl?: string | null;
 };
+
+/** Whether the page asks search engines not to index it (robots meta). */
+export const isNoindex = (p: Pick<SeoPage, "robotsMetaRaw">) =>
+  /\bnoindex\b/i.test(p.robotsMetaRaw ?? "");
+
+/**
+ * Whether the page's canonical names a different URL: the page defers to
+ * that one, so it is not a separate search result (and sharing its title
+ * or description is the intended setup, not duplication).
+ */
+export function canonicalisedElsewhere(
+  p: Pick<SeoPage, "url" | "canonicalUrl">,
+): boolean {
+  if (!p.canonicalUrl) return false;
+  const target = normalizeCrawlUrl(p.canonicalUrl, p.url);
+  const self = normalizeCrawlUrl(p.url) ?? p.url;
+  return target !== null && target !== self;
+}
+
+/**
+ * What an error status shows, and what it does not. A 404 or 410 is the
+ * page itself; 401, 403 and 429 may be refused to the crawler only; a 5xx
+ * may be temporary. Shown with the finding, so the claim matches the cause.
+ */
+export function httpErrorClass(status: number) {
+  if (status === 404 || status === 410) return "not-found" as const;
+  if (status === 401 || status === 403) return "access-refused" as const;
+  if (status === 429) return "rate-limited" as const;
+  if (status >= 500) return "server-error" as const;
+  return "client-error" as const;
+}
 
 /** Routine snippet rules that matter little on a privacy policy or terms page. */
 export const LEGAL_ROUTINE_RULES = [
@@ -161,10 +198,23 @@ export function analyzePage(
 ): SeoFindingDraft[] {
   const out: SeoFindingDraft[] = [];
   if (page.httpStatus !== null && page.httpStatus >= 400) {
+    // Where the crawl found the URL is where the fix often is: the linking
+    // page, or the sitemap that lists it.
+    const linked =
+      page.discoverySource === "LINK" || page.discoverySource === "REDIRECT";
     return [
-      pageFinding("TECH_HTTP_ERROR", page, { httpStatus: page.httpStatus }),
+      pageFinding("TECH_HTTP_ERROR", page, {
+        httpStatus: page.httpStatus,
+        errorClass: httpErrorClass(page.httpStatus),
+        ...(page.discoverySource ? { foundVia: page.discoverySource } : {}),
+        ...(linked && page.discoveredFromUrl
+          ? { linkedFrom: page.discoveredFromUrl }
+          : {}),
+      }),
     ];
   }
+
+  const noindex = isNoindex(page);
 
   const title = page.title?.trim() ?? "";
   if (!title) out.push(pageFinding("TECH_TITLE_MISSING", page, {}));
@@ -228,12 +278,8 @@ export function analyzePage(
     );
   }
 
-  const noindex = /\bnoindex\b/i.test(page.robotsMetaRaw ?? "");
-  if (noindex) {
-    out.push(
-      pageFinding("TECH_NOINDEX", page, { robotsMeta: page.robotsMetaRaw }),
-    );
-  }
+  if (noindex)
+    out.push(pageFinding("TECH_NOINDEX", page, noindexEvidence(page)));
 
   const totalCount = page.images.length;
   const noAlt = page.images.filter((i) => i.alt === null).length;
@@ -297,6 +343,14 @@ export function analyzePage(
   return out;
 }
 
+/** The robots meta tag, and the sitemap listing that contradicts it. */
+function noindexEvidence(page: SeoPage): Record<string, unknown> {
+  return {
+    robotsMeta: page.robotsMetaRaw,
+    ...(page.discoverySource === "SITEMAP" ? { listedInSitemap: true } : {}),
+  };
+}
+
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -304,6 +358,8 @@ function digest(value: string): string {
 export type SiteFacts = {
   robotsTxtStatus: string | null;
   sitemapUrlsDiscovered: number | null;
+  /** The seed page's sitemap discovery record, when the crawl stored one. */
+  discovery?: DiscoveryEvidence | null;
 };
 
 export function analyzeSite(
@@ -334,6 +390,10 @@ function siteFindings(
 ): Array<{ draft: SeoFindingDraft; pages: string[] }> {
   const out: Array<{ draft: SeoFindingDraft; pages: string[] }> = [];
   const ok = pages.filter((p) => p.httpStatus === null || p.httpStatus < 400);
+  // Only pages that can be their own search result can duplicate another.
+  const distinct = ok.filter(
+    (p) => !isNoindex(p) && !canonicalisedElsewhere(p),
+  );
 
   for (const [ruleId, pick, field] of [
     ["TECH_DUPLICATE_TITLE", (p: SeoPage) => p.title, "title"],
@@ -344,7 +404,7 @@ function siteFindings(
     ],
   ] as const) {
     const groups = new Map<string, string[]>();
-    for (const p of ok) {
+    for (const p of distinct) {
       const value = pick(p)?.trim();
       if (!value) continue;
       groups.set(value, [...(groups.get(value) ?? []), p.url]);
@@ -370,9 +430,28 @@ function siteFindings(
       pages: [],
     });
   }
-  if (facts.sitemapUrlsDiscovered === 0) {
+  const sitemap = sitemapState(facts);
+  if (sitemap.state === "missing") {
     out.push({
-      draft: siteFinding("TECH_SITEMAP_MISSING", "sitemap", {}),
+      draft: siteFinding(
+        "TECH_SITEMAP_MISSING",
+        "sitemap",
+        sitemap.checked.length ? { checked: sitemap.checked } : {},
+      ),
+      pages: [],
+    });
+  }
+  // One finding for the site, listing every listed file that failed: a
+  // sitemap index's children fail together far more often than not.
+  const failed = failedSitemaps(facts);
+  if (failed?.length) {
+    out.push({
+      draft: siteFinding("TECH_SITEMAP_UNREACHABLE", "sitemap-unreachable", {
+        failedCount: failed.length,
+        sitemaps: failed.slice(0, 20),
+        // Some listed sitemap could still be read (state "found"/"empty").
+        othersRead: sitemap.state === "found" || sitemap.state === "empty",
+      }),
       pages: [],
     });
   }
@@ -428,6 +507,20 @@ function jsonLdNodes(blocks: StructuredDataBlock[]): JsonNode[] {
   };
   for (const b of blocks) if (b.valid) walk(b.data, 0);
   return out;
+}
+
+/** The local business schema.org types in a page's valid JSON-LD. */
+export function localBusinessTypes(blocks: StructuredDataBlock[]): string[] {
+  return [
+    ...new Set(
+      jsonLdNodes(blocks).flatMap((n) =>
+        asList(n["@type"]).filter(
+          (t): t is string =>
+            typeof t === "string" && LOCAL_BUSINESS_TYPES.has(t),
+        ),
+      ),
+    ),
+  ];
 }
 
 const present = (v: unknown): boolean =>

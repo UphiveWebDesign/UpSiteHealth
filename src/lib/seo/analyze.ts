@@ -1,3 +1,4 @@
+import type { DiscoveryEvidence } from "@/lib/crawler/engine";
 import type {
   PageContent,
   PageImage,
@@ -13,6 +14,12 @@ import {
   type SeoFindingDraft,
   type SeoPage,
 } from "./rules";
+import {
+  failedSitemaps,
+  sitemapState,
+  type FailedSitemap,
+  type SitemapState,
+} from "./sitemap";
 
 /** The crawl page columns the SEO rules and recheck checks read. */
 export const CRAWL_PAGE_SELECT = {
@@ -29,6 +36,8 @@ export const CRAWL_PAGE_SELECT = {
   robotsMetaRaw: true,
   h1Count: true,
   wordCount: true,
+  discoverySource: true,
+  discoveredFromUrl: true,
   result: true,
 } as const;
 
@@ -49,6 +58,10 @@ export function analyzeCrawl(
   byUrl: Map<string, StoredCrawlPage>;
   /** Every page each site-wide finding covers (not just its evidence sample). */
   sitePages: Map<string, string[]>;
+  /** What this crawl can say about the sitemap (rules and recheck agree). */
+  sitemap: SitemapState;
+  /** Listed sitemaps this crawl could not read (null: not recorded). */
+  sitemapFailures: FailedSitemap[] | null;
 } {
   // Error pages are analysed (HTTP rule only); other pages only if parsed.
   const pages: SeoPage[] = rows
@@ -78,13 +91,24 @@ export function analyzeCrawl(
         telLinks: result.contact?.tel ?? 0,
       };
     });
+  // The start page carries the run's sitemap discovery record.
+  const discovery =
+    rows
+      .map(
+        (r) =>
+          (r.result as { discovery?: DiscoveryEvidence } | null)?.discovery,
+      )
+      .find((d) => !!d) ?? null;
+  const facts = { ...run, discovery };
   return {
     drafts: [
       ...pages.flatMap((p) => analyzePage(p, siteHost)),
-      ...analyzeSite(pages, run),
+      ...analyzeSite(pages, facts),
     ],
     byUrl: new Map(rows.map((r) => [r.url, r])),
-    sitePages: siteFindingPages(pages, run),
+    sitePages: siteFindingPages(pages, facts),
+    sitemap: sitemapState(facts),
+    sitemapFailures: failedSitemaps(facts),
   };
 }
 

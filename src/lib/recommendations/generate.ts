@@ -56,6 +56,20 @@ import { issueResolution, type IssueResolution } from "@/lib/monitoring/rules";
 import { LEGAL_ROUTINE_RULES } from "@/lib/seo/rules";
 import { BENEFIT } from "./benefits";
 import {
+  findingHistoryAvailable,
+  OUTCOME_OF,
+  recordedClosure,
+  type FindingEventRow,
+} from "@/lib/seo/finding-history";
+import {
+  classifyResolved,
+  closingCrawls,
+  noLongerApplies,
+  resolutionUnknown,
+  ruleResolution,
+  type ClassifiedResolution,
+} from "./lifecycle";
+import {
   aiSearchMeta,
   integrationMeta,
   ISSUE_BENEFIT,
@@ -401,6 +415,12 @@ export type RecommendationContext = {
   /** SEO rules that still have findings, by state. */
   remainingRules: Map<string, { open: number; ignored: number }>;
   /**
+   * Resolved findings, each classified against the latest crawl as fixed or
+   * no longer applicable (recommendations/lifecycle.ts). Absent: not loaded,
+   * so every resolution counts as fixed (the behaviour before 2026-11-02).
+   */
+  resolutions?: ClassifiedResolution[];
+  /**
    * Business coverage: null when the website has no business facts,
    * undefined when business facts are unavailable on this database (the
    * migration is not applied), so coverage tasks are "not checked".
@@ -524,6 +544,68 @@ export async function loadRecommendationContext(
       );
     }
   }
+  // Resolved findings, classified against the latest crawl: fixed, or gone
+  // because the rule no longer applies (recommendations/lifecycle.ts).
+  const resolvedRows = evidence?.crawl
+    ? await db.seoFinding.findMany({
+        where: { ...scope, status: "RESOLVED" },
+        select: {
+          id: true,
+          ruleId: true,
+          scope: true,
+          evidence: true,
+          resolvedAt: true,
+        },
+        orderBy: { resolvedAt: "desc" },
+        take: 5000,
+      })
+    : [];
+  // P1: a closure recorded when the finding closed wins (its reason and the
+  // crawl that closed it); closures before P1 are derived as before.
+  const recorded = new Map<string, ReturnType<typeof recordedClosure>>();
+  if (resolvedRows.length && (await findingHistoryAvailable(db))) {
+    const events = await db.seoFindingEvent.findMany({
+      where: { ...scope, seoFindingId: { in: resolvedRows.map((f) => f.id) } },
+      select: {
+        seoFindingId: true,
+        type: true,
+        reason: true,
+        crawlRunId: true,
+        occurredAt: true,
+        detail: true,
+      },
+    });
+    const byFinding = new Map<string, FindingEventRow[]>();
+    for (const e of events)
+      byFinding.set(e.seoFindingId, [
+        ...(byFinding.get(e.seoFindingId) ?? []),
+        e,
+      ]);
+    for (const f of resolvedRows)
+      recorded.set(
+        f.id,
+        recordedClosure(f.resolvedAt, byFinding.get(f.id) ?? []),
+      );
+  }
+  const legacy = resolvedRows.filter((f) => !recorded.get(f.id));
+  const resolutions: ClassifiedResolution[] = [
+    ...resolvedRows.flatMap((f) => {
+      const r = recorded.get(f.id);
+      return r
+        ? [
+            {
+              ruleId: f.ruleId,
+              outcome: OUTCOME_OF[r.reason],
+              reason: r.why ?? "Recorded when the finding closed.",
+              resolvedAt: f.resolvedAt,
+              recorded: true,
+              closingCrawlRunId: r.crawlRunId,
+            },
+          ]
+        : [];
+    }),
+    ...classifyResolved(legacy, evidence?.crawl?.pages ?? []),
+  ];
   const openFindings = await db.seoFinding.findMany({
     where: { ...scope, status: "OPEN" },
     select: {
@@ -741,6 +823,7 @@ export async function loadRecommendationContext(
       ]),
     ),
     remainingRules,
+    resolutions,
     crawlRunId: crawl?.id ?? null,
     crawlStatus: crawl?.status ?? null,
     measuredStrategies: [...new Set(perfRows.map((r) => r.strategy))],
@@ -886,7 +969,12 @@ export function matchDraft(
  * evidence that would show it fixed is not current and complete enough
  * ("awaiting-evidence", see `resolutionEvidenceHold`).
  */
-export type HeldReason = "ignored" | "unverified" | "awaiting-evidence";
+export type HeldReason =
+  | "ignored"
+  | "unverified"
+  | "awaiting-evidence"
+  /** Gone because the rule stopped applying, not fixed: a person decides. */
+  | "no-longer-applies";
 
 type HoldContext = Pick<RecommendationContext, "issues" | "remainingRules"> &
   Partial<
@@ -899,6 +987,7 @@ type HoldContext = Pick<RecommendationContext, "issues" | "remainingRules"> &
       | "crawlStatus"
       | "inputs"
       | "measuredStrategies"
+      | "resolutions"
     >
   >;
 
@@ -941,7 +1030,9 @@ export function heldReason(
     // conclusively (see integrations/resolution.ts).
     const status = ctx.integrations?.find((i) => i.key === basis.key);
     if (!status || status.state === "not-checked") return "unverified";
-    if (status.problems.some((p) => p.code === basis.code)) return null;
+    // Still detected: never complete it. (Its draft can be gone while the
+    // problem stays, when an SEO finding took the task over.)
+    if (status.problems.some((p) => p.code === basis.code)) return "unverified";
     const check = ctx.integrationResolution?.get(
       integrationTaskId(basis.key, basis.code),
     );
@@ -951,6 +1042,12 @@ export function heldReason(
     const left = ctx.remainingRules.get(basis.ruleId);
     if (left?.open) return "unverified"; // below the threshold, but not fixed
     if (left?.ignored) return "ignored";
+    // Gone because the pages left the rule's scope, or the rule was
+    // retired: never completed or verified as a fix.
+    const how = ruleResolution(ctx.resolutions, basis.ruleId, r.updatedAt);
+    if (noLongerApplies(how)) return "no-longer-applies";
+    // The page that would tell is no longer analysed: not a proven fix.
+    if (resolutionUnknown(how)) return "unverified";
     return resolved();
   }
   if (basis.kind === "issue") {
@@ -1346,6 +1443,16 @@ export function planSync(
       actions.push({ kind: "update", r, draft: d });
       continue;
     }
+    // Its problem is still drafted, but another row (active ones claim
+    // first) took the draft: still detected, so never completed or verified.
+    if (
+      matchDraft(
+        r,
+        drafts,
+        identity ? { identity, coverage: ctx.coverage } : {},
+      )
+    )
+      continue;
     if (heldReason(r, ctx, now)) continue;
     if (r.status === "PROPOSED" || r.status === "IN_PROGRESS")
       actions.push({ kind: "complete", r });
@@ -1652,12 +1759,12 @@ export async function reopenTask(
  * an id that is not known is left out.
  */
 export function verificationEvidence(
-  r: Pick<Existing, "title" | "issueId">,
+  r: Pick<Existing, "title" | "issueId"> & Partial<Pick<Existing, "updatedAt">>,
   ctx: Pick<
     RecommendationContext,
     "issues" | "evidenceAt" | "integrations" | "crawlRunId"
   > &
-    Partial<Pick<RecommendationContext, "coverage">>,
+    Partial<Pick<RecommendationContext, "coverage" | "resolutions">>,
   /**
    * Stage 2 (section 29), only where every capability is present: coverage
    * records the coverage crawl's own time and the outcome it rested on.
@@ -1675,13 +1782,25 @@ export function verificationEvidence(
     ...(at ? { observedAt: at.toISOString() } : {}),
     ...(outcome ? { outcome } : {}),
   };
+  const closedBy =
+    basis.kind === "seo-rule"
+      ? closingCrawls(ctx.resolutions, basis.ruleId, r.updatedAt)
+      : [];
   switch (basis.kind) {
     case "seo-rule":
     case "coverage":
       return {
         ...out,
         ...(basis.kind === "seo-rule"
-          ? { ruleId: basis.ruleId }
+          ? // Completed or verified only when not held as "no longer
+            // applies", so this outcome is always a confirmed fix.
+            {
+              ruleId: basis.ruleId,
+              outcome: "fix-confirmed",
+              // The crawls that actually closed the findings (P1 records);
+              // `crawlRunId` stays the evidence crawl. Absent without them.
+              ...(closedBy.length ? { closedBy } : {}),
+            }
           : { code: basis.code }),
         ...(ctx.crawlRunId ? { crawlRunId: ctx.crawlRunId } : {}),
       };
@@ -1715,7 +1834,10 @@ function coverageOutcome(
 
 export type RecommendationState =
   | { kind: "active" }
-  | { kind: "dismissed" }
+  /** `detected`: the latest evidence still finds the problem. */
+  | { kind: "dismissed"; detected: boolean }
+  /** Gone because the rule stopped applying; not a confirmed fix. */
+  | { kind: "no-longer-applies"; reasons: string[] }
   | { kind: "ignored" }
   | { kind: "awaiting-recheck" }
   | { kind: "still-detected"; checkedAt: Date }
@@ -1758,18 +1880,36 @@ export function recommendationState(
   ctx: RecommendationContext,
   now = new Date(),
 ): RecommendationState {
-  if (r.status === "DISMISSED") return { kind: "dismissed" };
-  const held = heldReason(r, ctx, now);
   const detected = !!matchDraft(r, drafts);
+  // Dismissing is never a fix: say so when the problem is (again) reported.
+  if (r.status === "DISMISSED") return { kind: "dismissed", detected };
+  const held = heldReason(r, ctx, now);
   if (!detected && held === "ignored") return { kind: "ignored" };
+  if (!detected && held === "no-longer-applies") {
+    const basis = recommendationBasis(r);
+    return {
+      kind: "no-longer-applies",
+      reasons:
+        basis.kind === "seo-rule"
+          ? (ruleResolution(ctx.resolutions, basis.ruleId, r.updatedAt)
+              ?.reasons ?? [])
+          : [],
+    };
+  }
   if (r.status !== "COMPLETED") {
     if (detected) return { kind: "active" };
     return held ? { kind: "awaiting-recheck" } : { kind: "verified" };
   }
   const basis = recommendationBasis(r);
-  // Open findings below the recommendation threshold still count as present.
+  // Open findings below the recommendation threshold, and integration
+  // problems whose task an SEO finding took over, still count as present.
   const present =
-    detected || (basis.kind === "seo-rule" && held === "unverified");
+    detected ||
+    (basis.kind === "seo-rule" && held === "unverified") ||
+    (basis.kind === "integration" &&
+      !!ctx.integrations
+        .find((i) => i.key === basis.key)
+        ?.problems.some((p) => p.code === basis.code));
   if (!present)
     return held ? { kind: "awaiting-recheck" } : { kind: "verified" };
   const at = evidenceTime(basis, ctx);

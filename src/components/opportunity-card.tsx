@@ -77,7 +77,7 @@ export function OpportunityCard({
   const done = task?.status === "COMPLETED";
   const pending = !task && o.recommend; // recommended, not saved yet
   return (
-    <li className="rounded-xl border border-line bg-surface p-5 shadow-card">
+    <li className="rounded-lg border border-line bg-surface p-5 shadow-card">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-base font-semibold text-ink">{o.name}</h3>
@@ -136,7 +136,9 @@ export function OpportunityCard({
           <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
             Suggested URL (a proposal)
           </dt>
-          <dd className="break-all font-mono text-xs text-ink">{o.slug}</dd>
+          <dd className="break-anywhere font-mono text-xs text-ink">
+            {o.slug}
+          </dd>
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-muted">
@@ -190,7 +192,7 @@ export function OpportunityCard({
           </summary>
           <ul className="mt-2 flex flex-col gap-1 text-xs text-ink-2">
             {o.considered.map((p) => (
-              <li key={p.url} className="break-all">
+              <li key={p.url} className="break-anywhere">
                 <span className="font-mono">{p.url}</span>{" "}
                 <span className="text-muted">· {p.verdict}</span>
               </li>

@@ -14,7 +14,7 @@ import type { BenefitCategory } from "@/lib/recommendations/benefits";
  * open findings are grouped by that text. Changing it splits or duplicates
  * existing recommendations, so it needs a data plan, not just a version bump.
  */
-export const KNOWLEDGE_VERSION = "k3";
+export const KNOWLEDGE_VERSION = "k4";
 
 export const SEO_LIMITS = {
   titleMin: 15,
@@ -37,6 +37,9 @@ export const BUSINESS_TYPES = [
   "ecommerce",
   "hospitality",
   "b2b",
+  "saas",
+  "national-service",
+  "other",
 ] as const;
 export type BusinessType = (typeof BUSINESS_TYPES)[number];
 export const PAGE_TYPES = [
@@ -118,7 +121,8 @@ export const SEO_CATALOGUE = {
       "Confirmed when a later crawl fetches each affected page again and it responds without an error status. Pages that crawl skips or cannot fetch stay open.",
     limits: [
       "Only error responses served as HTML are checked; other error responses are not reported yet.",
-      "A temporary outage during the crawl looks the same as a removed page.",
+      "A temporary outage during the crawl looks the same as a removed page: 5xx and 429 responses are marked as possibly temporary.",
+      "A 401 or 403 can be a firewall refusing the crawler while visitors see the page.",
     ],
   },
   TECH_TITLE_MISSING: {
@@ -478,8 +482,11 @@ export const SEO_CATALOGUE = {
       needs: "Titles of every analysed page.",
       freshness: SITE_FRESH,
     },
-    passes: "no two analysed pages share this title",
-    limits: ["Pages beyond the crawl limits are not compared."],
+    passes: "no two indexable analysed pages share this title",
+    limits: [
+      "Pages beyond the crawl limits are not compared.",
+      "Pages marked noindex, or whose canonical names another URL, are not compared: they are not separate search results.",
+    ],
   },
   TECH_DUPLICATE_META_DESCRIPTION: {
     severity: "LOW",
@@ -497,8 +504,11 @@ export const SEO_CATALOGUE = {
       needs: "Meta descriptions of every analysed page.",
       freshness: SITE_FRESH,
     },
-    passes: "no two analysed pages share this description",
-    limits: ["Pages beyond the crawl limits are not compared."],
+    passes: "no two indexable analysed pages share this description",
+    limits: [
+      "Pages beyond the crawl limits are not compared.",
+      "Pages marked noindex, or whose canonical names another URL, are not compared: they are not separate search results.",
+    ],
   },
   TECH_ROBOTS_TXT_MISSING: {
     severity: "INFO",
@@ -539,6 +549,40 @@ export const SEO_CATALOGUE = {
     passes: "sitemap URLs are discovered",
     limits: [
       "A sitemap helps discovery; it does not mean the listed pages are indexed.",
+      "Reported only when robots.txt lists no sitemap and /sitemap.xml answers 404 or 410. A server error, a timeout or a listed sitemap that cannot be read is not reported as missing.",
+    ],
+  },
+  TECH_SITEMAP_UNREACHABLE: {
+    severity: "MEDIUM",
+    title: "Listed sitemap cannot be read",
+    description:
+      "robots.txt or a sitemap index lists a sitemap that the crawl could not read.",
+    recommendation:
+      "Make every listed sitemap return HTTP 200 with valid sitemap XML, or remove the reference to it.",
+    scope: "SITE",
+    benefit: "crawling-indexing",
+    effort: "small",
+    effortReason:
+      "Usually one setting or file; a server error may need the host.",
+    confidence: "medium",
+    confidenceReason:
+      "Measured during the crawl. A 404 or 410 shows the file is gone; 401, 403, 429, 5xx and timeouts can be temporary or refused to crawlers only, and the evidence says which.",
+    applies: {
+      ...ALL,
+      assumption: "A sitemap the site lists is meant to be read.",
+    },
+    evidence: {
+      needs:
+        "The HTTP status of each listed sitemap file (crawls since 2026-11-01).",
+      freshness: SITE_FRESH,
+    },
+    passes: "every listed sitemap file is read",
+    verification:
+      "Confirmed by the next completed crawl that reads robots.txt and every sitemap it lists. A partial or failed crawl cannot confirm it, nor can one that could not read robots.txt or did not record sitemap responses.",
+    limits: [
+      "One crawl's response: a temporary outage looks the same as a lasting fault; the evidence marks responses that may be temporary.",
+      "A sitemap that loads but lists no pages is not reported here (see the Integrations page).",
+      "Reading the sitemap does not mean its pages are indexed.",
     ],
   },
 } satisfies Record<string, SeoRuleEntry>;
@@ -589,6 +633,78 @@ export const CONTENT_CATALOGUE = {
       "Approved facts do not record which services are offered at which location; confirm before writing.",
       "A missing mention is not evidence of lost rankings or traffic: no search-demand or ranking data is used.",
       "Only the approved wordings are recognised; a page that uses other words is not counted.",
+    ],
+  },
+  CONTENT_SERVICE_NOT_DESCRIBED: {
+    severity: "LOW",
+    title: "Service page does not describe the service",
+    description:
+      "A page whose title or main heading names this approved service has enough main content, but that content never names the service: visitors and search engines see the heading, not a description.",
+    recommendation:
+      "Describe the service in the page's main content, in the client's words: what it is, who it is for, where it is offered and how to book or ask. Check the details with the client before publishing.",
+    scope: "SITE",
+    benefit: "business-coverage",
+    effort: "small",
+    effortReason:
+      "Rewriting or adding a section on an existing page; no new page is needed.",
+    confidence: "medium",
+    confidenceReason:
+      "Observed in a complete, recent crawl: the page is about the service (title or main heading) and its main content, without header, navigation, footer or text repeated across the site, does not contain an approved wording.",
+    applies: {
+      businessTypes: "all",
+      pageTypes: "all",
+      assumption:
+        "The approved service wordings are the words the page should use.",
+    },
+    evidence: {
+      needs:
+        "Approved services, and the title, main heading and main content of every page of a complete crawl.",
+      freshness:
+        "The latest completed crawl, within the 60-day limit for crawl evidence.",
+    },
+    passes: "the page's main content names the service",
+    verification:
+      "Confirmed when a later complete crawl finds the service covered: a page about it whose main content names it. A partial crawl, or a change to the approved facts, leaves it open.",
+    limits: [
+      "Only the approved wordings and their synonyms are recognised; a page that describes the service in other words is reported. Add the client's wording as a synonym if it is right.",
+      "Thin pages are reported separately (TECH_THIN_CONTENT), not here.",
+      "No search-demand or ranking data is used.",
+    ],
+  },
+  CONTENT_INTERNAL_LINK_OPPORTUNITY: {
+    severity: "LOW",
+    title: "Pages that name a service do not link to its page",
+    description:
+      "Analysed pages name this approved service in their main content but have no link to the page that covers it.",
+    recommendation:
+      "Where the passage naturally refers to the service, link those words to its page. Do not add links the reader would not expect, and do not repeat the same link many times on one page.",
+    scope: "SITE",
+    benefit: "business-coverage",
+    effort: "small",
+    effortReason: "Editing existing text on a few pages.",
+    confidence: "medium",
+    confidenceReason:
+      "Observed in a complete, recent crawl: each listed page's main content contains an approved wording of the service and its recorded links include none to the service page (pages whose link list was cut at the crawler's limit are left out). Whether a link fits the passage is a judgement for the editor.",
+    applies: {
+      businessTypes: "all",
+      pageTypes: "all",
+      assumption:
+        "A visitor reading about the service on another page would benefit from a link to its page.",
+    },
+    evidence: {
+      needs:
+        "Approved services, the page that covers each, and the main content and internal links of every page of a complete crawl.",
+      freshness:
+        "The latest completed crawl, within the 60-day limit for crawl evidence.",
+    },
+    passes:
+      "every page that names the service in its main content links to its page",
+    verification:
+      "Confirmed when a later complete crawl finds no analysed page that names the service in its main content without linking to its page. A partial crawl, or a change to the approved facts, leaves it open.",
+    limits: [
+      "Links are not recorded as menu or text links: a page that links to the service page anywhere (including its menu) is not listed.",
+      "Only the approved wordings are recognised as naming the service.",
+      "No search-demand, ranking or link-value data is used.",
     ],
   },
 } satisfies Record<string, SeoRuleEntry>;

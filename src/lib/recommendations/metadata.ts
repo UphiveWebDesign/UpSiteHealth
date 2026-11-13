@@ -13,6 +13,7 @@ import {
 } from "@/lib/knowledge/catalogue";
 import type { BenefitCategory } from "./benefits";
 import type { Provenance } from "./provenance";
+import type { Remediation } from "./remediation";
 
 /**
  * Evidence-based metadata shown with every recommendation. Everything here
@@ -48,6 +49,11 @@ export type RecommendationMeta = {
    * metadata built elsewhere.
    */
   provenance?: Provenance;
+  /**
+   * How to fix a technical SEO rule task, step by step, with platform steps
+   * when the crawl supports them (remediation.ts). Absent for other kinds.
+   */
+  remediation?: Remediation;
   /** For a new-page opportunity: what the page is for (all proposals). */
   proposal?: {
     name: string;

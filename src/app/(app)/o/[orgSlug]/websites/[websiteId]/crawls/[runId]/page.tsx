@@ -312,7 +312,9 @@ export default async function CrawlRunPage({
             {pages.map((p) => (
               <tr key={p.id}>
                 <td className={`${td} max-w-md`}>
-                  <div className="break-all text-sm text-ink">{p.url}</div>
+                  <div className="break-anywhere font-mono text-[12.5px] text-ink">
+                    {p.url}
+                  </div>
                   {p.title && (
                     <div className="text-xs text-muted">{p.title}</div>
                   )}

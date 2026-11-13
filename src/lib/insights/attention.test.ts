@@ -69,12 +69,118 @@ describe("siteAttention", () => {
         {
           id: "a",
           label: "Missing title a",
-          href: "/o/acme/websites/w1/recommendations?status=closed#task-a",
+          // Still-detected tasks are listed under To do, not Done.
+          href: "/o/acme/websites/w1/recommendations#task-a",
         },
       ]);
       expect(items.find((i) => i.category === "awaiting-evidence")?.count).toBe(
         1,
       );
+    });
+  });
+
+  describe("verified fixes that came back", () => {
+    const back = {
+      verifiedAt: ago(30),
+      fixedObservedAt: ago(31),
+      detectedAt: ago(2),
+      verifiedCrawlRunId: null,
+    };
+    const still = { kind: "still-detected" as const, checkedAt: ago(2) };
+
+    test("a verified fix found again is its own category, with priority, dates and the affected page", () => {
+      const items = at({
+        tasks: [
+          task("r", {
+            status: "COMPLETED",
+            priority: "HIGH",
+            state: still,
+            reappeared: back,
+            urls: ["https://shop.example/a", "https://shop.example/b"],
+          }),
+        ],
+      });
+      expect(items.map((i) => i.category)).toEqual(["reappeared"]);
+      const item = items[0];
+      expect(item).toMatchObject({
+        count: 1,
+        tone: "danger",
+        urgency: 0,
+        title: "1 verified fix came back",
+        action: {
+          label: "Review tasks",
+          href: "/o/acme/websites/w1/recommendations",
+        },
+      });
+      expect(item.entries).toHaveLength(1);
+      expect(item.entries[0]).toMatchObject({
+        id: "r",
+        label: "Missing title r",
+        href: "/o/acme/websites/w1/recommendations#task-r",
+      });
+      expect(item.entries[0].detail).toMatch(
+        /^High priority · verified fixed .+ · found again .+ · https:\/\/shop\.example\/a \(\+1 more\)$/,
+      );
+    });
+
+    test("an unverified completion still detected is never called a returned fix", () => {
+      const items = at({
+        tasks: [
+          task("u", { status: "COMPLETED", state: still, reappeared: null }),
+          task("v", { status: "COMPLETED", state: still }),
+        ],
+      });
+      expect(items.map((i) => i.category)).toEqual(["still-detected"]);
+      expect(items[0].count).toBe(2);
+    });
+
+    test("each task is counted once: a returned fix leaves the still-detected category", () => {
+      const items = at({
+        tasks: [
+          task("r", { status: "COMPLETED", state: still, reappeared: back }),
+          task("u", { status: "COMPLETED", state: still }),
+        ],
+      });
+      expect(
+        items.map((i) => [i.category, i.entries.map((e) => e.id)]),
+      ).toEqual([
+        ["reappeared", ["r"]],
+        ["still-detected", ["u"]],
+      ]);
+      // Only a verified fix that came back offers Reopen.
+      expect(items[0].entries[0].reopen).toBe(true);
+      expect(items[1].entries[0].reopen).toBeUndefined();
+      // Medium priority: urgent, but after critical or high returns.
+      expect(items[0].urgency).toBe(1);
+    });
+
+    test("portfolio counts and filter include returned fixes, with the website's client", () => {
+      const p = portfolioAttention(
+        [
+          {
+            ...quiet,
+            clientId: "c1",
+            tasks: [
+              task("r", {
+                status: "COMPLETED",
+                state: still,
+                reappeared: back,
+              }),
+            ],
+          },
+          { ...quiet, websiteId: "w2", websiteName: "Blog" },
+        ],
+        BASE,
+        { now: NOW, only: "reappeared" },
+      );
+      expect(p.byCategory.reappeared).toEqual({ count: 1, websites: 1 });
+      expect(p.byCategory["still-detected"]).toEqual({
+        count: 0,
+        websites: 0,
+      });
+      expect(p.sites).toEqual([
+        expect.objectContaining({ websiteId: "w1", clientId: "c1" }),
+      ]);
     });
   });
 
@@ -265,7 +371,7 @@ describe("siteAttention", () => {
             task("d", {
               priority: "CRITICAL",
               status: "DISMISSED",
-              state: { kind: "dismissed" },
+              state: { kind: "dismissed", detected: false },
             }),
             task("v", {
               priority: "CRITICAL",
