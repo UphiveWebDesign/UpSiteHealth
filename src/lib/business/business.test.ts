@@ -737,9 +737,12 @@ describe("coverage in recommendations and the plan", () => {
 });
 
 describe("visibility", () => {
-  test("client members never receive business tasks; the team sees everything", () => {
+  test("client members never receive business or content tasks; the team sees everything", () => {
     expect(recommendationVisibility("CLIENT")).toEqual({
-      NOT: { title: { contains: "(BIZ_" } },
+      AND: [
+        { NOT: { title: { contains: "(BIZ_" } } },
+        { NOT: { title: { contains: "(CONTENT_" } } },
+      ],
     });
     for (const role of ["MEMBER", "MANAGER", "ADMIN", "OWNER"] as const)
       expect(recommendationVisibility(role)).toEqual({});

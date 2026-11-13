@@ -10,6 +10,11 @@ import { can } from "@/lib/tenancy/roles";
  * coverage tasks, which name approved services and locations.
  */
 export const BUSINESS_TASK_MARK = "(BIZ_";
+/**
+ * Content tasks (seo/content.ts) are built from the same approved facts and
+ * name the same services and locations, so they follow the same rule.
+ */
+export const CONTENT_TASK_MARK = "(CONTENT_";
 
 /** Whether a member may see business facts, coverage and their tasks. */
 export const canSeeBusiness = (role: Role) => can.editWebsites(role);
@@ -20,5 +25,10 @@ export function recommendationVisibility(
 ): Prisma.RecommendationWhereInput {
   return canSeeBusiness(role)
     ? {}
-    : { NOT: { title: { contains: BUSINESS_TASK_MARK } } };
+    : {
+        AND: [
+          { NOT: { title: { contains: BUSINESS_TASK_MARK } } },
+          { NOT: { title: { contains: CONTENT_TASK_MARK } } },
+        ],
+      };
 }
