@@ -4,7 +4,9 @@ Verified state of the working tree, newest first. Record only what was run.
 
 ## 2026-11-14 — Database-safety tooling: rehearsal and reconciliation hardening
 
-Uncommitted, on `consolidate/2026-11-13` after `3fab39c`. Offline only:
+Committed as `ff9c4bfc330c049c945c5bf279eda27c724a4216`
+(`security: harden database rehearsal and reconciliation`), on
+`consolidate/2026-11-13` after `3fab39c`; not pushed. Offline only:
 mocked databases, no connection to Neon or any database, no migration,
 resolve, `db execute`, reconciliation, restore or rehearsal write.
 
@@ -13,9 +15,15 @@ resolve, `db execute`, reconciliation, restore or rehearsal write.
   refuses (before the attestation, so Prisma never starts) unless every
   object of the migration in `EXPECTED_OBJECTS` (tables, columns, enum
   values, indexes, constraints, functions, enabled triggers, RLS) is
-  present in `public`, none outside it, the migration is not already
-  recorded as finished or rolled back, and every earlier migration is
-  recorded as finished. Never applies or repairs anything.
+  present by name in `public`, no table or enum type of the same name
+  exists in another schema, the migration is not already recorded as
+  finished or rolled back, and every earlier migration is recorded as
+  finished. Never applies or repairs anything. Limitation: this is a
+  name-level check. It does not detect a misplaced index, constraint,
+  function or trigger outside `public`, and it does not verify that
+  definitions match the migration SQL (column types, nullability,
+  defaults, foreign key actions, check and index definitions, function
+  bodies or signatures); see `docs/operations/rehearsal-target.md`.
 - **`resolve-applied 0_baseline` is always refused** (`BASELINE_UNVERIFIED`):
   a complete, trustworthy comparison of the baseline (column types,
   nullability, defaults, keys, foreign key actions, checks, index
