@@ -799,9 +799,78 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+const ATTESTATION_KEYS = [
+  "nonce",
+  "endpoint",
+  "branch",
+  "database",
+  "role",
+  "urlSha256",
+  "command",
+  "createdAt",
+  "expiresAt",
+] as const;
+
+/**
+ * The attestation when `value` (parsed JSON) has exactly its shape, else
+ * null: a plain object with exactly these keys; a 32-hex nonce; non-empty
+ * strings; a 64-hex URL hash; a covered command; whole-millisecond
+ * timestamps that are finite and non-negative, expiresAt after createdAt and
+ * no more than REHEARSAL_ATTESTATION_TTL_MS later. Never trusts a type cast.
+ */
+export function parseRehearsalAttestation(
+  value: unknown,
+): RehearsalAttestation | null {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    return null;
+  const v = value as Record<string, unknown>;
+  const keys = Object.keys(v);
+  if (
+    keys.length !== ATTESTATION_KEYS.length ||
+    !ATTESTATION_KEYS.every((k) => Object.hasOwn(v, k))
+  )
+    return null;
+  const text = (x: unknown) =>
+    typeof x === "string" && x.length > 0 && x.length <= 200;
+  const time = (x: unknown): x is number =>
+    typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+  if (
+    typeof v.nonce !== "string" ||
+    !/^[0-9a-f]{32}$/.test(v.nonce) ||
+    ![v.endpoint, v.branch, v.database, v.role].every(text) ||
+    typeof v.urlSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(v.urlSha256) ||
+    typeof v.command !== "string" ||
+    !(REHEARSAL_WRITE_COMMANDS as readonly string[]).includes(v.command) ||
+    !time(v.createdAt) ||
+    !time(v.expiresAt) ||
+    v.expiresAt <= v.createdAt ||
+    v.expiresAt - v.createdAt > REHEARSAL_ATTESTATION_TTL_MS
+  )
+    return null;
+  return {
+    nonce: v.nonce,
+    endpoint: v.endpoint as string,
+    branch: v.branch as string,
+    database: v.database as string,
+    role: v.role as string,
+    urlSha256: v.urlSha256,
+    command: v.command,
+    createdAt: v.createdAt,
+    expiresAt: v.expiresAt,
+  };
+}
+
 /**
  * Reads one attestation file by nonce: a regular file (not a link) that
- * only its owner can read. Null when there is none or it is unsafe.
+ * only its owner can read, holding exactly an attestation's structure
+ * (parseRehearsalAttestation). Null when there is none, it is unsafe or it
+ * is malformed.
  */
 export function readRehearsalAttestation(
   nonce: string,
@@ -812,7 +881,7 @@ export function readRehearsalAttestation(
   try {
     const st = lstatSync(file);
     if (!st.isFile() || (st.mode & 0o077) !== 0) return null;
-    return JSON.parse(readFileSync(file, "utf8")) as RehearsalAttestation;
+    return parseRehearsalAttestation(JSON.parse(readFileSync(file, "utf8")));
   } catch {
     return null;
   }
@@ -841,8 +910,11 @@ export function rehearsalWriteProblem(
   const nonce = env[REHEARSAL_ATTESTATION_VAR];
   if (!nonce)
     return "rehearsal writes run only through npm run db:rehearsal, which proves the live branch first (no attestation)";
-  const att = (options.readAttestation ?? readRehearsalAttestation)(nonce);
-  if (!att) return "the rehearsal attestation is missing or unreadable";
+  const read = (options.readAttestation ?? readRehearsalAttestation)(nonce);
+  if (!read) return "the rehearsal attestation is missing or unreadable";
+  // Whatever the reader returned is checked again in full.
+  const att = parseRehearsalAttestation(read);
+  if (!att) return "the rehearsal attestation is malformed";
   const now = options.now ?? Date.now();
   const { entry } = checked;
   if (
@@ -855,12 +927,10 @@ export function rehearsalWriteProblem(
     att.command !== command
   )
     return "the rehearsal attestation does not cover this target and command";
-  if (
-    !(att.expiresAt > now) ||
-    att.expiresAt - att.createdAt > REHEARSAL_ATTESTATION_TTL_MS ||
-    att.createdAt > now
-  )
+  if (!Number.isFinite(now) || att.expiresAt <= now)
     return "the rehearsal attestation has expired";
+  if (att.createdAt > now)
+    return "the rehearsal attestation is dated in the future";
   return null;
 }
 

@@ -139,7 +139,45 @@ The sequence for each write:
 2. **Live proof**, read-only, with the **write** URL: identity and marker.
    `create-marker` instead re-proves identity, checks the marker is absent,
    writes and reads the row back, all in the **same** transaction; any
-   surprise rolls back.
+   surprise rolls back. If the connection or `COMMIT` fails, the outcome is
+   reported as **unknown** (never "rolled back"): inspect the branch
+   read-only (`preflight`) before anything else.
+
+   `resolve-applied` also reads, in the same read-only transaction, the
+   catalog and the migration history, and is refused unless they show the
+   migration already applied: every object it creates present in `public`
+   (`scripts/db-readiness/expected.ts`: tables, columns, enum values,
+   indexes, constraints, functions, enabled triggers, row-level security),
+   no table or enum type of the same name in another schema, not already
+   recorded as finished or rolled back, and every earlier migration
+   recorded as finished. Nothing is applied or repaired.
+
+   **Limitation (migrations 1–5).** This check establishes that the
+   expected objects exist under the expected names. It does not establish
+   that their definitions match the migration SQL:
+   - it does not compare column types, nullability or defaults;
+   - it does not compare foreign key actions, check constraint
+     definitions or index definitions;
+   - it matches functions by name only, not by body or signature;
+   - it looks outside `public` only for tables and enum types, so a
+     misplaced index, constraint, function or trigger is not detected.
+
+   Passing it is therefore **not proof** that the existing schema exactly
+   matches the migration SQL. `resolve-applied` only records the migration
+   in the history table (`prisma migrate resolve --applied`); it never
+   applies or repairs a missing or different schema change, and a wrong
+   record would hide that difference from later checks.
+
+   **`resolve-applied 0_baseline` is always refused** (since 2026-11-14):
+   there is no reviewed, complete comparison of the whole baseline schema
+   (column types, nullability and defaults, keys, foreign key actions,
+   checks, index definitions, sequences) with the catalog, and a partial
+   one could record a baseline that differs. Adding one is a separate,
+   reviewed task. That future full schema verifier must cover **every
+   migration, `0_baseline` through `5_finding_resolution_events`**, not
+   only the baseline, and replace the name-level check above for
+   migrations 1–5.
+
 3. **Attestation** (Prisma commands): a `0600` file in
    `~/.config/upsitehealth/rehearsal-attestations/` (`0700`). It binds:
    - a random nonce;
@@ -147,6 +185,12 @@ The sequence for each write:
    - the SHA-256 of the exact write URL;
    - the Prisma command;
    - a two-minute expiry.
+
+   The file is accepted only with exactly this structure
+   (`parseRehearsalAttestation`): no missing or extra fields, a 32-hex
+   nonce, non-empty strings, a 64-hex URL hash, a covered command, and
+   whole-millisecond timestamps with the expiry after creation and at most
+   five minutes later; the guard re-checks whatever it reads.
 
    The Prisma child gets only that URL and `UPSITEHEALTH_REHEARSAL_ATTESTATION`
    (test opt-ins removed). `prisma.config.ts`'s guard (`rehearsalWriteProblem`)
@@ -455,7 +499,9 @@ search_path = public; … COMMIT;`): 38 objects (see the analysis
    - a fingerprint matching the shared fingerprint plus the marker schema;
    - record the row counts.
 3. **Writes, in this order** (the ordered sequence):
-   1. `resolve-applied 0_baseline`;
+   1. `resolve-applied 0_baseline` (**currently refused by the wrapper**, see
+      above: this sequence cannot start until a complete baseline
+      verification is reviewed and added);
    2. `resolve-applied 1_business_facts`;
    3. `sql --file=prisma/rehearsal/2_recommendation_events.sql`;
    4. `resolve-applied 2_recommendation_events`;

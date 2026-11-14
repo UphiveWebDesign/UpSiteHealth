@@ -1340,6 +1340,16 @@ export async function runReconcile(
       throw new Refusal(
         "Prisma Migrate's advisory lock is held by another session",
       );
+    // Again now that this session holds the lock: a halt written meanwhile
+    // (another runner failing while this one connected and took the lock)
+    // stops this one before any write statement is sent.
+    const haltAfterLock = deps.halt.inspect();
+    if (haltAfterLock.state !== "absent")
+      throw new Refusal(
+        haltAfterLock.state === "present"
+          ? `a halt file appeared while this run was starting (${haltAfterLock.reason.slice(0, 300)}); review the database read-only (plan) before any further operation`
+          : `the halt file cannot be inspected safely (${haltAfterLock.error}); every command is refused until it can`,
+      );
     await otherSessions("before the operation");
     const before = classify(await readState(s), bindings.evidence);
     if (!("stage" in before))

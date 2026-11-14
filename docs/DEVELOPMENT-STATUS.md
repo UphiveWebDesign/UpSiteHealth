@@ -2,6 +2,73 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-14 — Database-safety tooling: rehearsal and reconciliation hardening
+
+Uncommitted, on `consolidate/2026-11-13` after `3fab39c`. Offline only:
+mocked databases, no connection to Neon or any database, no migration,
+resolve, `db execute`, reconciliation, restore or rehearsal write.
+
+- **Rehearsal `resolve-applied`** (`scripts/db-rehearsal/run.ts`): the
+  read-only proof also reads the catalog and history; `resolveAppliedProblem`
+  refuses (before the attestation, so Prisma never starts) unless every
+  object of the migration in `EXPECTED_OBJECTS` (tables, columns, enum
+  values, indexes, constraints, functions, enabled triggers, RLS) is
+  present in `public`, none outside it, the migration is not already
+  recorded as finished or rolled back, and every earlier migration is
+  recorded as finished. Never applies or repairs anything.
+- **`resolve-applied 0_baseline` is always refused** (`BASELINE_UNVERIFIED`):
+  a complete, trustworthy comparison of the baseline (column types,
+  nullability, defaults, keys, foreign key actions, checks, index
+  definitions, sequences) could not be built safely in this task; an
+  interim partial check (tables, enum types, indexes) was removed rather
+  than kept. Consequence: the documented rehearsal sequence
+  (`docs/operations/rehearsal-target.md`) cannot start until a reviewed
+  baseline verification exists.
+- **Attestation validation** (`prisma/safety.ts`):
+  `parseRehearsalAttestation` checks the full parsed structure (exact keys,
+  32-hex nonce, non-empty strings, 64-hex URL hash, covered command, safe
+  non-negative integer timestamps, expiry after creation, lifetime at most
+  `REHEARSAL_ATTESTATION_TTL_MS`). `readRehearsalAttestation` uses it, and
+  `rehearsalWriteProblem` re-checks whatever the reader returns (a NaN
+  `createdAt` used to pass the expiry check); a future creation time is
+  refused. Endpoint, branch, database, role, URL hash and command binding
+  unchanged.
+- **`createMarker` failures:** phase-tracked (`MarkerFailure`): "Nothing
+  was written" before any marker statement; "rolled back" only for a
+  statement or check failure on a working connection; a lost connection
+  while writing or a failed `COMMIT` is reported as unknown, with the
+  instruction to inspect the branch read-only (`preflight`) before retrying.
+- **Parser:** `Object.hasOwn(allowed, op)` (inherited keys such as
+  `constructor` are unknown commands); the second `WRITE_OPS` test reuses
+  the computed `write` flag. No duplicated confirmation check was found:
+  each confirmation is validated once, so none was removed.
+- **Shared reconciliation** (`scripts/db-reconcile-shared/run.ts`): the
+  halt files are inspected again right after the advisory lock is taken and
+  before any write statement; a halt (or an uninspectable one) that
+  appeared meanwhile refuses with the transaction rolled back, nothing
+  sent and the other runner's halt left as written.
+- **Tests:** `tests/db-rehearsal.test.ts` 294 (242 before, +52):
+  attestation structure, file reader (invalid JSON, wrong types, shared
+  permissions, symlinks) and guard cases (NaN, infinite, fractional,
+  negative and future timestamps, expiry before creation, over-long
+  lifetime, extra or empty fields); `resolve-applied` reads inside the
+  read-only proof, missing object, objects outside public, recorded or
+  rolled back, order, unknown migration, missing column or constraint,
+  `0_baseline` always refused (with or without facts); four `createMarker` outcomes and error classification;
+  inherited parser keys. `tests/db-reconcile-shared.test.ts` 153 (151
+  before, +2: a halt appears while taking the lock; it becomes
+  uninspectable). 7 mutations (one per fix) each caught. All 11 database
+  tooling suites: 1016 passed. Runbooks updated (`rehearsal-target.md`,
+  `shared-reconciliation-runbook.md`).
+- **Guard baseline:** `prisma/safety.ts` and `scripts/db-rehearsal/run.ts`
+  are guard files; this requested strengthening changes their hashes, so
+  they no longer match the 12 November record, which was not updated. The
+  other 22 still match. The baseline is a record outside the repository
+  (no code reads it), so this does not block tests or commits; per runbook
+  §5.3 step D the owner reviews the guard-file diff and, if approved, a NEW
+  dated baseline is recorded beside the old ones (older baselines are never
+  edited).
+
 ## 2026-11-14 — CLIENT lockdown: no organization access for CLIENT members
 
 Uncommitted, on `consolidate/2026-11-13` after `ab4e9c5`, together with

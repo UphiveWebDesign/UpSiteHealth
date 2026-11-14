@@ -1130,6 +1130,51 @@ describe("server identity, lock and sessions", () => {
     expect(h.err.join("\n")).toMatch(/advisory lock/);
   });
 
+  test("a halt that appears while this runner takes the lock stops it before any write", async () => {
+    const server = new FakeServer(freshDb());
+    const h = harness(server);
+    // Another runner fails and records its halt just as this one acquires
+    // the advisory lock (after the offline halt check at start-up passed).
+    server.hooks.beforeQuery = (sql) => {
+      if (sql === RECONCILE_QUERIES.lock)
+        h.halt.value = "operation 2 failed after its statements were sent";
+    };
+    const before = snapshotOf(server.committed);
+    const code = await runReconcile(applyArgs(OPERATIONS[0]), h.deps, BOUND);
+    expect(code).toBe(1);
+    expect(sent(h).some(WRITE_STATEMENT)).toBe(false);
+    expect(sent(h)).not.toContain("COMMIT");
+    expect(sent(h).at(-1)).toBe("ROLLBACK");
+    // The lock was taken, then nothing else read or written.
+    const log = server.sessions[0];
+    expect(log.indexOf(RECONCILE_QUERIES.lock)).toBeGreaterThan(-1);
+    expect(log.slice(log.indexOf(RECONCILE_QUERIES.lock) + 1)).toEqual([
+      "ROLLBACK",
+    ]);
+    expect(h.err.join("\n")).toMatch(
+      /a halt file appeared while this run was starting \(operation 2 failed/,
+    );
+    expect(h.err.join("\n")).toMatch(/Nothing was written\./);
+    // The other runner's halt is left exactly as it wrote it.
+    expect(h.halt.value).toBe(
+      "operation 2 failed after its statements were sent",
+    );
+    expect(snapshotOf(server.committed)).toEqual(before);
+  });
+
+  test("a halt file that becomes uninspectable while taking the lock also stops the write", async () => {
+    const server = new FakeServer(freshDb());
+    const h = harness(server);
+    server.hooks.beforeQuery = (sql) => {
+      if (sql === RECONCILE_QUERIES.lock) h.halt.unknown = "EACCES";
+    };
+    const code = await runReconcile(applyArgs(OPERATIONS[0]), h.deps, BOUND);
+    expect(code).toBe(1);
+    expect(sent(h).some(WRITE_STATEMENT)).toBe(false);
+    expect(sent(h)).not.toContain("COMMIT");
+    expect(h.err.join("\n")).toMatch(/cannot be inspected safely \(EACCES\)/);
+  });
+
   test("refuses while another session is connected", async () => {
     const h = harness(new FakeServer(freshDb(), { otherSessions: 1 }));
     expectNoWrite(

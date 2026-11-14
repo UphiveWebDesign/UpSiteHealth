@@ -194,6 +194,10 @@ halt files.** Two locations:
   probe file, which is removed at once).
 - If either halt file exists: `apply` is refused; `plan` runs and shows it;
   `verify` runs but exits 1, never reporting success while halted.
+- `apply` inspects the halt files again right after taking Prisma
+  Migrate's advisory lock and before any write statement: a halt that
+  appeared meanwhile (another runner failing) stops it, rolled back, with
+  nothing sent.
 
 **`apply`, offline:** artifacts and Prisma version; bindings (`SNAPSHOT`
 recorded; `HISTORY_EVIDENCE` complete; both snapshot IDs and

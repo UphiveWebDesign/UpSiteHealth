@@ -17,7 +17,9 @@ import {
   NEON_REHEARSAL_TARGETS,
   parseDbTarget,
   prismaCliDecision,
+  parseRehearsalAttestation,
   readRehearsalAttestation,
+  REHEARSAL_ATTESTATION_TTL_MS,
   REHEARSAL_ATTESTATION_VAR,
   REHEARSAL_MARKER,
   rehearsalListProblem,
@@ -41,13 +43,23 @@ import {
 } from "../scripts/crawl-worker/database";
 import { childEnv, parseDriftArgs } from "../scripts/db-drift/run";
 import { parseDefinitionsArgs } from "../scripts/db-readiness/definitions-run";
-import { QUERIES } from "../scripts/db-readiness/report";
+import {
+  EXPECTED_OBJECTS,
+  type MigrationObjects,
+} from "../scripts/db-readiness/expected";
+import {
+  QUERIES,
+  type Catalog,
+  type HistoryRow,
+} from "../scripts/db-readiness/report";
 import {
   parseReadinessArgs,
   proveTarget,
+  ServerRefusal,
   type ReadinessDb,
 } from "../scripts/db-readiness/run";
 import {
+  isConnectionFailure,
   markerSqlHash,
   markerStatements,
   MIGRATION_OBJECT_NAMES,
@@ -56,6 +68,8 @@ import {
   PLACEMENT_QUERIES,
   placementAfterProblem,
   placementBeforeProblem,
+  BASELINE_UNVERIFIED,
+  resolveAppliedProblem,
   runRehearsal,
   searchPathProblem,
   type SearchPathFacts,
@@ -614,6 +628,10 @@ type Server = {
   testMarkerRows?: unknown[] | null;
   readOnly?: string;
   failOn?: string;
+  /** The error message for failOn (default: a plain statement failure). */
+  failWith?: string;
+  /** The transaction's COMMIT fails after the callback succeeded. */
+  failCommit?: boolean;
   /** Schemas other than public and the marker schema, with object counts. */
   otherSchemas?: Array<{
     schema: string;
@@ -627,7 +645,59 @@ type Server = {
   historyInPublic?: boolean;
   /** The resolved search_path (default: "$user", public resolving to public); null: no row. */
   searchPath?: Partial<SearchPathFacts> | null;
+  /** Migration history rows (default: 0_baseline recorded as finished). */
+  history?: HistoryRow[];
+  /** The catalog (default: 1_business_facts's objects, in public). */
+  catalog?: Partial<Catalog>;
 };
+
+/** 0_baseline recorded as finished, as after the baseline was resolved. */
+const BASELINE_ROW: HistoryRow = {
+  name: "0_baseline",
+  checksum: "c",
+  finished: true,
+  rolledBack: false,
+};
+
+/** The fixture baseline's objects, all in public. */
+const BASELINE_CATALOG: Catalog = {
+  enumValues: [
+    { schema: "public", type: "Role", label: "OWNER" },
+    { schema: "public", type: "Role", label: "CLIENT" },
+  ],
+  tables: [
+    { schema: "public", table: "organizations", rls: false },
+    { schema: "public", table: "websites", rls: false },
+  ],
+  columns: [],
+  indexes: ["organizations_slug_key"],
+  constraints: [],
+  functions: [],
+  triggers: [],
+};
+
+/** A catalog holding exactly one migration's objects, in public. */
+function catalogOf(o: MigrationObjects): Catalog {
+  return {
+    enumValues: Object.entries(o.enumValues).flatMap(([type, labels]) =>
+      labels.map((label) => ({ schema: "public", type, label })),
+    ),
+    tables: o.tables.map((table) => ({
+      schema: "public",
+      table,
+      rls: o.rowLevelSecurity.includes(table),
+    })),
+    columns: Object.entries(o.columns).flatMap(([table, cols]) =>
+      cols.map((column) => ({ table, column })),
+    ),
+    indexes: [...o.indexes],
+    constraints: [...o.constraints],
+    functions: [...o.functions],
+    triggers: Object.entries(o.triggers).flatMap(([table, names]) =>
+      names.map((name) => ({ table, name, enabled: true })),
+    ),
+  };
+}
 
 function fakeDb(server: Server, log: string[]) {
   // State lives on the server, so it outlasts one connection.
@@ -637,7 +707,7 @@ function fakeDb(server: Server, log: string[]) {
     $executeRawUnsafe: vi.fn(async (sql: string) => {
       log.push(`exec ${sql.slice(0, 40)}`);
       if (server.failOn && sql.startsWith(server.failOn))
-        throw new Error(`failed at ${READ_URL}`);
+        throw new Error(server.failWith ?? `failed at ${READ_URL}`);
       if (sql.startsWith("INSERT INTO")) state.markerRows = [marker()];
       return 0;
     }),
@@ -689,6 +759,21 @@ function fakeDb(server: Server, log: string[]) {
           { readOnly: server.readOnly ?? "on", isolation: "repeatable read" },
         ];
       if (sql === QUERIES.identity) return [server.identity];
+      if (sql === QUERIES.history) return server.history ?? [BASELINE_ROW];
+      const catalog = {
+        ...catalogOf(EXPECTED_OBJECTS["1_business_facts"]),
+        ...server.catalog,
+      };
+      if (sql === QUERIES.enums) return catalog.enumValues;
+      if (sql === QUERIES.tables) return catalog.tables;
+      if (sql === QUERIES.columns) return catalog.columns;
+      if (sql === QUERIES.indexes)
+        return catalog.indexes.map((name) => ({ name }));
+      if (sql === QUERIES.constraints)
+        return catalog.constraints.map((name) => ({ name }));
+      if (sql === QUERIES.functions)
+        return catalog.functions.map((name) => ({ name }));
+      if (sql === QUERIES.triggers) return catalog.triggers;
       if (sql === QUERIES.testMarkerTable)
         return [{ present: server.testMarkerRows != null }];
       if (sql === QUERIES.marker)
@@ -706,6 +791,10 @@ function fakeDb(server: Server, log: string[]) {
       log.push("BEGIN");
       try {
         const v = await fn(tx);
+        if (server.failCommit) {
+          log.push("COMMIT failed");
+          throw new Error("Connection terminated unexpectedly");
+        }
         log.push("COMMIT");
         return v;
       } catch (e) {
@@ -835,6 +924,96 @@ function decide(
 }
 const withNonce = { [REHEARSAL_ATTESTATION_VAR]: NONCE };
 
+describe("rehearsal attestation structure", () => {
+  const valid = () => attestation() as unknown as Record<string, unknown>;
+
+  test("a complete, well-formed attestation is accepted unchanged", () => {
+    expect(parseRehearsalAttestation(valid())).toEqual(attestation());
+  });
+
+  test.each<[string, unknown]>([
+    ["null", null],
+    ["an array", [attestation()]],
+    ["a string", JSON.stringify(attestation())],
+    ["a number", 42],
+    [
+      "an object with a prototype",
+      Object.assign(Object.create({ x: 1 }), attestation()),
+    ],
+    ["a missing field", (({ role: _r, ...rest }) => rest)(attestation())],
+    ["an extra field", { ...valid(), extra: true }],
+    ["an upper-case nonce", { ...valid(), nonce: "A".repeat(32) }],
+    ["a 31-character nonce", { ...valid(), nonce: "a".repeat(31) }],
+    ["an unknown command", { ...valid(), command: "migrate reset" }],
+    ["a non-string endpoint", { ...valid(), endpoint: 7 }],
+    ["an over-long database name", { ...valid(), database: "d".repeat(201) }],
+    ["a NaN creation time", { ...valid(), createdAt: Number.NaN }],
+    ["a null expiry", { ...valid(), expiresAt: null }],
+    ["an infinite expiry", { ...valid(), expiresAt: Infinity }],
+    ["an unsafe-integer timestamp", { ...valid(), expiresAt: 2 ** 60 }],
+    ["equal times", { ...valid(), createdAt: NOW, expiresAt: NOW }],
+    [
+      "expiry before creation",
+      { ...valid(), createdAt: NOW, expiresAt: NOW - 1 },
+    ],
+    [
+      "a lifetime over the maximum",
+      {
+        ...valid(),
+        createdAt: NOW,
+        expiresAt: NOW + REHEARSAL_ATTESTATION_TTL_MS + 1,
+      },
+    ],
+  ])("%s is rejected", (_n, value) => {
+    expect(parseRehearsalAttestation(value)).toBeNull();
+  });
+
+  test("the maximum lifetime itself is accepted", () => {
+    expect(
+      parseRehearsalAttestation({
+        ...valid(),
+        createdAt: NOW,
+        expiresAt: NOW + REHEARSAL_ATTESTATION_TTL_MS,
+      }),
+    ).not.toBeNull();
+  });
+
+  test("the file reader returns only well-formed attestations from private regular files", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "att-"));
+    try {
+      const put = (name: string, body: string, mode = 0o600) => {
+        writeFileSync(path.join(dir, `${name}.json`), body, { mode });
+        chmodSync(path.join(dir, `${name}.json`), mode);
+      };
+      const ok = "a".repeat(32);
+      put(ok, JSON.stringify(attestation({ nonce: ok })));
+      expect(readRehearsalAttestation(ok, dir)).toEqual(
+        attestation({ nonce: ok }),
+      );
+      const bad = [
+        ["b", "{not json"],
+        ["c", JSON.stringify({ ...attestation(), createdAt: "now" })],
+        ["d", JSON.stringify([attestation()])],
+        ["e", "null"],
+      ] as const;
+      for (const [ch, body] of bad) {
+        const n = ch.repeat(32);
+        put(n, body);
+        expect(readRehearsalAttestation(n, dir)).toBeNull();
+      }
+      const shared = "f".repeat(32);
+      put(shared, JSON.stringify(attestation({ nonce: shared })), 0o644);
+      expect(readRehearsalAttestation(shared, dir)).toBeNull();
+      const link = "1".repeat(32);
+      symlinkSync(path.join(dir, `${ok}.json`), path.join(dir, `${link}.json`));
+      expect(readRehearsalAttestation(link, dir)).toBeNull();
+      expect(readRehearsalAttestation("../etc", dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Prisma CLI guard on a rehearsal URL", () => {
   test("a write with a valid attestation for this URL and command is allowed", () => {
     expect(decide(["migrate", "deploy"], withNonce)).toEqual({ allow: true });
@@ -895,7 +1074,7 @@ describe("Prisma CLI guard on a rehearsal URL", () => {
       ["migrate", "deploy"],
       withNonce,
       attestation({ expiresAt: NOW + 3_600_000 }),
-      /expired/,
+      /malformed/,
     ],
     [
       "migrate reset",
@@ -937,6 +1116,46 @@ describe("Prisma CLI guard on a rehearsal URL", () => {
     expect(d.allow).toBe(false);
     expect(!d.allow && d.reason).toMatch(message);
     expect(JSON.stringify(d)).not.toContain(PASSWORD);
+  });
+
+  test.each<[string, Record<string, unknown>]>([
+    ["a string timestamp", { createdAt: String(NOW - 1000) }],
+    ["a NaN creation time", { createdAt: Number.NaN }],
+    ["an infinite expiry", { expiresAt: Number.POSITIVE_INFINITY }],
+    ["a fractional timestamp", { expiresAt: NOW + 0.5 }],
+    ["a negative timestamp", { createdAt: -1 }],
+    ["expiry before creation", { createdAt: NOW + 10, expiresAt: NOW + 5 }],
+    ["an empty branch", { branch: "" }],
+    ["a role that is not a string", { role: ["x"] }],
+    ["a short URL hash", { urlSha256: "abc" }],
+    ["an extra field", { approvedBy: "someone" }],
+  ])(
+    "an attestation with %s is refused as malformed, whatever the reader returns",
+    (_n, change) => {
+      const d = decide(["migrate", "deploy"], withNonce, {
+        ...attestation(),
+        ...change,
+      } as unknown as RehearsalAttestation);
+      expect(d.allow).toBe(false);
+      expect(!d.allow && d.reason).toMatch(/malformed/);
+    },
+  );
+
+  test("an attestation whose nonce is not the requested string is never used", () => {
+    const d = decide(["migrate", "deploy"], withNonce, {
+      ...attestation(),
+      nonce: 123,
+    } as unknown as RehearsalAttestation);
+    expect(!d.allow && d.reason).toMatch(/missing or unreadable/);
+  });
+
+  test("an attestation dated in the future is refused", () => {
+    const d = decide(
+      ["migrate", "deploy"],
+      withNonce,
+      attestation({ createdAt: NOW + 10_000, expiresAt: NOW + 60_000 }),
+    );
+    expect(!d.allow && d.reason).toMatch(/dated in the future/);
   });
 
   test("the read URL cannot write, even attested", () => {
@@ -1020,8 +1239,18 @@ describe("Prisma CLI guard on a rehearsal URL", () => {
 
 // ─── The wrapper ────────────────────────────────────────────────────────────
 
+/** A small baseline: what resolve-applied 0_baseline must find present. */
+const BASELINE_SQL = [
+  `CREATE TYPE "Role" AS ENUM ('OWNER', 'CLIENT');`,
+  `CREATE TABLE "organizations" ("id" TEXT NOT NULL, "slug" TEXT NOT NULL);`,
+  `CREATE TABLE "websites" ("id" TEXT NOT NULL);`,
+  `CREATE UNIQUE INDEX "organizations_slug_key" ON "organizations"("slug");`,
+  "",
+].join("\n");
+const ONE_SQL = "-- one\n";
 const MIGRATIONS: MigrationFile[] = [
-  { name: "0_baseline", text: "-- baseline\n" },
+  { name: "0_baseline", text: BASELINE_SQL },
+  { name: "1_business_facts", text: ONE_SQL },
   { name: "4_recommendation_identity", text: "-- four\n" },
 ];
 const GOOD_SQL =
@@ -1104,6 +1333,16 @@ const CONFIRM = `--confirm-branch=${ENTRY.branch}`;
 const shaFlag = (h: string) => `--sha256=${h}`;
 
 describe("parseRehearsalArgs", () => {
+  test.each(["constructor", "toString", "hasOwnProperty", "__proto__"])(
+    "an inherited object key (%s) is an unknown command, not a write",
+    (op) => {
+      for (const argv of [[op], [op, CONFIRM, shaFlag("a".repeat(64))]])
+        expect(parseRehearsalArgs(argv)).toEqual({
+          error: expect.stringMatching(/^Unknown command/),
+        });
+    },
+  );
+
   test.each([
     [[], /Name a command/],
     [
@@ -1285,6 +1524,87 @@ describe("runRehearsal", () => {
     expect(x.err.join("")).not.toContain(PASSWORD);
   });
 
+  const markerArgs = () => [
+    "create-marker",
+    CONFIRM,
+    shaFlag(markerSqlHash(ENTRY)),
+  ];
+
+  test("a statement error on a working connection is reported as rolled back", async () => {
+    const x = wrapper({
+      server: writeServer({
+        markerRows: null,
+        failOn: "INSERT",
+        failWith: "duplicate key value violates unique constraint",
+      }),
+    });
+    expect(await runRehearsal(markerArgs(), x.d)).toBe(1);
+    expect(x.err.join("")).toMatch(
+      /The transaction was rolled back; the marker was not created\./,
+    );
+  });
+
+  test("a lost connection while writing the marker is never reported as rolled back", async () => {
+    const x = wrapper({
+      server: writeServer({
+        markerRows: null,
+        failOn: "INSERT",
+        failWith: "Connection terminated unexpectedly",
+      }),
+    });
+    expect(await runRehearsal(markerArgs(), x.d)).toBe(1);
+    const text = x.err.join("");
+    expect(text).not.toMatch(/rolled back;|Nothing was written/);
+    expect(text).toMatch(
+      /Whether the marker was created is unknown.*Do not retry: inspect the rehearsal branch read-only first \(npm run db:rehearsal -- preflight\)/,
+    );
+  });
+
+  test("a failed COMMIT leaves the outcome unknown, even though every check passed", async () => {
+    const x = wrapper({
+      server: writeServer({ markerRows: null, failCommit: true }),
+    });
+    expect(await runRehearsal(markerArgs(), x.d)).toBe(1);
+    expect(x.log).toContain("COMMIT failed");
+    const text = x.err.join("");
+    expect(text).toMatch(/Whether the marker was created is unknown/);
+    expect(text).not.toMatch(/rolled back;/);
+    expect(x.out.join("")).not.toContain("Server (after");
+  });
+
+  test("a connection lost before any marker statement wrote nothing", async () => {
+    const x = wrapper({
+      server: writeServer({
+        markerRows: null,
+        failOn: "SET LOCAL statement_timeout",
+        failWith: "Connection terminated unexpectedly",
+      }),
+    });
+    expect(await runRehearsal(markerArgs(), x.d)).toBe(1);
+    expect(x.err.join("")).toMatch(/Nothing was written\./);
+    expect(
+      x.log.filter(
+        (l) => l.startsWith("exec CREATE") || l.startsWith("exec INSERT"),
+      ),
+    ).toEqual([]);
+  });
+
+  test("errors are classified as connection failures only when they are", () => {
+    for (const e of [
+      Object.assign(new Error("x"), { code: "P1017" }),
+      Object.assign(new Error("x"), { code: "P2028" }),
+      Object.assign(new Error("x"), { code: "ECONNRESET" }),
+      new Error("Connection terminated unexpectedly"),
+      new Error("Transaction already closed"),
+    ])
+      expect(isConnectionFailure(e)).toBe(true);
+    for (const e of [
+      new Error("duplicate key value violates unique constraint"),
+      new ServerRefusal("the marker did not read back as written"),
+    ])
+      expect(isConnectionFailure(e)).toBe(false);
+  });
+
   test("deploy: proves the branch read-only, attests, runs prisma, removes the attestation, checks after", async () => {
     const x = wrapper({ server: writeServer() });
     expect(
@@ -1381,9 +1701,9 @@ describe("runRehearsal", () => {
       await runRehearsal(
         [
           "resolve-applied",
-          "0_baseline",
+          "1_business_facts",
           CONFIRM,
-          shaFlag(sha256("-- baseline\n")),
+          shaFlag(sha256(ONE_SQL)),
         ],
         x.d,
       ),
@@ -1392,7 +1712,7 @@ describe("runRehearsal", () => {
       "migrate",
       "resolve",
       "--applied",
-      "0_baseline",
+      "1_business_facts",
     ]);
     expect(x.attestations[0].command).toBe("migrate resolve");
     const unknown = wrapper({ server: writeServer() });
@@ -1403,6 +1723,180 @@ describe("runRehearsal", () => {
       ),
     ).toBe(1);
     expect(unknown.connect).not.toHaveBeenCalled();
+  });
+
+  const resolveOne = () => [
+    "resolve-applied",
+    "1_business_facts",
+    CONFIRM,
+    shaFlag(sha256(ONE_SQL)),
+  ];
+  const refusedBeforePrisma = async (
+    server: Server,
+    message: RegExp,
+    argv: string[] = resolveOne(),
+  ) => {
+    const x = wrapper({ server });
+    expect(await runRehearsal(argv, x.d)).toBe(1);
+    expect(x.err.join("\n")).toMatch(message);
+    expect(x.err.join("\n")).toMatch(/Nothing was written\./);
+    expect(x.prisma).not.toHaveBeenCalled();
+    expect(x.attestations).toEqual([]);
+    return x;
+  };
+  const row = (o: Partial<HistoryRow>): HistoryRow => ({
+    name: "1_business_facts",
+    checksum: sha256(ONE_SQL),
+    finished: true,
+    rolledBack: false,
+    ...o,
+  });
+
+  test("resolve-applied reads the catalog and history inside the read-only proof", async () => {
+    const x = wrapper({ server: writeServer() });
+    expect(await runRehearsal(resolveOne(), x.d)).toBe(0);
+    const proof = x.log.slice(
+      x.log.indexOf("BEGIN"),
+      x.log.indexOf("attest") === -1 ? undefined : x.log.indexOf("attest"),
+    );
+    for (const q of [
+      "query enums",
+      "query tables",
+      "query columns",
+      "query indexes",
+      "query constraints",
+      "query triggers",
+      "query history",
+    ])
+      expect(proof).toContain(q);
+    // Read-only: no statement other than the proof's settings was executed.
+    expect(
+      proof.filter((l) => l.startsWith("exec") && !l.includes("SET")),
+    ).toEqual([]);
+  });
+
+  test("resolve-applied 0_baseline is always refused, even with every object present", async () => {
+    // Every table, type and index of the fixture baseline present, history
+    // table empty: still refused, before the attestation and Prisma.
+    await refusedBeforePrisma(
+      writeServer({ catalog: BASELINE_CATALOG, history: [] }),
+      /resolve-applied 0_baseline is refused: this wrapper cannot yet verify the whole baseline schema/,
+      ["resolve-applied", "0_baseline", CONFIRM, shaFlag(sha256(BASELINE_SQL))],
+    );
+    for (const facts of [
+      undefined,
+      { history: null, catalog: BASELINE_CATALOG },
+      { history: [], catalog: BASELINE_CATALOG },
+    ])
+      expect(resolveAppliedProblem("0_baseline", MIGRATIONS, facts)).toBe(
+        BASELINE_UNVERIFIED,
+      );
+  });
+
+  test("resolve-applied is refused when an expected object is missing", async () => {
+    await refusedBeforePrisma(
+      writeServer({ catalog: { tables: [] } }),
+      /1_business_facts is not fully applied on this branch \(\d+ of \d+ objects; missing table business_facts/,
+    );
+  });
+
+  test("resolve-applied is refused when a column, constraint or trigger is missing", async () => {
+    const full = catalogOf(EXPECTED_OBJECTS["1_business_facts"]);
+    await refusedBeforePrisma(
+      writeServer({ catalog: { columns: full.columns.slice(1) } }),
+      /missing column business_facts\."id"/,
+    );
+    await refusedBeforePrisma(
+      writeServer({ catalog: { constraints: [] } }),
+      /missing constraint /,
+    );
+  });
+
+  test("resolve-applied is refused when the objects live outside public", async () => {
+    const full = catalogOf(EXPECTED_OBJECTS["1_business_facts"]);
+    await refusedBeforePrisma(
+      writeServer({
+        catalog: {
+          tables: [
+            ...full.tables,
+            {
+              schema: "upsitehealth_test",
+              table: "business_facts",
+              rls: false,
+            },
+          ],
+        },
+      }),
+      /objects exist outside public \(table business_facts in schema upsitehealth_test\)/,
+    );
+  });
+
+  test("resolve-applied is refused when the migration is already recorded, or rolled back", async () => {
+    await refusedBeforePrisma(
+      writeServer({ history: [BASELINE_ROW, row({})] }),
+      /already recorded as applied; there is nothing to resolve/,
+    );
+    await refusedBeforePrisma(
+      writeServer({
+        history: [BASELINE_ROW, row({ finished: false, rolledBack: true })],
+      }),
+      /recorded as rolled back/,
+    );
+  });
+
+  test("resolve-applied is refused when an earlier migration is not recorded as finished", async () => {
+    for (const history of [
+      [],
+      [{ ...BASELINE_ROW, finished: false }],
+      [{ ...BASELINE_ROW, rolledBack: true }],
+    ])
+      await refusedBeforePrisma(
+        writeServer({ history }),
+        /earlier migrations are not recorded as applied \(0_baseline\)/,
+      );
+    // No history table at all: nothing earlier is recorded either.
+    await refusedBeforePrisma(
+      writeServer({ historyInPublic: false }),
+      /earlier migrations are not recorded as applied \(0_baseline\)/,
+    );
+  });
+
+  test("an unfinished (failed) attempt may be resolved once every object is present", () => {
+    expect(
+      resolveAppliedProblem("1_business_facts", MIGRATIONS, {
+        history: [BASELINE_ROW, row({ finished: false })],
+        catalog: catalogOf(EXPECTED_OBJECTS["1_business_facts"]),
+      }),
+    ).toBeNull();
+  });
+
+  test("resolve-applied is refused out of order, or for a migration with no reviewed object list", () => {
+    const four = EXPECTED_OBJECTS["4_recommendation_identity"];
+    const facts = {
+      history: [BASELINE_ROW] as HistoryRow[],
+      catalog: catalogOf(four),
+    };
+    expect(
+      resolveAppliedProblem("4_recommendation_identity", MIGRATIONS, facts),
+    ).toMatch(
+      /earlier migrations are not recorded as applied \(1_business_facts\)/,
+    );
+    expect(
+      resolveAppliedProblem("4_recommendation_identity", MIGRATIONS, {
+        ...facts,
+        history: [BASELINE_ROW, row({})],
+      }),
+    ).toBeNull();
+    const future = [...MIGRATIONS, { name: "6_future", text: "-- six\n" }];
+    expect(resolveAppliedProblem("6_future", future, facts)).toMatch(
+      /no reviewed object list/,
+    );
+    expect(resolveAppliedProblem("9_missing", MIGRATIONS, facts)).toMatch(
+      /is not a migration in prisma\/migrations/,
+    );
+    expect(
+      resolveAppliedProblem("1_business_facts", MIGRATIONS, undefined),
+    ).toMatch(/could not be established/);
   });
 
   test("sql runs only a screened, hash-matched reviewed file", async () => {
@@ -1875,9 +2369,9 @@ describe("placement checks", () => {
 describe("placement checks in the wrapper", () => {
   const resolveArgs = [
     "resolve-applied",
-    "0_baseline",
+    "1_business_facts",
     CONFIRM,
-    shaFlag(sha256("-- baseline\n")),
+    shaFlag(sha256(ONE_SQL)),
   ];
   const sqlArgs = [
     "sql",
@@ -1887,13 +2381,11 @@ describe("placement checks in the wrapper", () => {
   ];
 
   test("each write is checked before and after; the reads are part of the read-only proofs", async () => {
-    const server = writeServer({ historyInPublic: false });
-    const x = wrapper({
-      server,
-      afterPrisma: () => (server.historyInPublic = true),
-    });
+    const x = wrapper({ server: writeServer() });
     expect(await runRehearsal(resolveArgs, x.d)).toBe(0);
-    const at = x.log.indexOf("prisma migrate resolve --applied 0_baseline");
+    const at = x.log.indexOf(
+      "prisma migrate resolve --applied 1_business_facts",
+    );
     expect(
       x.log.slice(0, at).filter((l) => l === "placement misplaced"),
     ).toHaveLength(1);
@@ -1919,6 +2411,14 @@ describe("placement checks in the wrapper", () => {
     expect(x.attestations).toEqual([]);
   });
 
+  // The first history write (no history table yet) is deploy's: resolve
+  // needs recorded earlier migrations, and 0_baseline is never resolved here.
+  const deployArgs = [
+    "deploy",
+    CONFIRM,
+    shaFlag(migrationsManifestHash(MIGRATIONS)),
+  ];
+
   test("history created outside public fails afterwards, and the next write is refused", async () => {
     const server = writeServer({ historyInPublic: false });
     const x = wrapper({
@@ -1929,7 +2429,7 @@ describe("placement checks in the wrapper", () => {
         ];
       },
     });
-    expect(await runRehearsal(resolveArgs, x.d)).toBe(1);
+    expect(await runRehearsal(deployArgs, x.d)).toBe(1);
     expect(x.err.join("\n")).toMatch(
       /placement check afterwards failed: migration objects were created outside public \(upsitehealth_test\._prisma_migrations\)/,
     );
@@ -1938,9 +2438,9 @@ describe("placement checks in the wrapper", () => {
     expect(next.prisma).not.toHaveBeenCalled();
   });
 
-  test("a resolve that leaves no public history table fails afterwards", async () => {
+  test("a history write that leaves no public history table fails afterwards", async () => {
     const x = wrapper({ server: writeServer({ historyInPublic: false }) });
-    expect(await runRehearsal(resolveArgs, x.d)).toBe(1);
+    expect(await runRehearsal(deployArgs, x.d)).toBe(1);
     expect(x.err.join("\n")).toMatch(
       /public\._prisma_migrations does not exist after the write/,
     );
@@ -2282,9 +2782,9 @@ describe("search_path in the wrapper", () => {
   };
   const resolveArgs = [
     "resolve-applied",
-    "0_baseline",
+    "1_business_facts",
     CONFIRM,
-    shaFlag(sha256("-- baseline\n")),
+    shaFlag(sha256(ONE_SQL)),
   ];
 
   test.each([
@@ -2330,13 +2830,8 @@ describe("search_path in the wrapper", () => {
   });
 
   test("a public search_path lets resolve-applied run, and the placement checks still run after it", async () => {
-    const server = writeServer({
-      historyInPublic: false,
-      searchPath: { role: "fixture_writer" },
-    });
     const x = wrapper({
-      server,
-      afterPrisma: () => (server.historyInPublic = true),
+      server: writeServer({ searchPath: { role: "fixture_writer" } }),
     });
     expect(await runRehearsal(resolveArgs, x.d)).toBe(0);
     expect(x.prisma).toHaveBeenCalledTimes(1);

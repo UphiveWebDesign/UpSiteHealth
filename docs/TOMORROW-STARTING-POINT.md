@@ -1,476 +1,195 @@
 # Tomorrow's Starting Point — UpSiteHealth
 
-Updated just after midnight on **1 November 2026**, at the end of a
-session that ran from about 14:50 on 31 October (machine clock; first
-written 31 October). Everything below was verified from the working tree
-on 1 November unless marked **unverified**. Database contact during the
-session: only the owner-approved `itest-ci` runs in section P1.6.
+Written **2026-11-14** (machine clock) at the end of the database-safety
+session. It replaces the 1 November handoff; that version is preserved in
+git (`git show 3fab39c:docs/TOMORROW-STARTING-POINT.md`) and has not been
+edited.
 
-> **Date labels are unreliable.** Entries written in this session (in
-> `docs/DEVELOPMENT-STATUS.md`, `docs/specs/recommendation-lifecycle.md`,
-> `docs/specs/finding-resolution-provenance.md`, comments in the P1 test
-> files) are labelled **2026-11-01** or **2026-11-02**. File timestamps show
-> the work happened between **31 October ~14:50** and **1 November ~00:45**:
-> recommendation accuracy, Organic Growth Starter, UI/UX, lifecycle fixes,
-> the probe and the P1 implementation on 31 October; the runbook, the
-> finding-history test and this handoff on 1 November. Trust timestamps
-> and this note over the labels; the labels were not rewritten.
+Everything here was checked against the working tree, the repository docs
+or files on this Mac on 2026-11-14, unless it is marked **UNVERIFIED IN
+REPO DOCS**. No database was contacted while writing it.
 
-## P1 Finding History — Ready for Database Validation
+> **No shared database operation is authorized by this handoff.**
 
-### P1.1 What is ready
+---
 
-- **P1 (finding resolution provenance) is implemented** in code, Prisma
-  schema and migration 5 — design `docs/specs/finding-resolution-provenance.md`,
-  lifecycle context `docs/specs/recommendation-lifecycle.md`.
-- **Migration 5 is NOT applied anywhere** (`itest-ci`, shared database,
-  `manual-backup`, production: none).
-  - File: `prisma/migrations/5_finding_resolution_events/migration.sql`
-  - SHA-256: `24c220bd75d2fb37923f510bc7a77850767fba6a9909c0d74c1e1642466d8f26`
-  - Creates only new objects: enums `SeoFindingEventType`,
-    `FindingResolutionReason`; table `seo_finding_events` (14 columns, 5
-    indexes incl. unique `(seoFindingId, crawlRunId, type)`); 4 foreign keys
-    (organization/website `ON DELETE CASCADE`, finding/crawl run
-    `ON DELETE NO ACTION`, all `ON UPDATE NO ACTION`, none deferrable); 2
-    checks; tenancy, no-update, no-delete (except tenant cascade) and
-    no-truncate triggers; RLS enabled, no policies.
-- **Code:** `src/lib/seo/finding-history.ts`, `src/lib/seo/sync.ts`
-  (events in the findings transaction, only when the table exists),
-  `src/lib/recommendations/generate.ts` and `lifecycle.ts` (recorded
-  reasons first, legacy fallback, `closedBy`), `src/lib/tenancy/scope.ts`,
-  `scripts/db-readiness/expected.ts` (migration 5 objects).
-- **Offline tests:** `src/lib/seo/finding-history.test.ts` (25, passing).
-- **PostgreSQL safety probe** `tests/integration/p1-postgres-probe.test.ts`:
-  run by the owner on `itest-ci` (copied tables in a rolled-back
-  transaction), corrected after the first run, then **24/24 passed**;
-  design "PLAN" chosen.
+## A. Git state
 
-### P1.2 The new integration test — written, NOT executed
+| Item                            | Value                                                                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Branch                          | `consolidate/2026-11-13`                                                                                                                                   |
+| HEAD                            | `3fab39c security: complete client access lockdown`                                                                                                        |
+| `origin/consolidate/2026-11-13` | same commit (`3fab39c`) according to the local remote-tracking ref, which was **not** fetched today; no upstream is configured                             |
+| `main`                          | `26e71fc`, 11 commits behind this branch (`b952b19`, `d0b20b4`, `38c145b`, `ab4e9c5`, `3fab39c` were added in this cycle, on top of `6f6d1cd` … `cffa799`) |
+| Staged                          | nothing                                                                                                                                                    |
+| Stashes                         | none                                                                                                                                                       |
+| Untracked                       | none                                                                                                                                                       |
+| Uncommitted (modified)          | 8 files, listed below                                                                                                                                      |
 
-`tests/integration/finding-history.test.ts` (8 tests), through the real
-findings sync and recommendation sync:
+Uncommitted files (the database-safety hardening of 2026-11-14):
 
-1. Genuine fix: one RESOLVED / FIX_CONFIRMED event with the closing crawl,
-   COMPLETED, the technical version, the rule id, and `occurredAt` equal to
-   the finding's `resolvedAt`; no topic or coverage version.
-2. Thin page now noindex and canonicalised duplicate → NOT_APPLICABLE;
-   retired rule (fixture finding) → RULE_RETIRED.
-3. Partial crawl: event records that crawl and PARTIAL; the task stays
-   PROPOSED, no verification.
-4. Failed, skipped or absent page: finding stays OPEN, no event.
-5. Reopening: REOPENED has no reason; the earlier event is unchanged; two
-   cycles give four events, each with its own crawl.
-6. Guarded re-analysis does nothing; unguarded re-analysis adds nothing.
-   **Addition — rollback:** a pre-inserted event for the same finding,
-   crawl and type makes the sync's own insert hit the unique key; the whole
-   transaction rolls back (finding OPEN, crawl unanalysed). This is one
-   mechanism, not two separate tests.
-7. On the real tables: event update, delete and truncate refused; deleting
-   a finding with history, the crawl an event names, or its last-seen
-   crawl refused. **Additions:** cross-tenant references and a duplicate
-   event refused. Deleting a test-owned website succeeds through the
-   cascades; another organization's data is untouched.
-8. A completed task's `closedBy` is the recorded closing crawl while its
-   evidence crawl is later; a recorded NOT_APPLICABLE keeps the task held
-   even after the page later passes the rule.
+- `scripts/db-rehearsal/run.ts` — **guard file**
+- `prisma/safety.ts` — **guard file**
+- `scripts/db-reconcile-shared/run.ts`
+- `tests/db-rehearsal.test.ts`
+- `tests/db-reconcile-shared.test.ts`
+- `docs/operations/rehearsal-target.md`
+- `docs/operations/shared-reconciliation-runbook.md`
+- `docs/DEVELOPMENT-STATUS.md`
 
-**Safety built in:** runs only with the verified test database (the
-existing setup guard and marker check in `tests/setup.ts`) **and**
-`UPSITEHEALTH_P1_HISTORY=yes`; refuses unless the server reports branch
-`br-noisy-glade-b4rjvu65`; fails loudly if migration 5 is not applied;
-every expected refusal runs on its own connection inside
-`BEGIN … ROLLBACK`; the only committed deletion is a test-owned website;
-cleanup deletes only that run's organizations and users (the 196
-historical users and 196 sessions on `itest-ci` are never touched).
+This handoff file is a 9th change once written.
 
-### P1.3 Next-day sequence — each step its own explicit approval
+**Local verification on 2026-11-14** (all exit 0):
 
-Runbook: `docs/operations/p1-migration-runbook.md` (approval letters in its
-section 0). **Approval for one step never authorises the next.** Approvals
-from previous conversations do not carry forward.
+| Command                                                                                                                                                                                                                                               | Result                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npx vitest run` on the 11 DB-tooling suites (`db-rehearsal`, `db-reconcile-shared`, `prisma-safety`, `db-readiness`, `db-drift`, `db-migrate-test`, `db-definitions`, `db-backup`, `db-verify-child`, `migration-prerequisites`, `dev-crawl-worker`) | 11 files, **1016 passed** (`db-rehearsal` 294, `db-reconcile-shared` 153)                                                                     |
+| `npx vitest run tests/integration/test-db-guard.test.ts` (throwaway clone, no `.env`)                                                                                                                                                                 | 71 passed                                                                                                                                     |
+| `npx tsc --noEmit -p .`                                                                                                                                                                                                                               | exit 0                                                                                                                                        |
+| `npm run check` (throwaway clone at `3fab39c` + the 8 files, no `.env`, DB variables unset)                                                                                                                                                           | exit 0; 101 files passed, 38 skipped; **2600 passed**, 1 expected fail (pre-existing `test.fails` in `stage2-decisions`), 281 skipped, 9 todo |
+| `git diff --check`                                                                                                                                                                                                                                    | exit 0                                                                                                                                        |
 
-1. Review the runbook and the test file (offline; no approval needed).
-2. **Ask for approval A:** the read-only baseline and pre-flight on
-   `itest-ci` (runbook steps 2–4).
-3. Perform it: verify endpoint, branch, database, role and marker; record
-   counts (readiness counts 7 tables; users, sessions, findings and finding
-   events need the read-only count script); fingerprint; drift must list
-   only migration 5's objects; `migrate status` must show only 5 pending.
-4. **Ask for approval B:** applying migration 5 to `itest-ci` (owner
-   snapshot branch recommended first).
-5. Re-check the migration 5 hash, then apply it (runbook step 5) — only
-   after B.
-6. **Approval C:** read-only post-migration readiness, drift (exit 0),
-   fingerprint comparison and catalog checks (runbook steps 6–7).
-7. **Approval D1:** the finding-history test run:
-   `UPSITEHEALTH_P1_HISTORY=yes node --env-file="$HOME/.config/upsitehealth/neon-itest.env" node_modules/vitest/vitest.mjs run tests/integration/finding-history.test.ts`
-8. **Approval D2, once per file:** `recommendation-events.test.ts`,
-   `stage2-decisions.test.ts`, `recommendation-lifecycle.test.ts` (runbook
-   step 9).
-9. **Approval F:** the final read-only integrity comparison (runbook step
-   10); report results. Any residue is reported, never deleted.
+The 38 skipped files are the integration suites, which need a local
+`TEST_DATABASE_URL`; they were **not** run in this cycle.
 
-Rollback (approval E): snapshot / point-in-time restore preferred.
+---
 
-### P1.4 Limitations and unverified assumptions
+## B. Today's work (2026-11-14)
 
-- Nothing about P1 has run on the real tables yet; the probe used copied
-  tables with the same foreign-key actions.
-- `finding-history.test.ts` has never run; its assertions were traced by
-  hand against the code, not executed.
-- The explanation of why RESTRICT also let the website cascade through is
-  an inference from the probe result.
-- After migration 5 is applied, other integration suites that run the
-  findings sync (`crawler`, `finding-status`, `analysis-recovery`,
-  `content-findings`) will write events; running them is optional and
-  separately approved.
-- The running dev app uses the shared database (no table there): it only
-  runs a read-only table check and keeps the old code path.
-- The rule-set version is a label; bump enforcement (pinning golden-file
-  hashes) is proposed, not implemented.
+Product and security work, **committed** on this branch:
 
-### P1.5 Phase A is unchanged and protected
+- `d0b20b4` and `38c145b`: team-only Content Plan in the report, with selective actions.
+- `ab4e9c5`: client-ready report handoff.
+- `3fab39c`: CLIENT lockdown. CLIENT members get the non-member 404 on every organization page, action and export. They are also excluded from alert fan-out, the inbox, member lists and assignee identity. The owner committed this after the security review.
 
-Rehearsal Phase A on `manual-backup` stays **migration 4 only**, using
-`sql --file=prisma/rehearsal/4_recommendation_identity.sql` and
-`resolve-applied 4_recommendation_identity` (section 9). **Never use
-`deploy` / `prisma migrate deploy` for Phase A**: it would also apply
-migration 5.
+Database-safety hardening, **uncommitted** (details in
+`docs/DEVELOPMENT-STATUS.md`, entry "2026-11-14 — Database-safety tooling"):
 
-### P1.6 Database contact during the session (all owner-approved, `itest-ci` only, 31 October)
+1. **Preconditions for `resolve-applied` in the rehearsal wrapper.** Inside the read-only proof transaction, the wrapper reads the history table, the history rows and the catalog. It refuses when:
+   - the migration file is unknown, or has no reviewed object list;
+   - an expected object is missing or lies outside `public`;
+   - the migration is already recorded as applied, or was rolled back;
+   - an earlier migration is not recorded as applied.
+2. **`resolve-applied 0_baseline` is always refused** (`BASELINE_UNVERIFIED`). A complete, trustworthy baseline comparison could not be built safely, so the wrapper refuses instead. An interim partial check was removed rather than kept. **Consequence:** step 1 of the documented rehearsal sequence in `docs/operations/rehearsal-target.md` cannot run until a reviewed full baseline verification exists.
+3. **Attestation validation** (`prisma/safety.ts`). `parseRehearsalAttestation` validates the whole structure. `rehearsalWriteProblem` re-validates it and refuses NaN, non-finite, expired or future timestamps. The existing binding checks are unchanged.
+4. **`createMarker` failures are classified** as "nothing written", "rolled back" or "unknown". An unknown outcome tells the operator to inspect the branch read-only before any retry.
+5. **Parser.** `Object.hasOwn` replaces `in`, so inherited keys such as `constructor` are unknown commands.
+6. **Shared reconciliation.** Halt files are re-inspected right after the advisory lock is taken and before any write. A halt that appeared in the meantime refuses, with a rollback, nothing sent, and the other runner's halt left untouched.
 
-- ~18:14–18:27: read-only identity proof and baseline, the lifecycle
-  integration run (`recommendation-events` + `stage2-decisions`: 26
-  passed, 1 expected fail, 3 to-do), read-only post-run proof (identical
-  counts and schema digests).
-- ~18:56: read-only check after the owner's `recommendation-lifecycle.test.ts`
-  run (3 passed): no residue, nothing changed.
-- Evening: the owner's PostgreSQL probe runs (first 21/24 with three
-  probe/expectation flaws, corrected run 24/24).
-- 1 November: no database contact.
+Mutation testing broke one check per fix; each mutation was caught, and every file was restored byte-identical. Tests added: +52 in `db-rehearsal`, +2 in `db-reconcile-shared`. No existing assertion was weakened. The only replaced expectation, `/expired/` → `/malformed/`, is stricter.
 
-## 1. Repository
+---
 
-- **Branch and commit:** `main` at `26e71fc`. Nothing staged, nothing
-  committed since.
-- **Working tree (1 November, end of day):** **79 modified, 46 untracked**
-  (`git status --porcelain`). It includes the 31 October rehearsal work and
-  everything from 1 November (recommendation accuracy, Organic Growth
-  Starter, UI/UX sprint, lifecycle fixes, P1). Preserve all of it.
-- **Preserved:** the tag `backup/main-before-stage2-m1`, the branch
-  `stage2-m1-verified` and its worktree (shown as `prunable`; do not prune
-  or repair it).
-- **Unchanged:** `prisma.config.ts`; `.env` (ignored by Git, not edited);
-  `~/.config/upsitehealth/` (`env.before-2026-10-25`, `neon-itest.env`,
-  `neon-test.sh` only); migrations 0–4 and `prisma/rehearsal/`.
-- **Standing rules:**
-  - no reset, stash, clean, revert or delete;
-  - no staging, commits or pushes unless asked;
-  - never print credentials or URLs.
+## C. Outstanding findings
 
-## 2. Latest verification
+| #   | Finding                                                                                                                                                                                                                                                                                                                                                                                                            | Blocks what                                                                                                | Next step                                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | `resolve-applied 0_baseline` is refused; no complete baseline verification exists (columns with types, nullability and defaults; keys; FK actions; checks; index definitions; sequences)                                                                                                                                                                                                                           | The rehearsal sequence in `rehearsal-target.md`, from step 1                                               | Design and review a full read-only baseline verifier, offline first                                                                                                                                                                                                                             |
+| C2  | **Guard-hash baseline mismatch.** In `~/UpSiteHealth-backups/guard-hashes-baseline-2026-11-12.txt` (24 files, file SHA-256 `a4bda9d1…`), 22 match and 2 differ: `prisma/safety.ts` (baseline `23f8a7c7…`, now `2167f3020d0647772dbd43c77e2c339782c4778d9ad1ba864509291172ab2845`) and `scripts/db-rehearsal/run.ts` (baseline `17fec6b0…`, now `293ea35affb1f02f4e8f9a2a83a0f2b612a0d1a1b2859ad5c0fe5cf41dbadd90`) | Nothing technically: no code reads the baseline. It does block any claim that the guards are "as reviewed" | Owner reviews the two guard-file diffs. If approved, record a **new** dated file (e.g. `guard-hashes-baseline-2026-11-14.txt`) beside the old ones (runbook §5.3 step D). Never edit the older baselines. The hashes above are candidates only, valid only if the files are committed unchanged |
+| C3  | `scripts/db-reconcile-shared/run.ts` (the shared write wrapper, changed today) is **not** in the guard baseline                                                                                                                                                                                                                                                                                                    | Coverage gap only                                                                                          | Owner decides whether the next baseline should add it                                                                                                                                                                                                                                           |
+| C4  | The 8 safety files are uncommitted                                                                                                                                                                                                                                                                                                                                                                                 | Tomorrow's work rests on an uncommitted guard change                                                       | Owner reviews, then commits (suggested message below)                                                                                                                                                                                                                                           |
+| C5  | Integration suites (38 files) were not run in this cycle, including `client-lockdown` and `client-limits`                                                                                                                                                                                                                                                                                                          | Real-PostgreSQL confirmation of the committed lockdown                                                     | Run them against a **local** test database only, with owner approval                                                                                                                                                                                                                            |
+| C6  | **Shared integration-tests state is unresolved** (section D)                                                                                                                                                                                                                                                                                                                                                       | Every shared operation                                                                                     | Owner investigation; nothing to run                                                                                                                                                                                                                                                             |
+| C7  | Migration 5 is not applied anywhere; its PostgreSQL behaviour is unverified (section E)                                                                                                                                                                                                                                                                                                                            | P1 finding history on a real database                                                                      | Accepted gap (owner, 13 Nov)                                                                                                                                                                                                                                                                    |
+| C8  | The halt-file inspection after the lock is tested only with the offline fake server                                                                                                                                                                                                                                                                                                                                | Real-PostgreSQL proof of the race fix                                                                      | Acceptable for now; covered by the next approved real run's preflight                                                                                                                                                                                                                           |
 
-- **`npm run check`** with `TEST_DATABASE_URL`, `UPSITEHEALTH_ISOLATED_TEST_DB`,
-  `UPSITEHEALTH_TEST_DB_HOST`, `UPSITEHEALTH_P1_PROBE` and
-  `UPSITEHEALTH_P1_HISTORY` unset: **exit 0; 1,833 passed, 1 expected
-  fail, 244 skipped** (including the 8 finding-history and 24 probe
-  tests), 9 to-do. Typecheck, lint and formatting clean.
-- **Since that run:** only documentation changed (this file, the runbook's
-  approval list and dates); formatting re-checked.
+Suggested commit message for C4, if the owner approves:
 
-## 3. Rehearsal target: implemented, not enabled
+```
+fix(db-safety): harden rehearsal resolve, attestation, marker and halt race
 
-Design and procedures: `docs/operations/rehearsal-target.md`.
-
-- **`prisma/safety.ts`:**
-  - `NEON_REHEARSAL_TARGETS` (**empty**, so every rehearsal use is refused);
-  - `rehearsalListProblem` and `rehearsalUrlProblem`;
-  - `REHEARSAL_MARKER` (`upsitehealth_rehearsal.marker`);
-  - `readRehearsalAttestation` and `rehearsalWriteProblem`, the Prisma
-    CLI guard that refuses rehearsal writes without the wrapper's
-    attestation.
-- **`scripts/crawl-worker/database.ts`:**
-  - `DatabaseTarget`, `TARGET_SETTINGS_FILES`;
-  - `chooseRehearsalDatabase`, `chooseDatabase`;
-  - `rehearsalServerProblem`, `rehearsalMarkerState`.
-- **`scripts/db-readiness/run.ts`:** `proveTarget`, the one server proof
-  used by readiness, scoped drift and definitions.
-- **`--target=rehearsal`** on `db:readiness`, `db:drift:scoped` and
-  `db:definitions`: read-only, marker required.
-- **Wrapper:** `npm run db:rehearsal` (`scripts/db-rehearsal.ts`,
-  `scripts/db-rehearsal/run.ts`).
-  - Read-only: `preflight` (bootstrap, no marker), `preflight --write`,
-    `status`.
-  - Writes: `create-marker`, `deploy`, `resolve-applied <migration>`,
-    `sql --file=prisma/rehearsal/<file>.sql`. Each needs
-    `--confirm-branch=<branch ID>` and `--sha256=<approved hash>`, a fresh
-    live proof, and a check afterwards.
-  - Not available: `migrate reset`/`dev`, `db push`/`seed`, Studio,
-    unreviewed SQL, or `resolve --rolled-back`.
-- **Never `rehearsal`:** the worker, `next dev`, the integration tests,
-  Prisma Studio and `prisma.config.ts`.
-- **Tests:** `tests/db-rehearsal.test.ts` (129) and
-  `tests/migration-prerequisites.test.ts` (11).
-
-## 4. `manual-backup` connection details (no secrets)
-
-| Item             | Value                                                          | Status                              |
-| ---------------- | -------------------------------------------------------------- | ----------------------------------- |
-| Neon project     | `small-morning-39288389`                                       | documented                          |
-| Branch           | `manual-backup`, `br-aged-boat-b437p0gm`, parent `itest-ci`    | **unverified** (documentation only) |
-| Endpoint         | `ep-empty-dream-b4t4xm17`                                      | supplied by the owner               |
-| Host             | `ep-empty-dream-b4t4xm17.c-6.us-east-2.aws.neon.tech` (direct) | supplied by the owner               |
-| Database         | `upsitehealth_test`                                            | supplied by the owner               |
-| Role             | `upsitehealth_tester` (same name as on `itest-ci`)             | supplied by the owner               |
-| Parameters       | `sslmode=require&channel_binding=require`                      | supplied; both pass validation      |
-| Password         | not shared, never to be pasted in chat                         | the owner resets it first           |
-| Documented state | history 0–3 finished, migration 4 pending, no rows             | **unverified**                      |
-
-**Checked offline:**
-
-- the URL passes for read and write with that role;
-- `channel_binding` is kept, including in the read-only URL;
-- the role does not match a schema name, so the 27 October `search_path`
-  trap does not apply;
-- once the endpoint is listed, it is refused as `test` and as `app`.
-
-**Limit:** `channel_binding` is enforced only on the Prisma engine's
-connections. node-postgres (readiness, definitions, the wrapper's identity
-proofs) ignores it in the URL. Do not claim otherwise.
-
-## 5. Neon console checks (owner, before anything else)
-
-- The branch is named `manual-backup`, its ID is `br-aged-boat-b437p0gm`,
-  and its parent is `itest-ci`.
-- Endpoint `ep-empty-dream-b4t4xm17` belongs to this branch and is
-  read-write.
-- Database `upsitehealth_test` and role `upsitehealth_tester` exist, with
-  the expected permissions.
-- **The inherited password has been reset on this branch.** It is very
-  likely the same as `itest-ci`'s; a reset here does not change
-  `itest-ci`.
-- Whether a separate read-only role will be created (recommended). If so,
-  `readRole` and `REHEARSAL_DATABASE_URL` change.
-- The restore options: point-in-time retention, or a snapshot child branch.
-- The current contents and migration state. `preflight` and readiness will
-  confirm them later.
-
-## 6. Settings file (the owner creates it; never with a placeholder)
-
-```sh
-umask 077
-cat > ~/.config/upsitehealth/neon-rehearsal.env <<'EOF'
-REHEARSAL_DATABASE_URL=postgresql://upsitehealth_tester:<NEW_PASSWORD>@ep-empty-dream-b4t4xm17.c-6.us-east-2.aws.neon.tech/upsitehealth_test?sslmode=require&channel_binding=require
-REHEARSAL_WRITE_DATABASE_URL=postgresql://upsitehealth_tester:<NEW_PASSWORD>@ep-empty-dream-b4t4xm17.c-6.us-east-2.aws.neon.tech/upsitehealth_test?sslmode=require&channel_binding=require
-EOF
-chmod 600 ~/.config/upsitehealth/neon-rehearsal.env
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
 
-- **Allowed keys:** only these two.
-- **Refused:** a file that also sets `DATABASE_URL`, `DIRECT_URL` or
-  `TEST_DATABASE_URL`.
-- **Mode:** must be `0600`.
-- **Shell:** environment variables are never used.
-- **Password:** percent-encode any special characters.
-- **URL:** direct host only; no `options`, `pgbouncer` or `uselibpqcompat`.
-- **`.env`:** never put this URL in it, not even commented out.
+---
 
-## 7. Allowlist entry, waiting for the owner's confirmation
+## D. Shared Neon safety history
 
-Add it only when the owner confirms the branch identity and authorises the
-code change. The test "ships empty, and empty refuses everything" in
-`tests/db-rehearsal.test.ts` must then be updated in the same change.
+> **No shared database operation is authorized by this handoff.**
 
-```ts
-export const NEON_REHEARSAL_TARGETS: readonly RehearsalTarget[] = [
-  // Project small-morning-39288389, branch `manual-backup`
-  // (br-aged-boat-b437p0gm), verified in the Neon console on <date>.
-  {
-    endpoint: "ep-empty-dream-b4t4xm17",
-    branch: "br-aged-boat-b437p0gm",
-    database: "upsitehealth_test",
-    readRole: "upsitehealth_tester",
-    writeRole: "upsitehealth_tester",
-  },
-];
-```
+**Verified in repo docs** (`docs/operations/shared-reconciliation-runbook.md` §0, §5.2, §5.3, §6.1):
 
-## 8. First live command (after approval)
+- **Shared target.** Branch `integration-tests` (`br-noisy-dust-b4i1uvhg`), endpoint `ep-dark-rain-b4ve04n3`, database `upsitehealth_test`. `prisma/safety.ts` refuses Prisma writes to `ep-dark-rain`, and there is no override.
+- **Freeze** re-established 2026-11-12 00:21:36 IST (2026-11-11 18:51:36 UTC).
+- **Recovery copy (`SNAPSHOT` in code).** `final-recovery-integration-12Nov`: branch `br-proud-dream-b45misjr`, endpoint `ep-delicate-brook-b43bh8jv`, database `upsitehealth_test`.
+  - Parent: `integration-tests`, from Head.
+  - Created 2026-11-11 18:56:01 UTC, after the freeze.
+  - Auto-delete: never. Untouched: owner-confirmed.
+  - It is a **fallback copy**: recovery means pointing the app at that endpoint. It is **not** an in-place restore.
+  - External scheduler absent: **not independently verified**.
+- **Expected baseline counts:** 1 / 3 / 14 / 10 / 59.
+- **§5.3 steps A–I** need one owner approval per step. Before any operation, a fresh read-only `plan` must show the exact identity and **0 other sessions**.
+- **Dress rehearsal.** `rehearsal-integration-11Nov` passed all 8 operations to stage 8 (§6.1). Migration 5 was absent before and after. That branch has since been discarded by the owner.
+- **Other branches.** `itest-ci` is `br-noisy-glade-b4rjvu65` / `ep-long-surf-b4hm6pyi`.
+- **Local state today.** No halt file exists at `~/.config/upsitehealth/reconcile-shared.halt` or `<repo>/.reconcile-shared.halt`. The attestation directory `~/.config/upsitehealth/rehearsal-attestations/` is empty.
 
-```sh
-npm run db:rehearsal -- preflight
-```
+**UNVERIFIED IN REPO DOCS** (recorded only in the previous assistant's session notes; the owner must confirm before anyone relies on it):
 
-- **Read-only;** no marker needed.
-- **Checks:** the server-reported `neon.endpoint_id`, `neon.branch_id`,
-  `current_database()` and `current_user`, and that no test marker names
-  this endpoint.
-- **Reports:** the marker state (expected: absent) and the `create-marker`
-  and `deploy` hashes to approve next.
-- **If the branch differs:** it refuses, and nothing is read.
-- **Then:** `npm run db:rehearsal -- preflight --write`.
+- A real run on `integration-tests` began on 2026-11-11 (UTC):
+  - operation 1 `search-path` committed at 21:09:44 UTC;
+  - operation 2 `resolve-0_baseline` committed at 21:14:35 UTC (stage 2).
+- The verification `plan` at 21:15:03 UTC saw **10 unidentified other sessions**. An earlier burst of 9 had appeared at 18:42 UTC. Both were gone before they could be identified.
+- The `plan` at 21:30:02 UTC reported **no known stage**: `crawl_runs` 15 (was 14) and `recommendations` 26 (was 10). Something wrote data during the freeze, and the writer is unknown. The wrapper refuses because of `BASELINE_COUNTS`.
+- The recovery copy `br-proud-dream` (18:56 UTC) predates those rows.
+- **Run status: STOPPED.** No operation after 2 was run.
+- The runbook §6.1 table records the **dress rehearsal**, not this real run. The runbook has no record of the real run.
 
-## 9. Phase A: `manual-backup` (migration 4 only)
+So the shared database is presumed to be at a **partial, unrecorded state** (stage 2 plus unexplained rows). That is not confirmed. Do not run anything against it. The first step is the owner's own investigation (Neon console: branch history and monitoring; any local app or worker that was running around 21:15 UTC on 11 Nov).
 
-**Never `deploy`** here: since migration 5 exists, `deploy` would apply 4
-**and** 5 (`docs/operations/rehearsal-target.md`, plan A). Each step is a
-separate approval:
+Note on finding C1: the shared run's operation 2 (`resolve-0_baseline`) went through the reconciliation wrapper's own reviewed path (direct `pg`, `HISTORY_DDL`), **not** through the rehearsal wrapper refused today. Today's refusal does not undo it or judge it.
 
-1. `create-marker --confirm-branch=br-aged-boat-b437p0gm --sha256=<marker hash from preflight>`
-2. Read-only baseline:
-   - `npm run db:readiness -- --target=rehearsal` (0–3 finished; 4 and 5
-     not applied);
-   - `npm run db:drift:scoped -- --target=rehearsal` (4's and 5's objects);
-   - `npm run db:definitions -- --target=rehearsal --out=<absolute new path in ~/UpSiteHealth-backups/>`.
-3. `sql --file=prisma/rehearsal/4_recommendation_identity.sql --confirm-branch=br-aged-boat-b437p0gm --sha256=d336beb6313f2656e9c5293d4d6d364b5e6e15cb1ef017d0b774bdf911ef7f1f`
-4. `resolve-applied 4_recommendation_identity --confirm-branch=br-aged-boat-b437p0gm --sha256=0a8d43347191efabcb6d5441a389af897c18a7c930ebff5463076b14e367b913`
-5. Verify:
-   - readiness: 0–4 finished, all objects of 1–4 present, capabilities on,
-     5 "Not applied";
-   - drift: migration 5's objects only;
-   - the fingerprint compared with `~/UpSiteHealth-backups/definitions-fingerprint-itest-ci-2026-10-31.json`
-     (`npm run db:definitions:compare`): identical apart from the
-     `upsitehealth_rehearsal` schema.
-6. **On failure:** stop and inspect read-only. Restore from a snapshot or
-   treat the branch as disposable. Never "reset from parent".
+---
 
-## 10. Phase B: a child branch of `integration-tests` (the real reconciliation rehearsal)
+## E. Migration 5
 
-1. **Owner:**
-   - create a child branch of `integration-tests` and record its ids;
-   - reset the inherited `upsitehealth_test` password there;
-   - give it its own allowlist entry and settings, in a separate approved
-     change.
-2. **Read-only first:** `preflight`, `create-marker`, then the baseline.
-   - Readiness should show: no history, 1 42/42, 2 0/29, 3 7/7, 4 0/61.
-   - Drift should show 28 differences.
-   - Record the row counts.
-3. **The ordered sequence**, one approval each:
-   1. `resolve-applied 0_baseline --sha256=0f2c7cc615389e652aa56b7567a403bdd03cffbdc7cf37363b3c2a798f09d1a7`
-   2. `resolve-applied 1_business_facts --sha256=1f2c310a0e9599d933aa758c7b5c1df0b0c17c365bfba6ffe44f8c5d79617853`
-   3. `sql --file=prisma/rehearsal/2_recommendation_events.sql --sha256=1b638d170d57dc4d7729f27960e1b68ded821d91a6db41f72e37b676bb4c8e4c`
-   4. `resolve-applied 2_recommendation_events --sha256=a16b69e581c55317934be1214df8a65c33d5465762c9cadf6e62a0c402125591`
-   5. `resolve-applied 3_crawl_mode --sha256=fd62c4c4a7ee775ad059b9ef9fcdc5e685397796a82a7f5d4a32de9d5b58e6c7`
-   6. `sql --file=prisma/rehearsal/4_recommendation_identity.sql --sha256=d336beb6313f2656e9c5293d4d6d364b5e6e15cb1ef017d0b774bdf911ef7f1f`
-   7. `resolve-applied 4_recommendation_identity --sha256=0a8d43347191efabcb6d5441a389af897c18a7c930ebff5463076b14e367b913`
+- `prisma/migrations/5_finding_resolution_events/migration.sql`, SHA-256 `24c220bd75d2fb37923f510bc7a77850767fba6a9909c0d74c1e1642466d8f26` (re-hashed today).
+- It is the P1 finding resolution events migration: the `SeoFindingEvent` table, enums, triggers and RLS. It is committed in `b02e185`.
+- It is **not applied** to `integration-tests`, `itest-ci` or any other database, and it is not part of the reconciliation (the wrapper's eight operations cover migrations 0–4 only).
+- `finding-history` (8 tests) and `p1-postgres-probe` are itest-ci-only and were not run in this cycle. The PostgreSQL behaviour (RLS, cascade, triggers) is **unverified**; the owner accepted this on 13 Nov.
+- Applying it anywhere needs its own reviewed plan and owner approval. Nothing here authorizes it.
 
-   Each also takes `--confirm-branch=<the child's branch ID>`. After step
-   1, confirm `public._prisma_migrations` exists. After steps 3 and 6,
-   confirm nothing landed outside `public`.
+---
 
-4. **Expected:**
-   - the 67 missing objects created, plus the marker schema;
-   - five history rows in order;
-   - **no data changes**: row counts identical.
-5. **Verify:** readiness, drift (exit 0) and the fingerprint against
-   `itest-ci`.
-6. **On failure:** discard the child and repeat on a new one.
+## F. Tomorrow's ordered sequence
 
-## 11. Phase C: the shared `integration-tests` database (only after B passes)
+Each step stops for the owner where marked.
 
-- **Now:** 1 organisation, 3 websites, 13 crawl runs, 10 recommendations,
-  59 business facts. No `_prisma_migrations`; 1 and 3 present but
-  unrecorded; 2 and 4 absent.
-- **Never run a plain `migrate deploy` there** before the history is
-  baselined.
-- **Writes are refused today, with no override.** Decide between a
-  narrowly scoped, reviewed guard change and the owner running the
-  rehearsed steps.
-- **Before:**
-  - a snapshot branch;
-  - stop the app and the crawl worker;
-  - read-only readiness, drift, fingerprint and row counts.
-- **Then:** the Phase B sequence with the same hashes.
-- **On failure:** restore the snapshot; never repair in place.
+1. **Owner:** review the 8 uncommitted files, especially the two guard files (`git diff prisma/safety.ts scripts/db-rehearsal/run.ts`).
+2. **Assistant, offline:** re-run the local verification from section A in a throwaway clone with no `.env` and confirm the same totals.
+3. **Owner:** commit (C4). Then approve and record a **new** guard baseline, `guard-hashes-baseline-2026-11-14.txt`, recomputed from the committed files. Decide on C3.
+4. **Owner, outside the assistant:** investigate C6, the shared state, in the Neon console. Answer three questions: what wrote the 1 crawl run and 16 recommendations; whether the 10-session burst came from a local app or worker; and whether the shared run really stopped at stage 2.
+5. **Assistant, offline:** update the runbook with the owner-confirmed facts of the real run. Mark any unconfirmed item as such.
+6. **Owner decision:** how to resume the shared reconciliation, given the changed counts. The options in the runbook spirit are:
+   - a reviewed `BASELINE_COUNTS` change once the freeze truly holds;
+   - falling back to `br-proud-dream`;
+   - a new recovery point.
+     Every option needs its own approved read-only `plan` first.
+7. **Assistant, offline:** design the full baseline verifier (C1), with tests only. Do not enable `resolve-applied 0_baseline` until the owner reviews it.
+8. **Optional, owner-approved:** run the integration suites (C5) on a **local** database.
+9. Product work resumes only after 1–3. Shared-database work waits for 4–6.
 
-Production (`ep-square-mud-b4ito98o`, and Supabase) stays untouched; which
-one is authoritative is still undecided.
+---
 
-## 12. Unproven Prisma behaviours (do not assume)
+## G. Instructions to the next assistant
 
-- That a failed migration rolls back fully. It should, as one implicit
-  transaction, but this has not been observed.
-- Whether `migrate deploy` refuses 2 pending after 3 is recorded. Phase B
-  avoids depending on it.
-- Whether the engine pins `search_path` to `public`. The reviewed SQL pins
-  it.
-- How `db execute` handles explicit `BEGIN`/`COMMIT`.
-- The live proof runs seconds before a Prisma write, on another
-  connection. Only `create-marker` proves identity in the same
-  transaction.
-- There is no `resolve --rolled-back` in the wrapper; recovery is a
-  snapshot restore.
+- **No database contact without explicit, per-step owner approval.** That covers Neon, `integration-tests`, `itest-ci` and any shared, staging or production database.
+  - No migrations and no `prisma migrate resolve`.
+  - No `prisma db execute`, reconciliation, restore or rehearsal writes.
+  - Not even read-only `plan`s.
+- **Never change** any of these:
+  - `.env` files, database URLs or credentials;
+  - halt files, snapshots, recovery artifacts, attestations;
+  - files in `~/UpSiteHealth-backups/`.
 
-## 13. Operations that each need separate approval
+  Never edit an existing guard baseline: record a new dated one only after the owner approves.
 
-- **Code:**
-  - adding the allowlist entry, with its test update;
-  - any wrapper extension (for example `resolve --rolled-back`);
-  - any guard change for the shared database.
-- **Owner, Neon console:**
-  - the verifications above;
-  - the password reset and any read-only role;
-  - creating the settings file;
-  - snapshot branches;
-  - creating the `integration-tests` child branch.
-- **Each live command:**
-  - `preflight`, `preflight --write`, `status`;
-  - `create-marker`;
-  - every readiness, drift and fingerprint run on any target;
-  - `deploy` (not used for Phase A: it would also apply migration 5);
-  - each `resolve-applied`;
-  - each `sql`.
-- **Also:** integration tests on `itest-ci`; anything touching the shared
-  database or production.
-
-## 14. Where things are
-
-- **Rehearsal target, migration audit and plans:**
-  `docs/operations/rehearsal-target.md`.
-- **Environment brief, readiness runs and the `manual-backup` assessment:**
-  `docs/operations/environment-readiness.md`.
-- **Fingerprint tool and both collections:**
-  `docs/operations/database-definitions-fingerprint.md`.
-- **Test database rules:** `docs/operations/testing.md`.
-- **Dated log, newest first:** `docs/DEVELOPMENT-STATUS.md`.
-- **Reviewed SQL:** `prisma/rehearsal/2_recommendation_events.sql`,
-  `prisma/rehearsal/4_recommendation_identity.sql`.
-- **Migrations:** `prisma/migrations/0_baseline` … `4_recommendation_identity`.
-- **Fingerprints** (local, `0600`):
-  - `~/UpSiteHealth-backups/definitions-fingerprint-itest-ci-2026-10-31.json`
-    (SHA-256 `aa97fd73…5e9fbbcb`);
-  - `~/UpSiteHealth-backups/definitions-fingerprint-shared-2026-10-31.json`
-    (`53b6ac28…cbf81a`).
-- **Code:** `prisma/safety.ts`, `scripts/crawl-worker/database.ts`,
-  `scripts/db-readiness/`, `scripts/db-drift/`, `scripts/db-rehearsal/`.
-
-## 15. Prompt for a fresh Claude Code conversation (copy as is)
-
-```text
-You are continuing UpSiteHealth development in a new conversation.
-
-First read, in this order: docs/TOMORROW-STARTING-POINT.md,
-docs/operations/p1-migration-runbook.md and
-docs/specs/finding-resolution-provenance.md. Then inspect the current
-repository state (git status, branch, the migration 5 hash) before taking
-any action, and report anything that differs from the handoff.
-
-Safety rules, which override anything you assume:
-- Preserve every existing modified and untracked file. Never reset, stash,
-  clean, revert, delete or overwrite work.
-- No Git staging, commits, pushes or branch changes without my explicit
-  approval in this conversation.
-- Never access production, Supabase, the shared manual-testing database
-  (integration-tests) or manual-backup.
-- Database work is on itest-ci only, and every database action needs my
-  explicit approval in this conversation. Approvals from earlier
-  conversations do not carry forward, and approval for one step never
-  authorises the next.
-- Never print credentials or connection strings.
-- Never use prisma migrate deploy for rehearsal Phase A.
-
-Immediate next step: review the runbook and
-tests/integration/finding-history.test.ts, then ask me for approval A (the
-read-only itest-ci baseline). Do not apply migration 5 or run any test
-until I approve that specific step.
-```
+- **Never weaken a guard** to make a documented sequence pass. That includes confirmations, identity checks, artifact hashes, `BASELINE_COUNTS`, `NEON_NEVER_REHEARSE` and the `0_baseline` refusal.
+- **Git.** No stage, commit, push, merge, rebase, reset, stash or discard unless the owner asks. Run git with `GIT_OPTIONAL_LOCKS=0`. Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Running checks.** Run `npm run check` in a throwaway clone with no `.env`.
+- **Next.js code.** Read `AGENTS.md` and the guides in `node_modules/next/dist/docs/` before writing any.
+- **Reporting.** Report only what you verified. Label anything taken from notes or memory as unverified. Do not claim a database was untouched unless you checked it.
+- **Where to read first:**
+  1. this file;
+  2. `docs/DEVELOPMENT-STATUS.md` (top entries);
+  3. `docs/operations/shared-reconciliation-runbook.md` §5–§7;
+  4. `docs/operations/rehearsal-target.md`.

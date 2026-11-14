@@ -15,9 +15,16 @@ import {
   type DatabaseChoice,
 } from "../crawl-worker/database";
 import { childEnv, readOnlyUrl, scrub, type DiffResult } from "../db-drift/run";
-import { EXPECTED_OBJECTS } from "../db-readiness/expected";
 import {
+  EXPECTED_OBJECTS,
+  type MigrationObjects,
+} from "../db-readiness/expected";
+import {
+  checkObjects,
   QUERIES,
+  readCatalog,
+  type Catalog,
+  type HistoryRow,
   type ReadOnlyTx,
   type ServerIdentity,
 } from "../db-readiness/report";
@@ -113,7 +120,7 @@ export function parseRehearsalArgs(
     "resolve-applied": ["confirm-branch", "sha256"],
     sql: ["confirm-branch", "sha256", "file"],
   };
-  if (!(op in allowed))
+  if (!Object.hasOwn(allowed, op))
     return {
       error: `Unknown command ${/^[a-z-]{1,30}$/.test(op) ? op : "(unrecognised)"}; migrate reset, db push, db seed and arbitrary SQL are never available here.`,
     };
@@ -314,9 +321,9 @@ export async function runRehearsal(
   // The live proof, read-only; the marker is required except for the
   // bootstrap preflight and for creating it.
   const requireMarker = cmd.op !== "preflight" && cmd.op !== "create-marker";
-  const proved = await prove(deps, choice, requireMarker).catch(
-    (error: unknown) => ({ refused: refusal(error, urls) }),
-  );
+  const proved = await prove(deps, choice, requireMarker, {
+    applied: cmd.op === "resolve-applied",
+  }).catch((error: unknown) => ({ refused: refusal(error, urls) }));
   if ("refused" in proved) return refuse(proved.refused, true);
   const identityLine = (s: ServerIdentity, when: string) =>
     `${when}: endpoint ${s.endpoint}, branch ${s.branch}, database ${s.database}, role ${s.role}, PostgreSQL ${s.serverVersion}`;
@@ -348,7 +355,7 @@ export async function runRehearsal(
   }
 
   // Before any write: nothing a migration creates may sit outside public.
-  if (WRITE_OPS.includes(cmd.op)) {
+  if (write) {
     const misplaced = placementBeforeProblem(proved.placement);
     if (misplaced) return refuse(misplaced, true);
   }
@@ -360,6 +367,17 @@ export async function runRehearsal(
     );
     if (shadowed) return refuse(shadowed, true);
   }
+  // Before resolve-applied: the server must already show the migration
+  // applied (its objects, in order after the recorded ones). Nothing is
+  // created or repaired here; a refusal leaves the branch as it is.
+  if (cmd.op === "resolve-applied") {
+    const unproven = resolveAppliedProblem(
+      cmd.migration,
+      deps.migrations(),
+      proved.applied,
+    );
+    if (unproven) return refuse(unproven, true);
+  }
 
   if (cmd.op === "create-marker") {
     if (marker.state !== "absent")
@@ -370,8 +388,17 @@ export async function runRehearsal(
     try {
       await createMarker(deps.connect(choice.url), choice, entry);
     } catch (error) {
+      const failed =
+        error instanceof MarkerFailure
+          ? error
+          : new MarkerFailure("uncertain", error);
+      const why = refusal(failed.cause, urls);
       deps.err(
-        `Failed: ${refusal(error, urls)} The transaction was rolled back.`,
+        failed.outcome === "nothing-written"
+          ? `Failed: ${why} Nothing was written.`
+          : failed.outcome === "rolled-back"
+            ? `Failed: ${why} The transaction was rolled back; the marker was not created.`
+            : `Failed: ${why} Whether the marker was created is unknown: the connection or COMMIT failed, so the rollback could not be confirmed. Do not retry: inspect the rehearsal branch read-only first (npm run db:rehearsal -- preflight) and continue only from what it shows.`,
       );
       return 1;
     }
@@ -638,13 +665,17 @@ async function prove(
   deps: RehearsalDeps,
   choice: Extract<DatabaseChoice, { ok: true }>,
   requireMarker: boolean,
+  { applied = false }: { applied?: boolean } = {},
 ) {
   const db = deps.connect(choice.url);
   try {
     return await inReadOnlyTransaction(db, async (tx) => {
       const server = await proveTarget(tx, choice, { requireMarker });
       const placement = await readPlacement(tx);
-      return { ...server, placement };
+      // For resolve-applied: what the migration should have created, and
+      // the recorded history, in the same read-only transaction.
+      const applied_ = applied ? await readAppliedFacts(tx) : undefined;
+      return { ...server, placement, applied: applied_ };
     });
   } finally {
     await db.$disconnect().catch(() => {});
@@ -652,15 +683,60 @@ async function prove(
 }
 
 /**
+ * How a failed create-marker ended, as far as this process can tell:
+ * - nothing-written: no marker statement was sent;
+ * - rolled-back: a statement or check failed on a working connection, so
+ *   the transaction was rolled back;
+ * - uncertain: the connection was lost, or the failure came at or after
+ *   COMMIT; the outcome can only be established by inspecting the branch.
+ */
+export type MarkerOutcome = "nothing-written" | "rolled-back" | "uncertain";
+
+export class MarkerFailure extends Error {
+  constructor(
+    readonly outcome: MarkerOutcome,
+    readonly cause: unknown,
+  ) {
+    super(`create-marker failed (${outcome})`);
+  }
+}
+
+/**
+ * Whether an error means the connection (or the transaction's own
+ * handling) failed, rather than a statement on a working connection: then
+ * a rollback cannot be confirmed. Prisma connection and transaction-API
+ * errors, driver connection resets and timeouts.
+ */
+export function isConnectionFailure(error: unknown): boolean {
+  if (error instanceof ServerRefusal) return false;
+  const e = error as { code?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" ? e.code : "";
+  if (/^P(1001|1002|1008|1011|1017|2024|2028)$/.test(code)) return true;
+  if (
+    /^(ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|57P0[1-3]|08\d{3})$/.test(code)
+  )
+    return true;
+  return /connection|terminated|closed|socket|ECONNRESET|EPIPE|ETIMEDOUT|timed? ?out|transaction (already )?closed|Transaction API/i.test(
+    String(e?.message ?? ""),
+  );
+}
+
+/**
  * Creates the marker in one transaction that first proves, in that same
  * transaction, that the server is the entry and has no marker yet, and
- * reads the marker back before committing. Any surprise rolls back.
+ * reads the marker back before committing. Any surprise rolls back. A
+ * failure is reported as a MarkerFailure with what is known about the
+ * outcome: never "rolled back" when the connection or COMMIT failed.
  */
 async function createMarker(
   db: ReadinessDb,
   choice: Extract<DatabaseChoice, { ok: true }>,
   entry: RehearsalTarget,
 ): Promise<void> {
+  // An object, so the callback's updates are visible in the catch below.
+  const progress: { phase: "before" | "writing" | "committing" } = {
+    phase: "before",
+  };
   try {
     await db.$transaction(
       async (tx) => {
@@ -672,6 +748,7 @@ async function createMarker(
           "absent"
         )
           throw new ServerRefusal("the marker appeared before it was created");
+        progress.phase = "writing";
         for (const statement of markerStatements(entry))
           await tx.$executeRawUnsafe(statement);
         const rows = (
@@ -682,12 +759,119 @@ async function createMarker(
         const state = rehearsalMarkerState(entry, rows);
         if (state.state !== "valid")
           throw new ServerRefusal("the marker did not read back as written");
+        // Everything after this point is Prisma's COMMIT.
+        progress.phase = "committing";
       },
       { maxWait: 15_000, timeout: 60_000 },
+    );
+  } catch (error) {
+    const { phase } = progress;
+    throw new MarkerFailure(
+      phase === "committing"
+        ? "uncertain"
+        : isConnectionFailure(error)
+          ? phase === "before"
+            ? // No marker statement was sent before the connection failed.
+              "nothing-written"
+            : "uncertain"
+          : phase === "before"
+            ? "nothing-written"
+            : "rolled-back",
+      error,
     );
   } finally {
     await db.$disconnect().catch(() => {});
   }
+}
+
+// ─── resolve-applied: proof that the migration was already applied ──────────
+
+/** What resolve-applied reads, read-only, before Prisma may record a migration. */
+export type AppliedFacts = {
+  /** The history rows, or null when public._prisma_migrations does not exist. */
+  history: HistoryRow[] | null;
+  catalog: Catalog;
+};
+
+async function readAppliedFacts(tx: ReadOnlyTx): Promise<AppliedFacts> {
+  const [table] = await tx.$queryRawUnsafe<Array<{ present: boolean }>>(
+    QUERIES.historyTable,
+  );
+  const history = table?.present
+    ? await tx.$queryRawUnsafe<HistoryRow[]>(QUERIES.history)
+    : null;
+  return { history, catalog: await readCatalog(tx) };
+}
+
+/**
+ * Why resolve-applied 0_baseline is always refused. Proving the baseline
+ * applied would mean comparing every column (type, nullability, default),
+ * key, foreign key action, check, index definition and sequence with the
+ * catalog, and this wrapper has no reviewed, complete comparison for that;
+ * a partial one (tables, types, indexes) could record a baseline that
+ * differs. Until such a comparison is reviewed and added, the baseline is
+ * never recorded through this wrapper.
+ */
+export const BASELINE_UNVERIFIED =
+  "resolve-applied 0_baseline is refused: this wrapper cannot yet verify the whole baseline schema (columns with their types, nullability and defaults, keys, foreign key actions, checks, index definitions, sequences), so recording it as applied could hide a difference. A separately reviewed, complete baseline verification is required first (docs/operations/rehearsal-target.md).";
+
+/** The latest history row of a migration decides its state (as readiness). */
+function latestRow(history: HistoryRow[], name: string): HistoryRow | null {
+  return history.filter((r) => r.name === name).at(-1) ?? null;
+}
+
+/**
+ * Null when the read-only facts establish that `migration` was already
+ * applied, so recording it with prisma migrate resolve --applied cannot
+ * hide a missing change; else why not. 0_baseline is always refused
+ * (BASELINE_UNVERIFIED). Required: a reviewed object list
+ * (EXPECTED_OBJECTS); every object present in
+ * public and none elsewhere; not already recorded as finished or rolled
+ * back; and every earlier migration recorded as finished. Never repairs.
+ */
+export function resolveAppliedProblem(
+  migration: string,
+  files: MigrationFile[],
+  facts: AppliedFacts | undefined,
+): string | null {
+  // First and unconditionally: the baseline is never recorded here.
+  if (migration === "0_baseline") return BASELINE_UNVERIFIED;
+  if (!facts)
+    return `whether ${migration} was applied could not be established (the catalog and history were not read).`;
+  const file = files.find((f) => f.name === migration);
+  if (!file) return `${migration} is not a migration in prisma/migrations.`;
+  const expected: MigrationObjects | null = Object.hasOwn(
+    EXPECTED_OBJECTS,
+    migration,
+  )
+    ? EXPECTED_OBJECTS[migration as keyof typeof EXPECTED_OBJECTS]
+    : null;
+  if (!expected)
+    return `${migration} has no reviewed object list (scripts/db-readiness/expected.ts), so whether it was applied cannot be established.`;
+  const check = checkObjects(expected, facts.catalog);
+  if (check.expected === 0)
+    return `no objects could be read from ${migration}, so whether it was applied cannot be established.`;
+  if (check.outsidePublic.length)
+    return `${migration}'s objects exist outside public (${check.outsidePublic.join(", ")}); it was not applied as written. Nothing is repaired here.`;
+  if (check.state !== "present")
+    return `${migration} is not fully applied on this branch (${check.found} of ${check.expected} objects; missing ${check.missing.slice(0, 5).join(", ")}${check.missing.length > 5 ? ", …" : ""}); recording it as applied would hide the missing change. Nothing is applied or repaired here.`;
+  const ordered = files.map((f) => f.name).sort((a, b) => (a < b ? -1 : 1));
+  const earlier = ordered.slice(0, ordered.indexOf(migration));
+  const history = facts.history;
+  if (history) {
+    const own = latestRow(history, migration);
+    if (own && !own.rolledBack && own.finished)
+      return `${migration} is already recorded as applied; there is nothing to resolve.`;
+    if (own?.rolledBack)
+      return `${migration} is recorded as rolled back; review the history read-only before recording it as applied.`;
+  }
+  const unrecorded = earlier.filter((name) => {
+    const row = history ? latestRow(history, name) : null;
+    return !row || row.rolledBack || !row.finished;
+  });
+  if (unrecorded.length)
+    return `earlier migrations are not recorded as applied (${unrecorded.join(", ")}); resolve or deploy them first, in order.`;
+  return null;
 }
 
 /** The repository's reviewed SQL directory. */
