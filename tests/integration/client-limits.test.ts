@@ -130,6 +130,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
       const o = await org("fanout");
       await check(o.site, "UPTIME", "SUCCESS");
       await check(o.site, "UPTIME", "CONNECTION_ERROR");
+      await check(o.site, "UPTIME", "CONNECTION_ERROR"); // confirms the outage
       const opened = await db.alertEvent.findFirstOrThrow({
         where: { websiteId: o.site.id, type: "UPTIME_INCIDENT_OPENED" },
       });

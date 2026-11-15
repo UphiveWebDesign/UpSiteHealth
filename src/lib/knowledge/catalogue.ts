@@ -14,7 +14,7 @@ import type { BenefitCategory } from "@/lib/recommendations/benefits";
  * open findings are grouped by that text. Changing it splits or duplicates
  * existing recommendations, so it needs a data plan, not just a version bump.
  */
-export const KNOWLEDGE_VERSION = "k4";
+export const KNOWLEDGE_VERSION = "k5";
 
 export const SEO_LIMITS = {
   titleMin: 15,
@@ -299,7 +299,7 @@ export const SEO_CATALOGUE = {
     severity: "LOW",
     title: "Page is excluded from search (noindex)",
     description:
-      "A robots meta tag tells search engines not to index this page.",
+      "A robots meta tag or X-Robots-Tag header tells search engines not to index this page.",
     recommendation:
       "Remove noindex if this page should appear in search results.",
     scope: "PAGE",
@@ -313,11 +313,19 @@ export const SEO_CATALOGUE = {
       ...ALL,
       assumption: "The page is meant to appear in search results.",
     },
-    evidence: { needs: "The page's robots meta tag.", freshness: PAGE_FRESH },
-    passes: "no robots meta tag contains noindex",
+    evidence: {
+      needs:
+        "The page's robots meta tag and X-Robots-Tag response header (crawls since 2026-11-14 record the header).",
+      freshness: PAGE_FRESH,
+    },
+    passes:
+      "neither the robots meta tag nor an X-Robots-Tag header that applies to search engines contains noindex or none",
+    verification:
+      "Confirmed when a later crawl reloads and analyses each affected page, records its response headers, and finds no noindex in the robots meta tag or in an X-Robots-Tag header for all crawlers, Googlebot or Bingbot. Pages the crawl skips, cannot fetch, or loads without recording headers stay open.",
     limits: [
       "Some pages should stay noindex (for example thank-you or internal search pages).",
-      "Only the robots meta tag is checked, not an X-Robots-Tag header.",
+      "Header directives for other named crawlers are not counted; only those for all crawlers, Googlebot or Bingbot.",
+      'Robots meta tags aimed at one crawler (for example <meta name="googlebot">) are not read.',
       "Removing noindex allows indexing; it does not confirm the page is indexed.",
     ],
   },
@@ -583,6 +591,73 @@ export const SEO_CATALOGUE = {
       "One crawl's response: a temporary outage looks the same as a lasting fault; the evidence marks responses that may be temporary.",
       "A sitemap that loads but lists no pages is not reported here (see the Integrations page).",
       "Reading the sitemap does not mean its pages are indexed.",
+    ],
+  },
+  TECH_REDIRECT_CHAIN: {
+    severity: "LOW",
+    title: "Redirect chain",
+    description:
+      "This URL passes through two or more redirects before it reaches its final page, which slows visitors down and wastes crawl effort.",
+    recommendation:
+      "Point the redirect straight at the final URL, and update links that use this URL.",
+    scope: "PAGE",
+    benefit: "crawling-indexing",
+    effort: "small",
+    effortReason:
+      "Usually one redirect rule to change, plus any links that still use the old URL.",
+    confidence: "high",
+    confidenceReason: "Counted from the redirects the crawler followed.",
+    applies: {
+      ...ALL,
+      assumption:
+        "A moved URL should redirect once, directly to its current page.",
+    },
+    evidence: {
+      needs:
+        "The URL's redirect count and final URL, recorded by the crawl that fetched it.",
+      freshness: PAGE_FRESH,
+    },
+    passes: "the URL reaches its final page with at most one redirect",
+    verification:
+      "Confirmed when a later crawl fetches each affected page again and it answers directly or after a single redirect. Pages the crawl skips or cannot fetch stay open.",
+    limits: [
+      "The crawl records the start URL, the final URL and the number of redirects, not the URLs in between.",
+      "Redirects that end on another site are not reported.",
+      "A loop, or more than five redirects, stops the fetch: the URL is reported as one that could not be fetched, not as a chain.",
+      "A chain that still has two or more redirects but now ends on another site is not reported anew, and stays open rather than counting as fixed.",
+    ],
+  },
+  TECH_LINK_TO_REDIRECT: {
+    severity: "INFO",
+    title: "Internal links point to a redirect",
+    description:
+      "Pages on the site link to a URL that redirects, so every visit and crawl takes an extra hop.",
+    recommendation:
+      "Change the links on the listed pages to point directly at the final URL.",
+    scope: "PAGE",
+    benefit: "crawling-indexing",
+    effort: "small",
+    effortReason:
+      "Edit the links on the listed pages; a link in a menu, footer or template fixes many pages at once.",
+    confidence: "high",
+    confidenceReason:
+      "Measured from the links on the crawled pages and the redirect the crawler followed.",
+    applies: {
+      ...ALL,
+      assumption: "Internal links should point at a page's current URL.",
+    },
+    evidence: {
+      needs:
+        "The links on the linking pages, and the redirect count and final URL of the linked URL, from the same crawl.",
+      freshness: PAGE_FRESH,
+    },
+    passes: "no analysed page links to the URL, or the URL no longer redirects",
+    verification:
+      "Confirmed when a later crawl fetches each affected page and it no longer redirects, or when a completed crawl that read the links of every page finds no page still linking to it. URLs and linking pages the crawl skips or cannot fetch stay open, as do findings when the crawl stopped at its page limit or some pages failed.",
+    limits: [
+      "Only links on pages this crawl analysed are counted; at most 20 linking pages are listed, with the total, and a crawl that stopped early is marked partial.",
+      "Redirects that end on another site, or on an error page, are not reported here (an error page is reported as such).",
+      "A page with more links than the crawler records may hide further links; the evidence says when that happened.",
     ],
   },
 } satisfies Record<string, SeoRuleEntry>;

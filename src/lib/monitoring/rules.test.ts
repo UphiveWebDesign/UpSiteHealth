@@ -1,7 +1,18 @@
 import { describe, expect, test } from "vitest";
 import { normalizeWebsiteUrl, WebsiteUrlError } from "@/lib/websites/url";
 import type { CheckResult } from "./checks";
-import { decideIssue, deriveWebsiteStatus, issueResolution } from "./rules";
+import {
+  confirmedUptimeOutcome,
+  confirmIssueDecision,
+  confirmsFailure,
+  decideIssue,
+  deriveWebsiteStatus,
+  isUptimeDown,
+  issueResolution,
+  uptimeConfirmationWindowMs,
+  UPTIME_FAILURES_TO_CONFIRM,
+  type RecordedCheck,
+} from "./rules";
 
 describe("normalizeWebsiteUrl", () => {
   test.each([
@@ -135,5 +146,142 @@ describe("issueResolution", () => {
     expect(issueResolution(manual, null)).toBe("unverified");
     expect(issueResolution(manual, t(9))).toBe("unverified");
     expect(issueResolution(manual, t(15))).toBe("verified");
+  });
+});
+
+describe("uptime confirmation (a second consecutive failure)", () => {
+  const NOW = new Date("2026-11-15T12:00:00Z");
+  const ago = (min: number) => new Date(NOW.getTime() - min * 60_000);
+  // The default 5-minute interval and the queue's 3 × 2-minute leases.
+  const WINDOW = uptimeConfirmationWindowMs(5, 3 * 2 * 60_000);
+  const r = (over: Partial<CheckResult>): CheckResult => ({
+    type: "UPTIME",
+    outcome: "SUCCESS",
+    result: null,
+    ...over,
+  });
+  const prev = (outcome: CheckResult["outcome"], minutesAgo = 5) => ({
+    outcome,
+    at: ago(minutesAgo),
+  });
+  const confirm = (
+    outcome: CheckResult["outcome"],
+    previous: RecordedCheck | null,
+    type: CheckResult["type"] = "UPTIME",
+  ) => {
+    const result = r({ type, outcome });
+    return confirmIssueDecision(
+      decideIssue(result),
+      result,
+      previous,
+      NOW,
+      WINDOW,
+    );
+  };
+
+  test("two consecutive failures are required, within a window derived from the schedule", () => {
+    expect(UPTIME_FAILURES_TO_CONFIRM).toBe(2);
+    expect(WINDOW).toBe(16 * 60_000);
+    expect(uptimeConfirmationWindowMs(60, 6 * 60_000)).toBe(126 * 60_000);
+  });
+
+  test("a first failure is pending: no issue yet, same text if confirmed", () => {
+    for (const previous of [null, prev("SUCCESS"), prev("BLOCKED")]) {
+      expect(confirm("TIMEOUT", previous)).toMatchObject({
+        action: "pending",
+        severity: "CRITICAL",
+        title: "Website is unreachable",
+      });
+    }
+  });
+
+  test("a failure after a recent failure confirms the outage", () => {
+    expect(confirm("TIMEOUT", prev("CONNECTION_ERROR"))).toMatchObject({
+      action: "open",
+      severity: "CRITICAL",
+    });
+    expect(confirm("HTTP_ERROR", prev("HTTP_ERROR", 1))).toMatchObject({
+      action: "open",
+    });
+  });
+
+  test("the window: at its edge a failure still confirms; just past it, or after a long gap, it does not", () => {
+    expect(confirm("TIMEOUT", prev("TIMEOUT", 16)).action).toBe("open");
+    expect(confirm("TIMEOUT", prev("TIMEOUT", 16.01)).action).toBe("pending");
+    // Monitoring paused for three weeks while the site was down.
+    expect(confirm("TIMEOUT", prev("TIMEOUT", 3 * 7 * 24 * 60)).action).toBe(
+      "pending",
+    );
+    expect(confirmsFailure(prev("TIMEOUT", 10), NOW, WINDOW)).toBe(true);
+    expect(confirmsFailure(prev("BLOCKED", 1), NOW, WINDOW)).toBe(false);
+    expect(confirmsFailure(null, NOW, WINDOW)).toBe(false);
+  });
+
+  test("inconclusive outcomes neither confirm nor count as down", () => {
+    // BLOCKED: bot protection or our address policy; UNKNOWN_ERROR: the
+    // checker itself; INVALID_URL: configuration. None is an outage.
+    for (const o of ["BLOCKED", "UNKNOWN_ERROR", "INVALID_URL"] as const) {
+      expect(isUptimeDown(o)).toBe(false);
+      expect(confirm(o, prev("TIMEOUT"))).toEqual({ action: "none" });
+      expect(confirm("TIMEOUT", prev(o)).action).toBe("pending");
+    }
+  });
+
+  test("success still resolves at once; other check types are unchanged", () => {
+    expect(confirm("SUCCESS", prev("TIMEOUT"))).toEqual({ action: "resolve" });
+    expect(confirm("EXPIRED", null, "SSL")).toMatchObject({
+      action: "open",
+      severity: "CRITICAL",
+    });
+    expect(confirm("NXDOMAIN", prev("SUCCESS"), "DNS")).toMatchObject({
+      action: "open",
+    });
+  });
+
+  test("website status uses the confirmed uptime outcome", () => {
+    const latest = (outcome: CheckResult["outcome"]) => ({ outcome, at: NOW });
+    const c = (
+      l: CheckResult["outcome"],
+      p: RecordedCheck | null | undefined,
+    ) => confirmedUptimeOutcome(latest(l), p, WINDOW);
+    // First failure: status stays where the previous check left it.
+    expect(c("TIMEOUT", prev("SUCCESS"))).toBe("SUCCESS");
+    expect(c("TIMEOUT", prev("BLOCKED"))).toBe("BLOCKED");
+    expect(c("TIMEOUT", undefined)).toBeUndefined();
+    // After a long gap an old failure is neither a confirmation nor a status.
+    expect(c("TIMEOUT", prev("TIMEOUT", 600))).toBeUndefined();
+    // Second recent failure: down.
+    expect(c("TIMEOUT", prev("HTTP_ERROR"))).toBe("TIMEOUT");
+    // Not a failure: as measured.
+    expect(c("SUCCESS", prev("TIMEOUT"))).toBe("SUCCESS");
+    expect(c("BLOCKED", prev("TIMEOUT"))).toBe("BLOCKED");
+    expect(
+      deriveWebsiteStatus(true, {
+        UPTIME: c("TIMEOUT", prev("SUCCESS")),
+        SSL: "SUCCESS",
+        DNS: "SUCCESS",
+      }),
+    ).toBe("HEALTHY");
+    expect(deriveWebsiteStatus(true, { UPTIME: c("TIMEOUT", undefined) })).toBe(
+      "UNKNOWN",
+    );
+    expect(
+      deriveWebsiteStatus(true, { UPTIME: c("TIMEOUT", prev("TIMEOUT")) }),
+    ).toBe("CRITICAL");
+  });
+
+  test("an open confirmed incident keeps the site CRITICAL whatever an inconclusive check says", () => {
+    const open = { uptimeIncidentOpen: true };
+    for (const UPTIME of ["BLOCKED", "UNKNOWN_ERROR", "SUCCESS"] as const)
+      expect(deriveWebsiteStatus(true, { UPTIME, SSL: "SUCCESS" }, open)).toBe(
+        "CRITICAL",
+      );
+    expect(deriveWebsiteStatus(true, {}, open)).toBe("CRITICAL");
+    // Paused monitoring stays paused.
+    expect(deriveWebsiteStatus(false, { UPTIME: "BLOCKED" }, open)).toBe(
+      "PAUSED",
+    );
+    // No open incident: as before.
+    expect(deriveWebsiteStatus(true, { UPTIME: "BLOCKED" })).toBe("HEALTHY");
   });
 });

@@ -17,6 +17,7 @@ import {
 } from "@/lib/net/safe-fetch";
 import type { NetPolicy } from "@/lib/net/ssrf";
 import type { TenantDb } from "@/lib/tenancy/scope";
+import { storedResponseHeaders } from "./headers";
 import { parsePage } from "./html";
 import {
   allowAllRobots,
@@ -724,7 +725,9 @@ async function crawlPage(
   }
 
   const parsed = parsePage(res.body.toString("utf8"), res.finalUrl);
-  const r = parsed.result;
+  // Allowlisted response headers (X-Robots-Tag) are stored with the parsed
+  // page so the indexability rules can read them (crawler/headers.ts).
+  const r = { ...parsed.result, responseHeaders: storedResponseHeaders(res) };
   const candidates: Candidate[] = [];
   if (!/\bnofollow\b/i.test(parsed.robotsMetaRaw ?? "")) {
     for (const link of r.links) {

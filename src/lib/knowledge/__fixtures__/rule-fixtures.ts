@@ -1,4 +1,4 @@
-import type { SeoPage, SiteFacts } from "@/lib/seo/rules";
+import type { RedirectRow, SeoPage, SiteFacts } from "@/lib/seo/rules";
 
 /** Pages and site facts that, together, trigger every catalogue rule. */
 const base = (over: Partial<SeoPage>): SeoPage => ({
@@ -18,7 +18,23 @@ const base = (over: Partial<SeoPage>): SeoPage => ({
 });
 
 export const FIXTURE_PAGES: SeoPage[] = [
-  base({ id: "err", url: "https://site.example/gone", httpStatus: 404 }),
+  // k5: the analysed pages that link to the broken URL are named.
+  base({
+    id: "err",
+    url: "https://site.example/gone",
+    httpStatus: 404,
+    linkingPages: ["https://site.example/", "https://site.example/short"],
+  }),
+  // k5: noindex sent only in the X-Robots-Tag header, for Googlebot.
+  base({
+    id: "hdr",
+    url: "https://site.example/members",
+    title: "Members area for registered customers",
+    metaDescription:
+      "A distinct description for the members page, kept out of search by a header.",
+    robotsMetaRaw: "index, follow",
+    xRobotsTag: ["googlebot: noindex", "otherbot: nofollow"],
+  }),
   base({
     id: "bare",
     url: "https://site.example/bare",
@@ -85,6 +101,63 @@ export const FIXTURE_PAGES: SeoPage[] = [
         error: null,
       },
     ],
+  }),
+];
+
+/**
+ * Crawl rows for the redirect rules (k5): a two-hop chain that pages link
+ * to, a single linked redirect, and rows that must not be reported (a
+ * direct page, a redirect off the site, a linked redirect to an error page,
+ * a row without a recorded redirect count).
+ */
+const row = (over: Partial<RedirectRow> & Pick<RedirectRow, "id" | "url">) =>
+  ({
+    status: "CRAWLED",
+    httpStatus: 200,
+    finalUrl: null,
+    redirectCount: 0,
+    ...over,
+  }) as RedirectRow;
+
+export const FIXTURE_REDIRECT_ROWS: RedirectRow[] = [
+  row({
+    id: "chain",
+    url: "http://site.example/old-offer",
+    finalUrl: "https://site.example/offers/",
+    redirectCount: 2,
+    discoverySource: "LINK",
+    linkingPages: ["https://site.example/", "https://site.example/short"],
+  }),
+  row({
+    id: "hop",
+    url: "https://site.example/contact-us",
+    finalUrl: "https://site.example/contact/",
+    redirectCount: 1,
+    discoverySource: "LINK",
+    linkingPages: ["https://site.example/"],
+  }),
+  row({ id: "direct", url: "https://site.example/contact/" }),
+  row({
+    id: "offsite",
+    url: "https://site.example/go/partner",
+    finalUrl: "https://partner.example/",
+    redirectCount: 3,
+    linkingPages: ["https://site.example/"],
+  }),
+  row({
+    id: "to-error",
+    url: "https://site.example/old-page",
+    httpStatus: 404,
+    finalUrl: "https://site.example/removed",
+    redirectCount: 1,
+    linkingPages: ["https://site.example/"],
+  }),
+  row({
+    id: "unknown",
+    url: "https://site.example/legacy",
+    finalUrl: "https://site.example/new-legacy",
+    redirectCount: null,
+    linkingPages: ["https://site.example/"],
   }),
 ];
 

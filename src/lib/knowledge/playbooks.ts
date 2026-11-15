@@ -16,7 +16,7 @@ import { SEO_LIMITS, type SeoRuleId } from "./catalogue";
  *
  * Bump PLAYBOOK_VERSION when a playbook changes meaning.
  */
-export const PLAYBOOK_VERSION = "p1";
+export const PLAYBOOK_VERSION = "p2";
 
 export type Overlay = { steps: string[]; notes: string[] };
 
@@ -297,10 +297,11 @@ export const PLAYBOOKS: Record<SeoRuleId, Playbook> = {
     steps: [
       "For each affected page, decide whether it should appear in search; thank-you, internal search, cart and account pages usually should not, and their tasks can be dismissed.",
       "For pages that should appear, find where noindex is set: a per-page setting, a default for the content type, or a site-wide setting.",
-      "Remove noindex from the robots meta tag, keeping any other directives that are still wanted.",
-      "Check the page's HTTP response headers too: an X-Robots-Tag header can also carry noindex, and this check reads only the meta tag.",
+      "Check the finding's evidence for where noindex comes from: the robots meta tag in the page source, the X-Robots-Tag HTTP response header, or both.",
+      "Meta tag: remove noindex from the robots meta tag, keeping any other directives that are still wanted.",
+      "Header: find what adds the X-Robots-Tag header (the web server or .htaccess configuration, a CDN or proxy rule, a security or caching plugin, or the application) and remove noindex there, for this URL or URL pattern only.",
       "Check that robots.txt does not block the page and that the page is listed in the XML sitemap.",
-      "Confirm in the page source that no robots meta tag contains noindex.",
+      "Confirm that neither the page source nor the response headers (for example with curl -I or the browser's network panel) still contain noindex.",
     ],
     prerequisites: [
       "Agreement with the site owner on which pages should be in search.",
@@ -308,6 +309,7 @@ export const PLAYBOOKS: Record<SeoRuleId, Playbook> = {
     risks: [
       "Removing noindex from private, duplicate or low-value pages (staging, login, cart, thank-you) can expose them in search.",
       "If a site-wide setting is the cause, changing it affects every page at once.",
+      "A header rule often matches a whole path or file type: narrow it rather than deleting it, or pages that should stay out of search may appear.",
     ],
     platforms: {
       wordpress: {
@@ -627,6 +629,65 @@ export const PLAYBOOKS: Record<SeoRuleId, Playbook> = {
         ],
         notes: [
           "Security and caching plugins can answer crawlers with 403 or 503; check their logs.",
+        ],
+      },
+    },
+  },
+
+  TECH_REDIRECT_CHAIN: {
+    steps: [
+      "Open the URL with a redirect checker, or curl -IL, to see every hop between it and the final URL in the evidence.",
+      "Change the first redirect so it points straight at the final URL, and remove the redirects in between that only pass the visitor on.",
+      "Common causes to look for: http to https and www to non-www (or the reverse) handled by separate rules, a trailing-slash rule, and old redirects left pointing at URLs that were themselves moved later.",
+      "Update internal links, the sitemap and canonical tags that still use the old URL, so visitors and crawlers reach the final URL with no redirect at all.",
+      "Request the URL again and confirm it reaches the final page with at most one redirect.",
+    ],
+    prerequisites: [
+      "Access to where redirects are managed: the CMS, a redirect plugin, the server configuration (.htaccess, nginx) or the CDN.",
+    ],
+    risks: [
+      "Rules can live in several places (CDN, server, CMS) and run in sequence; change the one that creates each hop, and test after each change.",
+      "Do not remove a redirect that old links or bookmarks still rely on: point it at the final URL instead.",
+    ],
+    platforms: {
+      wordpress: {
+        steps: [
+          "Check the WordPress Address and Site Address under Settings → General: a mismatch with the URL visitors use (http or https, www or not) adds a hop to every request.",
+          "If the site uses a redirect plugin or an SEO plugin's redirect manager, look for a redirect whose target was later redirected again, and point it at the final URL.",
+        ],
+        notes: [
+          "Hosting control panels and caching or security plugins can add their own https or www redirects on top of WordPress's.",
+        ],
+      },
+      woocommerce: {
+        steps: [
+          "After renaming product or category slugs, check that old product URLs redirect straight to the current product, not to an earlier renamed URL.",
+        ],
+        notes: [],
+      },
+    },
+  },
+
+  TECH_LINK_TO_REDIRECT: {
+    steps: [
+      "Open each linking page listed in the evidence and find the link to the redirecting URL.",
+      "Replace the link with the final URL shown in the evidence.",
+      "If many pages link to it, the link is probably in a menu, header, footer, sidebar or template: change it there once.",
+      "Crawl again and confirm the linking pages now point at the final URL.",
+    ],
+    prerequisites: [EDIT_ACCESS],
+    risks: [
+      "Keep the redirect itself in place: external links and bookmarks may still use the old URL.",
+      "Check that the final URL is the page you intend to link to before replacing many links with it.",
+    ],
+    platforms: {
+      wordpress: {
+        steps: [
+          "Menus live under Appearance → Menus (or the Site Editor's navigation block); update the custom link or re-add the page so the menu uses its current URL.",
+          "For links inside posts and pages, a search-and-replace tool can update the old URL everywhere; take a backup of the database first.",
+        ],
+        notes: [
+          "Links to a page added through the editor's link picker usually follow slug changes; hand-typed links do not.",
         ],
       },
     },

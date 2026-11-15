@@ -25,7 +25,7 @@ function texts(p: Playbook): Array<{ where: string; text: string }> {
 describe("playbook coverage", () => {
   test("exactly one playbook per technical SEO rule", () => {
     expect(Object.keys(PLAYBOOKS).sort()).toEqual([...SEO_RULE_IDS].sort());
-    expect(PLAYBOOK_VERSION).toBe("p1");
+    expect(PLAYBOOK_VERSION).toBe("p2");
   });
 
   test("unknown ids, content rules and object keys have none", () => {

@@ -77,6 +77,82 @@ test("describeEvidence turns production evidence shapes into plain language", ()
   expect(describeEvidence("X", null)).toBeNull();
 });
 
+test("describeEvidence names linking pages, noindex sources and redirects", () => {
+  expect(
+    describeEvidence("TECH_HTTP_ERROR", {
+      httpStatus: 404,
+      errorClass: "not-found",
+      linkedFrom: "https://s.example/first",
+      linkingPages: ["https://s.example/a", "https://s.example/b"],
+      linkingPageCount: 2,
+    }),
+  ).toBe("Returns HTTP 404 (not found) · linked from 2 crawled pages");
+  // Only a complete crawl's count reads as "pages".
+  expect(
+    describeEvidence("TECH_HTTP_ERROR", {
+      httpStatus: 404,
+      linkingPages: ["https://s.example/a", "https://s.example/b"],
+      linkingPageCount: 2,
+      linkingCoverage: "complete",
+      pagesAnalysed: 30,
+    }),
+  ).toBe("Returns HTTP 404 · linked from 2 pages");
+  expect(
+    describeEvidence("TECH_HTTP_ERROR", {
+      httpStatus: 404,
+      linkingPages: ["https://s.example/a"],
+      linkingPageCount: 1,
+      linkingCoverage: "partial",
+      pagesAnalysed: 100,
+    }),
+  ).toBe("Returns HTTP 404 · linked from 1 crawled page");
+  // Findings stored before linking pages were recorded keep their text.
+  expect(
+    describeEvidence("TECH_HTTP_ERROR", {
+      httpStatus: 404,
+      linkedFrom: "https://s.example/first",
+    }),
+  ).toBe("Returns HTTP 404 · linked from /first");
+  expect(
+    describeEvidence("TECH_NOINDEX", {
+      robotsMeta: null,
+      noindexSource: "header",
+      xRobotsTag: ["noindex"],
+    }),
+  ).toBe("X-Robots-Tag header: noindex");
+  expect(
+    describeEvidence("TECH_NOINDEX", {
+      robotsMeta: "noindex",
+      noindexSource: "both",
+      xRobotsTag: ["googlebot: none", "nofollow"],
+      listedInSitemap: true,
+    }),
+  ).toBe(
+    "robots: noindex · X-Robots-Tag header: googlebot: none | nofollow · but listed in the XML sitemap",
+  );
+  expect(
+    describeEvidence("TECH_NOINDEX", {
+      robotsMeta: "noindex, follow",
+      noindexSource: "meta",
+    }),
+  ).toBe("robots: noindex, follow");
+  expect(
+    describeEvidence("TECH_REDIRECT_CHAIN", {
+      finalUrl: "https://s.example/new/",
+      redirectCount: 3,
+      finalStatus: 200,
+      linkingPageCount: 1,
+    }),
+  ).toBe("3 redirects to /new/ · linked from 1 crawled page");
+  expect(
+    describeEvidence("TECH_LINK_TO_REDIRECT", {
+      finalUrl: "https://s.example/new/",
+      redirectCount: 1,
+      finalStatus: 200,
+    }),
+  ).toBe("1 redirect to /new/");
+});
+
 test("findingTarget", () => {
   expect(
     findingTarget({ scope: "PAGE", evidence: { url: "https://a.example/x" } }),

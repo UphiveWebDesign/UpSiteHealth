@@ -2,6 +2,143 @@
 
 Verified state of the working tree, newest first. Record only what was run.
 
+## 2026-11-15 — Trustworthy signals: PostgreSQL integration verification
+
+The working tree of the corrective pass below (all 41 files byte-identical
+to the copy tested), run against a disposable local PostgreSQL 18.6
+container (version as recorded in the verification report). No production,
+shared or hosted database was accessed; no migration was run against any
+of them.
+
+- **Suites:** 26 of the 39 repository integration suites invoked: **19
+  passed, 5 failed, 2 skipped** (`finding-history`, `p1-postgres-probe`:
+  environment-gated). Not run: the other 13 (`actions`, `auth-tenancy`,
+  `client-lockdown`, `content-depth`, `content-plan`, `dev-crawl-worker`,
+  `guard-order`, `recommendation-identity-schema`, `recommendation-status`,
+  `sprint3`, `sprint4`, `stage2-decisions`, `test-db-guard`).
+- **Tests:** **151 passed, 8 failed, 32 skipped, 1 todo** (192).
+- **Failures, all pre-existing:** each of the 8 failing tests failed
+  identically on a clean copy of `5dc7f95`: `analysis-recovery` (1:
+  round trips 12, expected 13), `attention-reopen`, `crawl-mode`,
+  `finding-status` (1 each: CLIENT now gets 404 after the lockdown;
+  outdated expectations), `crawl-reliability` (4, including 10 concurrent
+  fetches against a cap of 6).
+- **Scratch probes** (temporary files, not in the repository): a
+  trustworthy-signals probe passed 6 of 7 on PostgreSQL; the failure is two
+  concurrent confirmations opening two incidents, a race reproduced 3 of 3
+  times at `5dc7f95` (pre-existing, not fixed here).
+- **Not verified:** the 13 unrun suites; behaviour on real websites.
+
+## 2026-11-15 — Trustworthy signals: corrective pass after review
+
+Uncommitted, on `consolidate/2026-11-13` after `5dc7f95`, on top of the
+2026-11-14 entry below. Offline only: unit tests with fakes and fixtures;
+no database contacted, no migration, nothing run against a real website.
+Fixes the review findings M1–M4 and L1–L4; `docs/specs/trustworthy-signals.md`
+updated.
+
+- **M1 linking-page coverage** (`seo/analyze.ts` `linkIndex`,
+  `seo/rules.ts` `linkingEvidence`): evidence records `linkingCoverage`
+  (`complete` / `partial`) and `pagesAnalysed`; partial when the run did not
+  COMPLETE or a page failed, was unfinished, was skipped at the page limit
+  or by cancellation, had links omitted, or was stored without links. The
+  SEO page (`components/linking-pages.tsx`, moved out of the page) and
+  `describeEvidence` say "N pages" only for a complete crawl, otherwise "N
+  crawled pages" with a partial-coverage note.
+- **M2 link-to-redirect recheck** (`seo/recheck.ts`): the current crawl's
+  link index decides (`RecheckContext.links`, passed from `sync.ts`,
+  `compare.ts` and the SEO page); any analysed page still linking keeps it
+  open; partial link coverage keeps it open (`partial-links`); the stored
+  source list is no longer proof.
+- **M3** `business/pages.ts` uses the shared `isNoindex`, so business
+  coverage, topics, opportunities, keyword mapping, link suggestions and
+  content gaps respect X-Robots-Tag.
+- **L1** an open confirmed uptime incident keeps the website CRITICAL until a
+  pass (`deriveWebsiteStatus` `uptimeIncidentOpen`).
+- **L2** dashboard incident state `none` / `active` / `ignored`
+  (`insights/signals.ts`, `next-steps.ts`): an ignored incident is named as
+  such.
+- **L3** confirmation window (`uptimeConfirmationWindowMs`): 2 × the
+  website's uptime interval + 6 minutes of queue retries (16 minutes by
+  default); an older failure does not confirm, nor count as status.
+  **Owner to confirm the value.**
+- **L4** a chain that still has two or more hops but now ends off-site
+  stays open (`still-chained`), not "fixed".
+- **M4** `docs/operations/data-retention-proposal.md`: crawl ids held in
+  JSON (`recommendation_events.evidence.crawlRunId`, used by "What
+  changed?"; alert and score references) protected; their full use needs a
+  read-only database survey; crawl runs not deletable under the proposal.
+- **Tests:** `monitoring/rules.test.ts` (confirmation tests rewritten for
+  the window and open incidents), `monitoring/worker.test.ts` (+9: L1 and
+  L3), `insights/next-steps.test.ts` (incident-state tests, 7),
+  `insights/seo.test.ts`, `seo/trustworthy-signals.test.ts` (M1, M2, L4:
+  link-to-redirect recheck rewritten, coverage and off-site chain tests),
+  new `components/linking-pages.test.tsx` (5) and
+  `business/noindex-sources.test.ts` (8). Run against the pre-correction
+  code (a scratch copy), 23 of the new or changed tests failed, covering
+  each of L1, L2, L3, M1, M2, M3 and L4.
+- **Verification** recorded in the final report of this pass (offline unit
+  suites, `tsc`, ESLint, Prettier, `git diff --check`). Integration suites
+  not run (no approved local test database).
+
+## 2026-11-14 — Trustworthy signals: uptime confirmation, X-Robots-Tag, linking pages, redirect rules
+
+Uncommitted, on `consolidate/2026-11-13` after `5dc7f95`. Offline only:
+unit tests with fakes and fixtures; no database contacted, no migration,
+no schema change, nothing run against a real website. Specification:
+`docs/specs/trustworthy-signals.md`.
+
+- **Uptime incidents need two consecutive failures**
+  (`monitoring/rules.ts` `confirmIssueDecision`, `confirmedUptimeOutcome`;
+  `monitoring/worker.ts`). A first failure is recorded but opens no issue,
+  sends no alert and does not turn the website CRITICAL; a second
+  consecutive failure confirms it; a pass resolves and resets; an open
+  incident is refreshed, never duplicated; BLOCKED, UNKNOWN_ERROR and
+  INVALID_URL never confirm; a crashed checker records no check. SSL and
+  DNS unchanged. Overview / website next step "Latest uptime check failed"
+  (warning) while unconfirmed (`insights/next-steps.ts`, `uptimeIncident`
+  in `insights/signals.ts`).
+- **X-Robots-Tag noindex.** The crawler stores an allowlist of response
+  headers (`crawler/headers.ts`: X-Robots-Tag only, bounded) in
+  `crawl_pages.result.responseHeaders`; `safeFetch` exposes
+  `headersDistinct` (fetch, redirect, size and SSRF logic unchanged).
+  `seo/robots-directives.ts` parses user-agent-scoped directives; `isNoindex`
+  combines meta and header; `TECH_NOINDEX` evidence names `noindexSource`
+  (meta / header / both). Recheck needs a crawl that recorded headers.
+- **Broken pages name every linking page** (`seo/analyze.ts` `linkIndex`):
+  `TECH_HTTP_ERROR` evidence adds `linkingPages` (20 max), count, truncation
+  and possible-incompleteness flags; shown on the SEO page. Resolution still
+  needs the broken URL itself to load.
+- **New rules** `TECH_REDIRECT_CHAIN` (LOW) and `TECH_LINK_TO_REDIRECT`
+  (INFO) with catalogue entries, playbooks (WordPress / WooCommerce),
+  verification text and recheck rules (`seo/rules.ts` `analyzeRedirects`,
+  `seo/recheck.ts`; context passed from `sync.ts`, `compare.ts` and the SEO
+  page). `KNOWLEDGE_VERSION` k5 (new `rule-outputs.k5.json`; k4 kept),
+  `PLAYBOOK_VERSION` p2; baseline category "crawl" lists both rules.
+- **Retention:** proposal only, `docs/operations/data-retention-proposal.md`
+  (no code, no deletion path, nothing enabled). It records that
+  `seo_findings.crawlRunId` cascades on crawl-run deletion and
+  `seo_finding_events.crawlRunId` is NoAction, so crawl runs must never be
+  deleted by retention.
+- **Tests added or changed:** `monitoring/worker.test.ts` (new, 9:
+  `executeJob` against an in-memory transaction fake), `monitoring/rules.test.ts`
+  (+6), `crawler/headers.test.ts` (new, 4), `seo/robots-directives.test.ts`
+  (new, 11), `seo/trustworthy-signals.test.ts` (new, 26),
+  `net/safe-fetch.test.ts` (+1, local HTTP server), `insights/next-steps.test.ts`
+  (+1), `insights/seo.test.ts` (+1), knowledge golden k5 and version
+  expectations, playbook / remediation version p2. Integration tests
+  `monitoring`, `alerts`, `client-limits` updated to the two-failure rule
+  but **not run** (no approved local test database).
+- **Mutation check:** 17 mutations (one per key check) each caught after one
+  test was strengthened; every file restored byte-identical.
+- **Verification** (throwaway clone at `5dc7f95` plus these changes, no
+  `.env`, empty environment): `npm run check` exit 0 (typegen + `tsc`,
+  ESLint, Prettier, Vitest): 105 files passed, 38 skipped; **2677 passed**,
+  1 expected fail (pre-existing), 281 skipped, 9 todo. `git diff --check`
+  clean.
+- **Not verified:** behaviour on real websites or PostgreSQL; the 38
+  integration files.
+
 ## 2026-11-14 — Database-safety tooling: rehearsal and reconciliation hardening
 
 Committed as `ff9c4bfc330c049c945c5bf279eda27c724a4216`

@@ -9,6 +9,7 @@ import { scoreFreshness, type FreshnessState } from "@/lib/scoring/freshness";
 import {
   uptimePercent,
   type SeverityCounts,
+  type UptimeIncidentState,
   type WebsiteSignals,
 } from "./next-steps";
 
@@ -87,6 +88,7 @@ export async function loadWebsiteSummaries(
     perfMax,
     scoreMax,
     profiles,
+    uptimeIncidents,
   ] = await Promise.all([
     db.websiteCheck.groupBy({
       by: ["websiteId", "type"],
@@ -141,7 +143,25 @@ export async function loadWebsiteSummaries(
       where: inSites,
       select: { websiteId: true },
     }),
+    // Confirmed outages: the worker opens an UPTIME issue only after
+    // consecutive failed checks (monitoring/rules.ts) and treats an IGNORED
+    // one as still open (it is refreshed, and resolved by a pass), so it is
+    // read here too, and told apart.
+    db.issue.findMany({
+      where: {
+        ...inSites,
+        category: "UPTIME",
+        status: { in: [...OPEN_ISSUE, "IGNORED"] },
+        resolvedAt: null,
+      },
+      select: { websiteId: true, status: true },
+    }),
   ]);
+  const uptimeIncidentOf = (websiteId: string): UptimeIncidentState => {
+    const mine = uptimeIncidents.filter((i) => i.websiteId === websiteId);
+    if (mine.some((i) => i.status !== "IGNORED")) return "active";
+    return mine.length ? "ignored" : "none";
+  };
 
   const pairs = <T extends { websiteId: string }>(
     rows: T[],
@@ -247,6 +267,7 @@ export async function loadWebsiteSummaries(
       crawlMode: w.crawlMode,
       clientId: w.clientId,
       uptime: up ? { outcome: up.outcome, at: up.createdAt } : null,
+      uptimeIncident: uptimeIncidentOf(w.id),
       ssl: ssl ? { outcome: ssl.outcome, expiresAt: ssl.sslExpiresAt } : null,
       dns: dns ? { outcome: dns.outcome } : null,
       openIssues: counts(issueGroups, w.id),

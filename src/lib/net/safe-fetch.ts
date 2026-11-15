@@ -45,6 +45,12 @@ export type SafeFetchOptions = {
 export type SafeResponse = {
   status: number;
   headers: IncomingHttpHeaders;
+  /**
+   * Each header's values as separate lines (Node's headersDistinct): a
+   * repeated header such as X-Robots-Tag keeps one entry per line instead of
+   * being joined with commas. Optional so test doubles may omit it.
+   */
+  headersDistinct?: NodeJS.Dict<string[]>;
   finalUrl: string;
   redirectCount: number;
   body: Buffer;
@@ -182,6 +188,7 @@ function requestOnce(
           resolve({
             status: res.statusCode ?? 0,
             headers: res.headers,
+            headersDistinct: res.headersDistinct,
             body: Buffer.concat(chunks),
             truncated,
             remoteAddress: pinned.address,

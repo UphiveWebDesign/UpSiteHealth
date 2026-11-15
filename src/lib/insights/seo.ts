@@ -1,6 +1,7 @@
 import type { IssueSeverity } from "@/generated/prisma/enums";
 import { formatDateTime } from "@/lib/format";
 import { isContentRule } from "@/lib/knowledge/catalogue";
+import { linkingSummary } from "@/lib/seo/recheck";
 import { FAILURE_LABEL, type SitemapFailure } from "@/lib/seo/sitemap";
 
 /** Relative weight of one finding of each severity, used to rank rule groups. */
@@ -102,12 +103,26 @@ export function describeEvidence(
     );
     return files.join(" · ");
   }
+  // Pages linking to the URL (all analysed pages), else the first one found.
+  const linked = () =>
+    linkingSummary(e) ??
+    (typeof e.linkedFrom === "string" && `linked from ${pathOf(e.linkedFrom)}`);
+  // Redirect rules: hop count and where the redirects end.
+  if (num("redirectCount") !== null && typeof e.finalUrl === "string") {
+    const hops = num("redirectCount")!;
+    return [
+      `${hops} redirect${hops === 1 ? "" : "s"} to ${pathOf(e.finalUrl)}`,
+      linked(),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
   if (num("httpStatus") !== null) {
     const cls =
       typeof e.errorClass === "string" ? ERROR_CLASS[e.errorClass] : undefined;
     return [
       `Returns HTTP ${num("httpStatus")}${cls ? ` (${cls})` : ""}`,
-      typeof e.linkedFrom === "string" && `linked from ${pathOf(e.linkedFrom)}`,
+      linked(),
       e.foundVia === "SITEMAP" && "listed in the sitemap",
     ]
       .filter(Boolean)
@@ -120,6 +135,21 @@ export function describeEvidence(
   if (num("count") !== null) return `${num("count")} found`;
   if (num("wordCount") !== null)
     return `${num("wordCount")} words (recommended ${num("minWords") ?? 200}+)`;
+  // Noindex: the robots meta tag, the X-Robots-Tag header, or both.
+  if (e.noindexSource === "header" || e.noindexSource === "both") {
+    const header = Array.isArray(e.xRobotsTag)
+      ? e.xRobotsTag.filter((v) => typeof v === "string").join(" | ")
+      : "";
+    return [
+      e.noindexSource === "both" &&
+        typeof e.robotsMeta === "string" &&
+        `robots: ${e.robotsMeta}`,
+      `X-Robots-Tag header: ${header}`,
+      e.listedInSitemap === true && "but listed in the XML sitemap",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
   if (typeof e.robotsMeta === "string")
     return `robots: ${e.robotsMeta}${e.listedInSitemap === true ? " · but listed in the XML sitemap" : ""}`;
   if (num("invalidCount") !== null)

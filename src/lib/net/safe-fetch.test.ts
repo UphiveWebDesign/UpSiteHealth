@@ -39,6 +39,18 @@ beforeAll(async () => {
       return res.end();
     }
     if (path === "/big") return res.end("x".repeat(5000));
+    if (path === "/robots-headers") {
+      // Two X-Robots-Tag lines: the second names no user agent.
+      res.setHeader("x-robots-tag", ["otherbot: nofollow", "noindex"]);
+      return res.end("ok");
+    }
+    if (path === "/to-robots-headers") {
+      res.writeHead(301, {
+        location: "/robots-headers",
+        "x-robots-tag": "none",
+      });
+      return res.end();
+    }
     if (path === "/slow") return setTimeout(() => res.end("late"), 2000);
     if (path === "/404") {
       res.writeHead(404);
@@ -60,6 +72,25 @@ const url = (path: string, host = "site.test") =>
   `http://${host}:${port}${path}`;
 
 describe("safeFetch", () => {
+  test("repeated headers keep one value per line; only the final response's headers are returned", async () => {
+    const res = await safeFetch(url("/robots-headers"), { policy: testPolicy });
+    expect(res.headersDistinct?.["x-robots-tag"]).toEqual([
+      "otherbot: nofollow",
+      "noindex",
+    ]);
+    // Node joins the same lines with commas, which would scope "noindex"
+    // to otherbot if parsed as one line.
+    expect(res.headers["x-robots-tag"]).toBe("otherbot: nofollow, noindex");
+    const redirected = await safeFetch(url("/to-robots-headers"), {
+      policy: testPolicy,
+    });
+    expect(redirected.redirectCount).toBe(1);
+    expect(redirected.headersDistinct?.["x-robots-tag"]).toEqual([
+      "otherbot: nofollow",
+      "noindex",
+    ]);
+  });
+
   test("fetches through the pinned address and sends the bot user agent", async () => {
     const res = await safeFetch(url("/ok"), { policy: testPolicy });
     expect(res.status).toBe(200);

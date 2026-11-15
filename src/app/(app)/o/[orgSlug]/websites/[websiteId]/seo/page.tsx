@@ -20,13 +20,15 @@ import {
 import { loadCrawlComparison } from "@/lib/seo/compare";
 import {
   describeGap,
+  evidenceLinkingPages,
   evidenceTruncated,
   findingPages,
   pageRecheckGap,
   siteRecheckGap,
 } from "@/lib/seo/recheck";
-import { sitePagesOfRuns } from "@/lib/seo/analyze";
+import { linkIndex, sitePagesOfRuns } from "@/lib/seo/analyze";
 import { FindingStatusAction } from "@/components/finding-status-action";
+import { LinkingPages } from "@/components/linking-pages";
 import { requireOrgContext } from "@/lib/tenancy/context";
 import { can } from "@/lib/tenancy/roles";
 import { setFindingStatusAction, startCrawlAction } from "../../../actions";
@@ -127,6 +129,10 @@ export default async function SeoFindingsPage({
       .filter((f) => f.scope === "SITE" && evidenceTruncated(f.evidence))
       .map((f) => f.crawlRunId),
   );
+  const linkingPagesOf = (f: (typeof rows)[number]) =>
+    f.ruleId === "TECH_LINK_TO_REDIRECT"
+      ? evidenceLinkingPages(f.evidence).urls
+      : [];
   const sitePagesOf = (f: (typeof rows)[number]) =>
     findingPages(f.evidence, foundIn.get(f.crawlRunId)?.get(f.fingerprint));
   const recheckPages =
@@ -140,6 +146,8 @@ export default async function SeoFindingsPage({
                 .flatMap((f) => [
                   urlOf(f),
                   ...(f.scope === "SITE" ? sitePagesOf(f).urls : []),
+                  // Links to a redirect: the pages that linked to it.
+                  ...linkingPagesOf(f),
                 ])
                 .filter((u): u is string => typeof u === "string"),
             },
@@ -148,6 +156,8 @@ export default async function SeoFindingsPage({
             url: true,
             status: true,
             httpStatus: true,
+            finalUrl: true,
+            redirectCount: true,
             skipReason: true,
             resourceType: true,
             h1Count: true,
@@ -160,6 +170,19 @@ export default async function SeoFindingsPage({
     ? await loadCrawlComparison(ctx.db, websiteId, lastCrawl.id)
     : null;
   const pageByUrl = new Map(recheckPages.map((p) => [p.url, p]));
+  // Links to a redirect are judged on the whole crawl's links (who still
+  // links to the URL, and whether every page was read): loaded only when
+  // such a finding is waiting for a recheck.
+  const lastCrawlLinks =
+    lastCrawl && unconfirmed.some((f) => f.ruleId === "TECH_LINK_TO_REDIRECT")
+      ? linkIndex(
+          await ctx.db.crawlPage.findMany({
+            where: { crawlRunId: lastCrawl.id },
+            select: { url: true, status: true, skipReason: true, result: true },
+          }),
+          lastCrawl.status,
+        )
+      : undefined;
   const gapFor = new Map<string, string>();
   for (const f of unconfirmed) {
     const url = urlOf(f);
@@ -172,6 +195,12 @@ export default async function SeoFindingsPage({
         : pageRecheckGap(
             f.ruleId,
             typeof url === "string" ? pageByUrl.get(url) : undefined,
+            {
+              run: lastCrawl!,
+              evidence: f.evidence,
+              pageAt: (u) => pageByUrl.get(u),
+              links: lastCrawlLinks,
+            },
           );
     if (gap) gapFor.set(f.id, describeGap(gap));
   }
@@ -377,6 +406,7 @@ export default async function SeoFindingsPage({
                                   {gapFor.get(f.id)}
                                 </p>
                               )}
+                              <LinkingPages evidence={f.evidence} />
                             </div>
                             {editor && f.status !== "RESOLVED" && (
                               <FindingStatusAction

@@ -6,6 +6,7 @@ import type {
 import type { EvidencePage } from "@/lib/integrations/evaluate";
 import type { PageType } from "@/lib/knowledge/catalogue";
 import { LEGAL_SEGMENT, legalSignals } from "@/lib/seo/legal";
+import { isNoindex } from "@/lib/seo/rules";
 
 /**
  * Deterministic page understanding from what the crawler stores: URL,
@@ -451,7 +452,10 @@ export function readPages(
       schemaNames: schema.names,
       schemaPlaces: schema.places,
       schemaTypes: schema.types,
-      noindex: /\bnoindex\b/i.test(p.robotsMetaRaw ?? ""),
+      // The shared test: robots meta tag or an X-Robots-Tag header recorded
+      // with the page (seo/robots-directives.ts). Pages crawled before
+      // headers were recorded are judged on the meta tag alone.
+      noindex: isNoindex(p),
       canonicalElsewhere,
       wordCount: p.wordCount ?? null,
       content: c

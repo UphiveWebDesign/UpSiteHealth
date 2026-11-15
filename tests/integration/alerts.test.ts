@@ -77,8 +77,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
     test("an outage creates one incident alert with in-app deliveries; recovery resolves it", async () => {
       const { site } = await setup("outage");
       await check(site, "UPTIME", "SUCCESS"); // establishes HEALTHY
-      await check(site, "UPTIME", "CONNECTION_ERROR");
-      await check(site, "UPTIME", "TIMEOUT"); // same incident: no duplicate
+      await check(site, "UPTIME", "CONNECTION_ERROR"); // one failure: no alert
+      expect(await db.alertEvent.count({ where: { websiteId: site.id } })).toBe(
+        0,
+      );
+      await check(site, "UPTIME", "TIMEOUT"); // second in a row: confirmed
 
       let events = await db.alertEvent.findMany({
         where: { websiteId: site.id },
@@ -133,6 +136,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       await check(site, "UPTIME", "SUCCESS");
       await check(site, "UPTIME", "HTTP_ERROR");
+      await check(site, "UPTIME", "HTTP_ERROR"); // confirms the outage
 
       const deliveries = await db.notificationDelivery.findMany({
         where: { organizationId: org.id },
@@ -171,6 +175,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       await check(site, "UPTIME", "SUCCESS");
       await check(site, "UPTIME", "TIMEOUT");
+      await check(site, "UPTIME", "TIMEOUT"); // confirms the outage
       const sent: string[] = [];
       let fail = true;
       const sender: EmailSender = {
@@ -227,7 +232,9 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
       await check(site, "UPTIME", "SUCCESS");
       await check(site, "UPTIME", "TIMEOUT");
+      await check(site, "UPTIME", "TIMEOUT"); // confirmed incident
       await check(site, "UPTIME", "SUCCESS");
+      await check(site, "UPTIME", "TIMEOUT");
       await check(site, "UPTIME", "TIMEOUT"); // second incident within the hour
       const emails = await db.notificationDelivery.findMany({
         where: { organizationId: org.id, channel: "EMAIL" },

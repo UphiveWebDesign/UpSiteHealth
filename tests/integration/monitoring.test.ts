@@ -98,7 +98,7 @@ describe.skipIf(!TEST_DATABASE_URL)("monitoring queue (local database)", () => {
     });
   });
 
-  test("a failing uptime check opens one CRITICAL issue and success resolves it", async () => {
+  test("two consecutive failed uptime checks open one CRITICAL issue (one does not) and success resolves it", async () => {
     const { site } = await newWebsite("issue");
     const runOnce = async (outcome: CheckOutcome) => {
       const job = await db.monitoringJob.create({
@@ -117,6 +117,15 @@ describe.skipIf(!TEST_DATABASE_URL)("monitoring queue (local database)", () => {
     };
 
     await runOnce("CONNECTION_ERROR");
+    // One failure is recorded but not confirmed: no issue, no alert, and
+    // the website is not CRITICAL (monitoring/rules.ts).
+    expect(await db.issue.count({ where: { websiteId: site.id } })).toBe(0);
+    expect(await db.alertEvent.count({ where: { websiteId: site.id } })).toBe(
+      0,
+    );
+    expect(
+      (await db.website.findUniqueOrThrow({ where: { id: site.id } })).status,
+    ).not.toBe("CRITICAL");
     await runOnce("TIMEOUT");
     let issues = await db.issue.findMany({ where: { websiteId: site.id } });
     expect(issues).toHaveLength(1);
@@ -173,6 +182,8 @@ describe.skipIf(!TEST_DATABASE_URL)("monitoring queue (local database)", () => {
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
 
+    // Two consecutive failures confirm the outage.
+    await runOnce("TIMEOUT");
     await runOnce("TIMEOUT");
     const issue = await db.issue.findFirstOrThrow({
       where: { websiteId: site.id },
@@ -211,7 +222,10 @@ describe.skipIf(!TEST_DATABASE_URL)("monitoring queue (local database)", () => {
     expect(confirmed.status).toBe("RESOLVED");
     expect(issueResolution(confirmed, await lastPass())).toBe("verified");
 
-    // A later failure after a confirmed fix is a new occurrence.
+    // A later outage after a confirmed fix is a new occurrence, once a
+    // second consecutive failure confirms it.
+    await runOnce("TIMEOUT");
+    expect(await db.issue.count({ where: { websiteId: site.id } })).toBe(1);
     await runOnce("TIMEOUT");
     expect(await db.issue.count({ where: { websiteId: site.id } })).toBe(2);
   });

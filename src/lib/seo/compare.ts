@@ -60,6 +60,8 @@ export type CrawlSide = {
   /** What the crawl showed about the sitemap (see analyzeCrawl). */
   sitemap?: SitemapState;
   sitemapFailures?: FailedSitemap[] | null;
+  /** The crawl's internal links and their coverage (see analyzeCrawl). */
+  links?: { linking: Map<string, string[]>; coverage: "complete" | "partial" };
 };
 
 export type StoredFinding = {
@@ -104,6 +106,12 @@ function gapOn(side: CrawlSide, d: SeoFindingDraft, from: CrawlSide) {
   return pageRecheckGap(
     d.ruleId,
     typeof url === "string" ? side.byUrl.get(url) : undefined,
+    {
+      run: side.run,
+      evidence: d.evidence,
+      pageAt: (u) => side.byUrl.get(u),
+      links: side.links,
+    },
   );
 }
 

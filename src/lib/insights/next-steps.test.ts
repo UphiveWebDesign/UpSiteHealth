@@ -78,6 +78,75 @@ describe("nextSteps", () => {
     expect(ids({ dns: { outcome: "NXDOMAIN" } })).toEqual(["dns-missing"]);
   });
 
+  describe("uptime incident wording follows the incident state", () => {
+    const at = NOW;
+    const step = (s: Partial<WebsiteSignals>) =>
+      nextSteps({ ...healthy, ...s }, "/o/acme", NOW)[0];
+
+    test("no incident, latest check passed: nothing to do", () => {
+      expect(ids({ uptimeIncident: "none" })).toEqual([]);
+    });
+
+    test("pending first failure: a warning that says it is not confirmed", () => {
+      expect(
+        step({ uptime: { outcome: "TIMEOUT", at }, uptimeIncident: "none" }),
+      ).toMatchObject({
+        id: "down-unconfirmed",
+        tone: "warning",
+        priority: 2,
+        title: "Latest uptime check failed",
+      });
+    });
+
+    test("confirmed active incident: unreachable, also while the latest check is inconclusive", () => {
+      const down = step({
+        uptime: { outcome: "TIMEOUT", at },
+        uptimeIncident: "active",
+      });
+      expect(down).toMatchObject({ id: "down", tone: "danger", priority: 1 });
+      expect(down.reason).toMatch(/^Consecutive uptime checks failed/);
+      const blocked = step({
+        uptime: { outcome: "BLOCKED", at },
+        uptimeIncident: "active",
+      });
+      expect(blocked).toMatchObject({ id: "down", tone: "danger" });
+      expect(blocked.reason).toMatch(/no uptime check has succeeded since/);
+    });
+
+    test("ignored incident: named as ignored, never as no incident", () => {
+      const ignored = step({
+        uptime: { outcome: "TIMEOUT", at },
+        uptimeIncident: "ignored",
+      });
+      expect(ignored).toMatchObject({
+        id: "down-ignored",
+        tone: "warning",
+        title: "Uptime incident marked as ignored",
+      });
+      expect(ignored.reason).not.toMatch(/opens no incident/);
+    });
+
+    test("resolved incident (none open) and a passing check: nothing", () => {
+      expect(
+        ids({ uptime: { outcome: "SUCCESS", at }, uptimeIncident: "none" }),
+      ).toEqual([]);
+    });
+
+    test("not loaded: a failed latest check is treated as an outage, as before", () => {
+      expect(step({ uptime: { outcome: "TIMEOUT", at } })).toMatchObject({
+        id: "down",
+        reason:
+          "The latest uptime check failed. Visitors may not be able to load the site.",
+      });
+    });
+
+    test("a blocked check without an incident is inconclusive", () => {
+      expect(
+        ids({ uptime: { outcome: "BLOCKED", at }, uptimeIncident: "none" }),
+      ).toEqual([]);
+    });
+  });
+
   test("BLOCKED is inconclusive, not an outage", () => {
     expect(ids({ uptime: { outcome: "BLOCKED", at: NOW } })).toEqual([]);
   });

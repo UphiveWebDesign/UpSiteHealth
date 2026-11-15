@@ -11,14 +11,20 @@ import {
   performanceMeta,
   seoRuleMeta,
 } from "@/lib/recommendations/metadata";
-import { analyzePage, analyzeSite, SEO_RULE_IDS } from "@/lib/seo/rules";
+import {
+  analyzePage,
+  analyzeRedirects,
+  analyzeSite,
+  SEO_RULE_IDS,
+} from "@/lib/seo/rules";
 import { buildPlan, type PlanInput } from "@/lib/workflow/plan";
 import {
   FIXTURE_FACTS,
   FIXTURE_PAGES,
+  FIXTURE_REDIRECT_ROWS,
   FIXTURE_UNREACHABLE_FACTS,
 } from "./__fixtures__/rule-fixtures";
-import golden from "./__fixtures__/rule-outputs.k4.json";
+import golden from "./__fixtures__/rule-outputs.k5.json";
 import {
   KNOWLEDGE_VERSION,
   SEO_CATALOGUE,
@@ -40,6 +46,7 @@ const drafts = () => [
   ...FIXTURE_PAGES.flatMap((p) => analyzePage(p, "site.example")),
   ...analyzeSite(FIXTURE_PAGES, FIXTURE_FACTS),
   ...analyzeSite([], FIXTURE_UNREACHABLE_FACTS),
+  ...analyzeRedirects(FIXTURE_REDIRECT_ROWS),
 ];
 
 describe("catalogue coverage and compatibility", () => {
@@ -47,10 +54,10 @@ describe("catalogue coverage and compatibility", () => {
     const emitted = new Set(drafts().map((d) => d.ruleId));
     expect([...emitted].sort()).toEqual(Object.keys(SEO_CATALOGUE).sort());
     expect(SEO_RULE_IDS).toEqual(Object.keys(SEO_CATALOGUE));
-    expect(KNOWLEDGE_VERSION).toBe("k4");
+    expect(KNOWLEDGE_VERSION).toBe("k5");
   });
 
-  test("rule outputs match the golden file (k1 from commit ebe2332; k2 adds placeholder content and checks thin content on indexable pages only; k3 adds incomplete local business markup; k4 adds listed sitemaps that cannot be read)", () => {
+  test("rule outputs match the golden file (k1 from commit ebe2332; k2 adds placeholder content and checks thin content on indexable pages only; k3 adds incomplete local business markup; k4 adds listed sitemaps that cannot be read; k5 adds X-Robots-Tag noindex with its source, the pages linking to a broken URL, redirect chains and internal links to redirects)", () => {
     // Severity, title, description and recommendation are stored on every
     // finding, and the title identifies its recommendation. Changing them
     // needs a data plan, not just a new golden file.

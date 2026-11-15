@@ -9,10 +9,15 @@ import { fanOutAlerts } from "@/lib/alerts/notify";
 import { log } from "@/lib/log";
 import { runCheck, type CheckResult } from "./checks";
 import {
+  confirmedUptimeOutcome,
+  confirmIssueDecision,
   decideIssue,
+  DEFAULT_MONITORING_CHECKS,
   deriveWebsiteStatus,
   issueResolution,
+  uptimeConfirmationWindowMs,
   type LatestOutcomes,
+  type RecordedCheck,
 } from "./rules";
 
 /**
@@ -159,24 +164,119 @@ export function claimJobs(
     RETURNING id, "organizationId", "websiteId", type, attempt`;
 }
 
+/** When a stored check completed (its creation time if not recorded). */
+const recorded = (row: {
+  outcome: RecordedCheck["outcome"];
+  completedAt: Date | null;
+  createdAt: Date;
+}): RecordedCheck => ({
+  outcome: row.outcome,
+  at: row.completedAt ?? row.createdAt,
+});
+
+/**
+ * The latest outcome of each monitored type, as website status reads them:
+ * uptime is the confirmed outcome (rules.ts confirmedUptimeOutcome), so one
+ * failed check never turns the website CRITICAL on its own.
+ */
 async function latestOutcomes(
   tx: Prisma.TransactionClient,
   websiteId: string,
+  windowMs: number,
 ): Promise<LatestOutcomes> {
   const rows = await Promise.all(
     MONITORED_TYPES.map((type) =>
-      tx.websiteCheck.findFirst({
+      tx.websiteCheck.findMany({
         where: { websiteId, type, status: "COMPLETED" },
         orderBy: { createdAt: "desc" },
-        select: { type: true, outcome: true },
+        take: type === "UPTIME" ? 2 : 1,
+        select: {
+          type: true,
+          outcome: true,
+          completedAt: true,
+          createdAt: true,
+        },
       }),
     ),
   );
   const latest: LatestOutcomes = {};
-  for (const row of rows) {
-    if (row?.outcome) latest[row.type as keyof LatestOutcomes] = row.outcome;
+  for (const [row, previous] of rows) {
+    if (!row?.outcome) continue;
+    const outcome =
+      row.type === "UPTIME"
+        ? confirmedUptimeOutcome(
+            recorded(row),
+            previous ? recorded(previous) : null,
+            windowMs,
+          )
+        : row.outcome;
+    if (outcome) latest[row.type as keyof LatestOutcomes] = outcome;
   }
   return latest;
+}
+
+/** The website's latest recorded check of `type`, if any. */
+async function previousCheck(
+  tx: Prisma.TransactionClient,
+  job: ClaimedJob,
+  type: CheckType,
+): Promise<RecordedCheck | null> {
+  const row = await tx.websiteCheck.findFirst({
+    where: {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+      type,
+      status: "COMPLETED",
+    },
+    orderBy: { createdAt: "desc" },
+    select: { outcome: true, completedAt: true, createdAt: true },
+  });
+  return row ? recorded(row) : null;
+}
+
+const DEFAULT_UPTIME_INTERVAL = DEFAULT_MONITORING_CHECKS.find(
+  (c) => c.type === "UPTIME",
+)!.intervalMinutes;
+
+/**
+ * How recent a previous uptime failure must be to confirm a new one, from
+ * the website's configured uptime interval (the default when it has none)
+ * and the queue's own retry time (rules.ts uptimeConfirmationWindowMs).
+ */
+async function confirmationWindowMs(
+  tx: Prisma.TransactionClient,
+  job: ClaimedJob,
+): Promise<number> {
+  const schedule = await tx.websiteMonitoringCheck.findFirst({
+    where: {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+      type: "UPTIME",
+    },
+    select: { intervalMinutes: true },
+  });
+  return uptimeConfirmationWindowMs(
+    schedule?.intervalMinutes ?? DEFAULT_UPTIME_INTERVAL,
+    CLAIM_LEASE_MS * MAX_ATTEMPTS,
+  );
+}
+
+/** Whether a confirmed uptime incident of the website is still open. */
+async function uptimeIncidentOpen(
+  tx: Prisma.TransactionClient,
+  job: ClaimedJob,
+): Promise<boolean> {
+  const open = await tx.issue.findFirst({
+    where: {
+      organizationId: job.organizationId,
+      websiteId: job.websiteId,
+      category: "UPTIME",
+      status: { in: [...OPEN_ISSUE] },
+      resolvedAt: null,
+    },
+    select: { id: true },
+  });
+  return open !== null;
 }
 
 /** Opens, refreshes or resolves the check's issue; reports what changed (for alerts). */
@@ -185,8 +285,16 @@ async function applyIssue(
   job: ClaimedJob,
   result: CheckResult,
   now: Date,
+  previous: RecordedCheck | null,
+  windowMs: number,
 ): Promise<"opened" | "resolved" | "unchanged"> {
-  const decision = decideIssue(result, now);
+  const decision = confirmIssueDecision(
+    decideIssue(result, now),
+    result,
+    previous,
+    now,
+    windowMs,
+  );
   if (decision.action === "none") return "unchanged";
   const existing = await tx.issue.findFirst({
     where: {
@@ -205,6 +313,16 @@ async function applyIssue(
       data: { status: "RESOLVED", resolvedAt: now, lastSeenAt: now },
     });
     return "resolved";
+  }
+  if (decision.action === "pending") {
+    // An unconfirmed failure opens and reopens nothing; an incident that is
+    // already open (confirmed earlier) was seen again, so it stays current.
+    if (existing)
+      await tx.issue.update({
+        where: { id: existing.id },
+        data: { lastSeenAt: now },
+      });
+    return "unchanged";
   }
   if (existing) {
     await tx.issue.update({
@@ -324,6 +442,9 @@ export async function executeJob(
 
   const completedAt = new Date();
   await db.$transaction(async (tx) => {
+    // Read before this check is recorded: the one it may confirm.
+    const previous = await previousCheck(tx, job, result.type);
+    const windowMs = await confirmationWindowMs(tx, job);
     const check = await tx.websiteCheck.create({
       data: {
         organizationId: job.organizationId,
@@ -342,14 +463,24 @@ export async function executeJob(
         completedAt,
       },
     });
-    const issue = await applyIssue(tx, job, result, completedAt);
+    const issue = await applyIssue(
+      tx,
+      job,
+      result,
+      completedAt,
+      previous,
+      windowMs,
+    );
     const before = await tx.website.findUniqueOrThrow({
       where: { id: job.websiteId },
       select: { status: true },
     });
+    // An open uptime incident keeps the site CRITICAL until a pass resolves
+    // it (applyIssue, above, has already resolved it on a pass).
     const status = deriveWebsiteStatus(
       true,
-      await latestOutcomes(tx, job.websiteId),
+      await latestOutcomes(tx, job.websiteId, windowMs),
+      { uptimeIncidentOpen: await uptimeIncidentOpen(tx, job) },
     );
     await tx.website.update({ where: { id: job.websiteId }, data: { status } });
 

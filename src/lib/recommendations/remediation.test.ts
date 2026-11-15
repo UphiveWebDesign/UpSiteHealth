@@ -52,7 +52,7 @@ describe("remediationFor", () => {
     const r = remediationFor(rule("TECH_NOINDEX"), NONE)!;
     expect(r).toMatchObject({
       ruleId: "TECH_NOINDEX",
-      playbookVersion: "p1",
+      playbookVersion: "p2",
       steps: PLAYBOOKS.TECH_NOINDEX.steps,
       prerequisites: PLAYBOOKS.TECH_NOINDEX.prerequisites,
       risks: PLAYBOOKS.TECH_NOINDEX.risks,

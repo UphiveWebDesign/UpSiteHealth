@@ -225,7 +225,15 @@ export async function syncSeoFindings(
               pageAt: (u) => byUrl.get(u),
             });
           const url = (f.evidence as { url?: string } | null)?.url;
-          return url !== undefined && !pageRecheckGap(f.ruleId, byUrl.get(url));
+          return (
+            url !== undefined &&
+            !pageRecheckGap(f.ruleId, byUrl.get(url), {
+              run: siteRun,
+              evidence: f.evidence,
+              pageAt: (u) => byUrl.get(u),
+              links: technical.links,
+            })
+          );
         })
         .map((f) => f.id);
       if (!history) {

@@ -24,6 +24,13 @@ export type WebsiteSignals = {
   status: WebsiteStatus;
   monitoringEnabled: boolean;
   uptime: { outcome: CheckOutcome | null; at: Date } | null;
+  /**
+   * The website's confirmed uptime incident (an unresolved UPTIME issue):
+   * "active", "ignored" (marked ignored, still unresolved) or "none" (with a
+   * failed latest check: one failure, not confirmed yet). Absent: not
+   * loaded, and a failed latest check is treated as an outage.
+   */
+  uptimeIncident?: UptimeIncidentState;
   ssl: { outcome: CheckOutcome | null; expiresAt: Date | null } | null;
   dns: { outcome: CheckOutcome | null } | null;
   openIssues: SeverityCounts;
@@ -39,6 +46,9 @@ export type WebsiteSignals = {
    */
   crawlMode?: CrawlMode;
 };
+
+/** A website's confirmed uptime incident, as the dashboard shows it. */
+export type UptimeIncidentState = "none" | "active" | "ignored";
 
 export type StepTone = "danger" | "warning" | "brand" | "info";
 
@@ -90,7 +100,41 @@ export function nextSteps(
   }
 
   const up = s.uptime?.outcome;
-  if (up && UPTIME_DOWN.has(up)) {
+  const down = !!up && UPTIME_DOWN.has(up);
+  // An unresolved confirmed incident stays visible until a check passes,
+  // even when the latest check was inconclusive (blocked).
+  if (s.uptimeIncident === "active" && up !== "SUCCESS") {
+    add({
+      id: "down",
+      priority: 1,
+      tone: "danger",
+      title: "Website is unreachable",
+      reason: down
+        ? "Consecutive uptime checks failed. Visitors may not be able to load the site."
+        : "An outage was confirmed and no uptime check has succeeded since (the latest check was inconclusive). Visitors may not be able to load the site.",
+      action: { label: "Investigate", href: `${site}/monitoring` },
+    });
+  } else if (s.uptimeIncident === "ignored" && up !== "SUCCESS") {
+    add({
+      id: "down-ignored",
+      priority: 2,
+      tone: "warning",
+      title: "Uptime incident marked as ignored",
+      reason:
+        "Consecutive uptime checks failed and the incident was marked as ignored, so it is not in the open incident list. It closes on its own when a check succeeds.",
+      action: { label: "View checks", href: `${site}/monitoring` },
+    });
+  } else if (down && s.uptimeIncident === "none") {
+    add({
+      id: "down-unconfirmed",
+      priority: 2,
+      tone: "warning",
+      title: "Latest uptime check failed",
+      reason:
+        "One check could not reach the site. The next check confirms whether it is really down; a single failure opens no incident and sends no alert.",
+      action: { label: "View checks", href: `${site}/monitoring` },
+    });
+  } else if (down && s.uptimeIncident === undefined) {
     add({
       id: "down",
       priority: 1,

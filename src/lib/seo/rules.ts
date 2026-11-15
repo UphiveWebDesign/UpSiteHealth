@@ -4,6 +4,7 @@ import type { DiscoveryEvidence } from "@/lib/crawler/engine";
 import type { PageImage, StructuredDataBlock } from "@/lib/crawler/html";
 import { isInternalUrl, normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { isLegalPage } from "./legal";
+import { noindexSource } from "./robots-directives";
 import { failedSitemaps, sitemapState } from "./sitemap";
 import {
   SEO_CATALOGUE,
@@ -58,11 +59,63 @@ export type SeoPage = {
   discoverySource?: string | null;
   /** The page whose link (or redirect) led the crawl here. */
   discoveredFromUrl?: string | null;
+  /** X-Robots-Tag lines of the response; null/absent: not recorded. */
+  xRobotsTag?: string[] | null;
+  /**
+   * Every analysed page of the same crawl that links to this URL (internal
+   * links, deduplicated, sorted); absent when not computed (seo/analyze.ts).
+   */
+  linkingPages?: string[];
+  /** True when some analysed page had more links than the crawl records. */
+  linkingPagesMayBeIncomplete?: boolean;
+  /** Whether `linkingPages` comes from a complete or a partial crawl. */
+  linkingCoverage?: "complete" | "partial";
+  /** Pages of the crawl whose links were read. */
+  pagesAnalysed?: number;
 };
 
-/** Whether the page asks search engines not to index it (robots meta). */
-export const isNoindex = (p: Pick<SeoPage, "robotsMetaRaw">) =>
-  /\bnoindex\b/i.test(p.robotsMetaRaw ?? "");
+/**
+ * Whether the page asks search engines not to index it: a robots meta tag,
+ * or an X-Robots-Tag header that applies to search engines (taken from
+ * `xRobotsTag`, else from a stored crawl `result`). See robots-directives.ts.
+ */
+export const isNoindex = (
+  p: Pick<SeoPage, "robotsMetaRaw" | "xRobotsTag"> & { result?: unknown },
+) => noindexSource(p) !== null;
+
+/** Linking pages shown in evidence (the full count is kept beside them). */
+export const LINKING_PAGES_SHOWN = 20;
+
+/**
+ * Evidence naming the pages that link to a URL: at most LINKING_PAGES_SHOWN,
+ * with the total and whether the list was cut. Empty when none is known.
+ */
+export function linkingEvidence(
+  page: Pick<
+    SeoPage,
+    | "linkingPages"
+    | "linkingPagesMayBeIncomplete"
+    | "linkingCoverage"
+    | "pagesAnalysed"
+  >,
+): Record<string, unknown> {
+  const all = page.linkingPages ?? [];
+  if (all.length === 0) return {};
+  return {
+    linkingPages: all.slice(0, LINKING_PAGES_SHOWN),
+    linkingPageCount: all.length,
+    linkingPagesTruncated: all.length > LINKING_PAGES_SHOWN,
+    ...(page.linkingPagesMayBeIncomplete
+      ? { linkingPagesMayBeIncomplete: true }
+      : {}),
+    // Counted among the pages this crawl analysed, never the whole site
+    // unless the crawl was complete.
+    ...(page.linkingCoverage ? { linkingCoverage: page.linkingCoverage } : {}),
+    ...(typeof page.pagesAnalysed === "number"
+      ? { pagesAnalysed: page.pagesAnalysed }
+      : {}),
+  };
+}
 
 /**
  * Whether the page's canonical names a different URL: the page defers to
@@ -164,7 +217,7 @@ const RULES: Record<string, RuleMeta> = Object.fromEntries(
 
 function pageFinding(
   ruleId: string,
-  page: SeoPage,
+  page: Pick<SeoPage, "id" | "url">,
   evidence: Record<string, unknown>,
 ) {
   return {
@@ -210,6 +263,8 @@ export function analyzePage(
         ...(linked && page.discoveredFromUrl
           ? { linkedFrom: page.discoveredFromUrl }
           : {}),
+        // Every analysed page linking here: the pages to edit.
+        ...linkingEvidence(page),
       }),
     ];
   }
@@ -343,12 +398,100 @@ export function analyzePage(
   return out;
 }
 
-/** The robots meta tag, and the sitemap listing that contradicts it. */
+/**
+ * Where the noindex comes from (robots meta tag, X-Robots-Tag header or
+ * both), what each says, and the sitemap listing that contradicts it.
+ */
 function noindexEvidence(page: SeoPage): Record<string, unknown> {
+  const found = noindexSource(page);
+  const header = found?.source === "header" || found?.source === "both";
   return {
     robotsMeta: page.robotsMetaRaw,
+    noindexSource: found?.source ?? "meta",
+    ...(header
+      ? { xRobotsTag: page.xRobotsTag ?? [], headerAgents: found!.headerAgents }
+      : {}),
     ...(page.discoverySource === "SITEMAP" ? { listedInSitemap: true } : {}),
   };
+}
+
+// ─── Redirects ──────────────────────────────────────────────────────────────
+
+/** Any crawl row, as the redirect rules read it (redirecting or not). */
+export type RedirectRow = Pick<SeoPage, "id" | "url"> & {
+  status: string;
+  /** The final response's status, after any redirects. */
+  httpStatus: number | null;
+  finalUrl: string | null;
+  /** Redirects followed to reach `finalUrl`; null: not recorded. */
+  redirectCount: number | null;
+  discoverySource?: string | null;
+  linkingPages?: string[];
+  linkingPagesMayBeIncomplete?: boolean;
+  linkingCoverage?: "complete" | "partial";
+  pagesAnalysed?: number;
+};
+
+/**
+ * Where a crawled URL's redirects end, when they end on another URL of the
+ * same site; null for a direct response, a redirect off the site (often an
+ * intended shortcut) or a row without redirect evidence. Only what the
+ * crawl recorded: the final URL and the hop count, never the hops between.
+ */
+export function internalRedirect(
+  row: RedirectRow,
+): { finalUrl: string; redirectCount: number } | null {
+  if (
+    row.status !== "CRAWLED" ||
+    typeof row.redirectCount !== "number" ||
+    row.redirectCount < 1 ||
+    !row.finalUrl
+  )
+    return null;
+  const finalUrl = normalizeCrawlUrl(row.finalUrl);
+  if (!finalUrl || finalUrl === (normalizeCrawlUrl(row.url) ?? row.url))
+    return null;
+  let host: string;
+  try {
+    host = new URL(row.url).hostname;
+  } catch {
+    return null;
+  }
+  if (!isInternalUrl(finalUrl, host)) return null;
+  return { finalUrl, redirectCount: row.redirectCount };
+}
+
+/**
+ * TECH_REDIRECT_CHAIN: an internal URL that needs two or more redirects to
+ * reach its final page on the same site. TECH_LINK_TO_REDIRECT: an internal
+ * URL that redirects (to a page that loads) and that analysed pages of the
+ * same crawl link to; one finding per redirecting URL, naming the pages
+ * whose links to update. Both rest on the URL's own row in this crawl, so a
+ * URL the crawl did not fetch is never reported (nor confirmed fixed).
+ */
+export function analyzeRedirects(rows: RedirectRow[]): SeoFindingDraft[] {
+  const out: SeoFindingDraft[] = [];
+  for (const row of rows) {
+    const redirect = internalRedirect(row);
+    if (!redirect) continue;
+    const evidence = {
+      finalUrl: redirect.finalUrl,
+      redirectCount: redirect.redirectCount,
+      ...(row.httpStatus !== null ? { finalStatus: row.httpStatus } : {}),
+      ...(row.discoverySource ? { foundVia: row.discoverySource } : {}),
+      ...linkingEvidence(row),
+    };
+    if (redirect.redirectCount >= 2)
+      out.push(pageFinding("TECH_REDIRECT_CHAIN", row, evidence));
+    // A redirect to an error page is reported as that error instead.
+    if (
+      row.httpStatus !== null &&
+      row.httpStatus < 400 &&
+      (row.linkingPages?.length ?? 0) > 0
+    )
+      out.push(pageFinding("TECH_LINK_TO_REDIRECT", row, evidence));
+  }
+  return out;
 }
 
 function digest(value: string): string {

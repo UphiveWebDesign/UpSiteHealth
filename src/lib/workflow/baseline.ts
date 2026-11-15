@@ -28,6 +28,8 @@ export const BASELINE_CATEGORIES: BaselineCategory[] = [
       "TECH_ROBOTS_TXT_MISSING",
       "TECH_SITEMAP_MISSING",
       "TECH_SITEMAP_UNREACHABLE",
+      "TECH_REDIRECT_CHAIN",
+      "TECH_LINK_TO_REDIRECT",
     ],
   },
   {

@@ -1,5 +1,6 @@
 import { normalizeCrawlUrl } from "@/lib/crawler/urls";
 import { isContentRule } from "@/lib/knowledge/catalogue";
+import { responseHeadersStored } from "./robots-directives";
 import {
   sitemapExists,
   type FailedSitemap,
@@ -31,7 +32,19 @@ export type RecheckGap =
   /** The crawl could not show whether a sitemap exists. */
   | { kind: "sitemap-inconclusive"; reason: string }
   /** Content rules: only the topic map of a complete crawl decides. */
-  | { kind: "topic-recheck" };
+  | { kind: "topic-recheck" }
+  /**
+   * A link to a redirecting URL: a page still links to it, and the crawl
+   * could not confirm whether the URL still redirects.
+   */
+  | { kind: "still-linked"; from: string }
+  /**
+   * The crawl did not read every page's links (failures, page limit,
+   * omitted links), so it cannot show that no page links to the URL.
+   */
+  | { kind: "partial-links" }
+  /** A redirect chain that still has two or more hops (now off-site). */
+  | { kind: "still-chained"; redirectCount: number };
 
 /** A crawl page as far as rechecking is concerned. */
 export type RecheckPage = {
@@ -45,6 +58,29 @@ export type RecheckPage = {
   /** Where the page ended up; with `url`, tells a redirect from a page. */
   url?: string;
   finalUrl?: string | null;
+  /** Redirects followed to reach `finalUrl`; null/absent: not recorded. */
+  redirectCount?: number | null;
+};
+
+/**
+ * What a few rules need beyond the page itself: TECH_LINK_TO_REDIRECT is
+ * also fixed when a completed crawl that read every page's links finds no
+ * page linking to the URL any more.
+ */
+export type RecheckContext = {
+  run: Pick<RecheckRun, "status">;
+  /** The stored finding's evidence. */
+  evidence: unknown;
+  pageAt: (url: string) => RecheckPage | undefined;
+  /**
+   * The current crawl's internal links (seo/analyze.ts linkIndex): who links
+   * to what, and whether every page was read. Without it, links cannot show
+   * a TECH_LINK_TO_REDIRECT fixed.
+   */
+  links?: {
+    linking: Map<string, string[]>;
+    coverage: "complete" | "partial";
+  };
 };
 
 export type RecheckRun = {
@@ -66,12 +102,24 @@ const stored = (result: unknown, key: string) =>
 export function pageRecheckGap(
   ruleId: string,
   page: RecheckPage | undefined,
+  context?: RecheckContext,
 ): RecheckGap | null {
   if (isContentRule(ruleId)) return { kind: "topic-recheck" };
-  if (!page || page.status === "SKIPPED" || page.status === "QUEUED") {
-    return { kind: "not-crawled", skipReason: page?.skipReason ?? null };
+  if (ruleId === "TECH_LINK_TO_REDIRECT")
+    return linkToRedirectGap(page, context);
+  const unfetched = fetchGap(page);
+  if (unfetched || !page) return unfetched;
+  // The chain is judged on this crawl's own redirect count for the URL,
+  // whatever the final page answers (an error there is its own finding).
+  // A chain is fixed only when the URL now needs fewer than two redirects:
+  // one that still takes two or more but now ends off the site (or back on
+  // itself) is no longer reported, yet it was not shortened.
+  if (ruleId === "TECH_REDIRECT_CHAIN") {
+    if (typeof page.redirectCount !== "number") return { kind: "missing-data" };
+    return page.redirectCount >= 2
+      ? { kind: "still-chained", redirectCount: page.redirectCount }
+      : null;
   }
-  if (page.status !== "CRAWLED") return { kind: "fetch-failed" };
   if (page.httpStatus !== null && page.httpStatus >= 400) {
     // The error itself is evidence for the HTTP rule, and nothing else.
     return ruleId === "TECH_HTTP_ERROR"
@@ -99,8 +147,72 @@ export function pageRecheckGap(
     TECH_H1_MISSING: page.h1Count !== null,
     TECH_H1_MULTIPLE: page.h1Count !== null,
     TECH_THIN_CONTENT: page.wordCount !== null,
+    // Noindex can come from the X-Robots-Tag header: a crawl that did not
+    // record response headers cannot show it is gone.
+    TECH_NOINDEX: responseHeadersStored(page.result),
   };
   return needs[ruleId] === false ? { kind: "missing-data" } : null;
+}
+
+/** Why a page was not fetched in this crawl, or null when it was. */
+function fetchGap(page: RecheckPage | undefined): RecheckGap | null {
+  if (!page || page.status === "SKIPPED" || page.status === "QUEUED") {
+    return { kind: "not-crawled", skipReason: page?.skipReason ?? null };
+  }
+  if (page.status !== "CRAWLED") return { kind: "fetch-failed" };
+  return null;
+}
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string")
+    : [];
+
+/**
+ * TECH_LINK_TO_REDIRECT is gone when (a) this crawl fetched the URL and it
+ * no longer redirects, or (b) this crawl completed with complete link
+ * coverage (linkIndex), no analysed page links to the URL any more, and every
+ * page the finding listed was analysed again. The old list is never proof
+ * that no other page links to it: the current crawl's own links decide. A
+ * URL the crawl did not reach proves nothing on its own: that is why the
+ * finding left the analysis, not because it was fixed.
+ */
+function linkToRedirectGap(
+  page: RecheckPage | undefined,
+  context: RecheckContext | undefined,
+): RecheckGap | null {
+  if (
+    page?.status === "CRAWLED" &&
+    typeof page.redirectCount === "number" &&
+    (page.redirectCount === 0 ||
+      (!!page.url &&
+        !!page.finalUrl &&
+        normalizeCrawlUrl(page.finalUrl) === page.url))
+  )
+    return null;
+  const fallback = fetchGap(page) ?? { kind: "missing-data" as const };
+  if (!context?.links) return fallback;
+  if (context.run.status !== "COMPLETED")
+    return { kind: "incomplete-run", runStatus: context.run.status };
+  const e = (context.evidence ?? {}) as Record<string, unknown>;
+  if (typeof e.url !== "string") return fallback;
+  // Any page this crawl analysed that still links to the URL keeps it open,
+  // whether or not the finding listed it.
+  const still = context.links.linking.get(e.url) ?? [];
+  if (still.length) return { kind: "still-linked", from: still[0] };
+  if (context.links.coverage !== "complete") return { kind: "partial-links" };
+  // A listed page the crawl no longer analysed (robots.txt, depth) may still
+  // link to it: not proof either.
+  for (const from of strings(e.linkingPages)) {
+    const source = context.pageAt(from);
+    const gap = fetchGap(source);
+    if (gap) return gap;
+    if (source!.httpStatus !== null && source!.httpStatus >= 400)
+      return { kind: "http-error", httpStatus: source!.httpStatus };
+    const links = (source!.result as { links?: unknown } | null)?.links;
+    if (!Array.isArray(links)) return { kind: "not-analysed" };
+  }
+  return null;
 }
 
 /** The pages a site-wide finding lists as its evidence (`evidence.urls`). */
@@ -109,6 +221,51 @@ export function evidenceUrls(evidence: unknown): string[] {
   return Array.isArray(urls)
     ? urls.filter((u): u is string => typeof u === "string")
     : [];
+}
+
+/**
+ * The pages that link to a finding's URL, as its evidence records them
+ * (TECH_HTTP_ERROR, TECH_REDIRECT_CHAIN, TECH_LINK_TO_REDIRECT): at most 20
+ * listed, `count` in all, `truncated` when the list is cut short, and
+ * `mayBeIncomplete` when some page had more links than the crawl records.
+ */
+export function evidenceLinkingPages(evidence: unknown): {
+  urls: string[];
+  count: number;
+  truncated: boolean;
+  mayBeIncomplete: boolean;
+  /** "unknown" for evidence recorded before coverage was stored. */
+  coverage: "complete" | "partial" | "unknown";
+  pagesAnalysed: number | null;
+} {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  const urls = strings(e.linkingPages);
+  const count =
+    typeof e.linkingPageCount === "number" ? e.linkingPageCount : urls.length;
+  return {
+    urls,
+    count,
+    truncated: count > urls.length,
+    mayBeIncomplete: e.linkingPagesMayBeIncomplete === true,
+    coverage:
+      e.linkingCoverage === "complete" || e.linkingCoverage === "partial"
+        ? e.linkingCoverage
+        : "unknown",
+    pagesAnalysed: typeof e.pagesAnalysed === "number" ? e.pagesAnalysed : null,
+  };
+}
+
+/**
+ * "linked from N pages" only when the crawl that counted them was complete;
+ * "N crawled pages" otherwise, so a partial count never reads as the site.
+ */
+export function linkingSummary(evidence: unknown): string | null {
+  const l = evidenceLinkingPages(evidence);
+  if (l.count === 0) return null;
+  const pages = `page${l.count === 1 ? "" : "s"}`;
+  return l.coverage === "complete"
+    ? `linked from ${l.count} ${pages}`
+    : `linked from ${l.count} crawled ${pages}`;
 }
 
 /**
@@ -229,5 +386,20 @@ export function describeGap(gap: RecheckGap): string {
       return `Not rechecked: ${gap.reason}`;
     case "topic-recheck":
       return "Not rechecked yet: a content gap is confirmed fixed only when a later complete crawl, with the same approved facts, finds a page that covers it.";
+    case "still-chained":
+      return `Not confirmed fixed: the URL still takes ${gap.redirectCount} redirects (it now ends on another site, which this check does not report as a new chain).`;
+    case "partial-links":
+      return "Not rechecked: this crawl did not read the links of every page (some failed, were skipped at the page limit, or had more links than the crawler records), so it cannot show that no page links to this URL.";
+    case "still-linked":
+      return `Not rechecked: ${pathOf(gap.from)} still links to this URL, and the crawl could not confirm whether the URL still redirects.`;
+  }
+}
+
+/** A URL's path for messages, or the text itself when it is no URL. */
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
   }
 }
